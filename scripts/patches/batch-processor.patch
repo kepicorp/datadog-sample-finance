@@ -1,88 +1,52 @@
 --- a/batch-processor/src/main/java/com/example/finance/batch/listener/DatadogJobListener.java
 +++ b/batch-processor/src/main/java/com/example/finance/batch/listener/DatadogJobListener.java
-@@ -1,5 +1,7 @@
- package com.example.finance.batch.listener;
- 
-+import io.opentracing.Span;
-+import io.opentracing.util.GlobalTracer;
- import org.slf4j.Logger;
- import org.slf4j.LoggerFactory;
- import org.springframework.batch.core.JobExecution;
-@@ -7,175 +9,75 @@
+@@ -7,25 +7,13 @@
  import org.springframework.batch.core.StepExecution;
  import org.springframework.stereotype.Component;
  
 -// ── DATADOG INSTRUMENTATION ───────────────────────────────────────────────────
 -// Uncomment the block below to inject Finance-domain span tags into every
 -// Spring Batch job execution trace, enabling Data Jobs Monitoring.
--//
+ //
 -// Requires:
 -//   - dd-java-agent.jar attached via -javaagent (see Dockerfile / .env.example)
 -//   - DD_DATA_JOBS_ENABLED=true  OR  -Ddd.data.jobs.enabled=true
 -//   - dd-trace-api on the classpath (see build.gradle)
--//
+ //
 -// Add to build.gradle:
 -//   implementation 'com.datadoghq:dd-trace-api:1.+'
--//
+ //
 -// Docs: https://docs.datadoghq.com/data_jobs/java/
 -// Docs: https://docs.datadoghq.com/tracing/trace_collection/custom_instrumentation/java/
--//
+ //
 -// import datadog.trace.api.GlobalTracer;
 -// import io.opentracing.Span;
 -// import io.opentracing.Tracer;
 -// ─────────────────────────────────────────────────────────────────────────────
--
++import datadog.trace.api.GlobalTracer;
++import io.opentracing.Span;
++import io.opentracing.Tracer;
+ 
  /**
-- * Spring Batch {@link JobExecutionListener} that:
-- * <ul>
-- *   <li><b>Active (always on):</b> emits structured JSON log events at job
-- *       start and completion for Log Management correlation.</li>
-- *   <li><b>Commented out:</b> injects Datadog Finance-domain span tags for
-- *       Data Jobs Monitoring and APM trace correlation.</li>
-- * </ul>
-+ * Spring Batch {@link JobExecutionListener} that injects Finance-domain APM
-+ * span tags for Data Jobs Monitoring. Metrics are generated from trace span
-+ * tags inside Datadog via "Metrics from Traces" — no DogStatsD code required.
-  *
-- * <p>Register this listener on each {@link org.springframework.batch.core.Job}
-- * bean via {@code .listener(datadogJobListener)} in the job builder chain.
-+ * <p>Register via {@code .listener(datadogJobListener)} on each Job bean.
-+ * Docs: https://docs.datadoghq.com/data_jobs/java/
-+ *       https://docs.datadoghq.com/tracing/generate_metrics/
-  */
- @Component
- public class DatadogJobListener implements JobExecutionListener {
- 
-     private static final Logger log = LoggerFactory.getLogger(DatadogJobListener.class);
- 
--    // ── BEFORE JOB ────────────────────────────────────────────────────────────
--
-     @Override
-     public void beforeJob(JobExecution jobExecution) {
-         String jobName = jobExecution.getJobInstance().getJobName();
-         Long jobId = jobExecution.getJobId();
- 
--        // ── Active: structured log at job start (always enabled) ──────────────
-         log.info("Batch job starting job.name={} job.id={} job.parameters={}",
--                jobName,
--                jobId,
--                jobExecution.getJobParameters());
-+                jobName, jobId, jobExecution.getJobParameters());
+  * Spring Batch {@link JobExecutionListener} that:
+@@ -57,37 +45,25 @@
+                 jobId,
+                 jobExecution.getJobParameters());
  
 -        // ── DATADOG INSTRUMENTATION ───────────────────────────────────────────
 -        // Uncomment the block below to inject span tags before the job starts.
 -        // These tags appear in:
 -        //   - APM > Services > batch-processor > Traces
 -        //   - Data Jobs Monitoring > Jobs > [job name] > Run history
--        //
+         //
 -        // Finance-domain tags applied here:
 -        //   job.name    → identifies the job in Data Jobs Monitoring dashboards
 -        //   job.id      → links this run to the Spring Batch JobInstance
 -        //   job.env     → maps to DD_ENV for environment filtering
--        //
+         //
 -        // ⚠ HIGH-CARDINALITY: job.id is numeric and bounded by your retention
 -        // period — safe to use. Never tag with raw transaction.id or account.id.
--        //
+         //
 -        // Tracer tracer = GlobalTracer.get();
 -        // Span span = tracer.activeSpan();
 -        // if (span != null) {
@@ -100,60 +64,27 @@
 -        //     }
 -        // }
 -        // ─────────────────────────────────────────────────────────────────────
-+        // Tag the active span with job identity for Data Jobs Monitoring.
-+        Span span = GlobalTracer.get().scopeManager().activeSpan();
++        Tracer tracer = GlobalTracer.get();
++        Span span = tracer.activeSpan();
 +        if (span != null) {
 +            span.setTag("job.name", jobName);
 +            span.setTag("job.id", jobId != null ? jobId.toString() : "unknown");
 +            span.setTag("job.env", System.getenv().getOrDefault("DD_ENV", "local"));
++            // Finance-specific: tag with the run date parameter when present
 +            String runDate = jobExecution.getJobParameters().getString("run.date");
-+            if (runDate != null) span.setTag("job.run_date", runDate);
-+            String period = jobExecution.getJobParameters().getString("statement.period");
-+            if (period != null) span.setTag("job.statement_period", period);
++            if (runDate != null) {
++                span.setTag("job.run_date", runDate);
++            }
++            String statementPeriod = jobExecution.getJobParameters().getString("statement.period");
++            if (statementPeriod != null) {
++                span.setTag("job.statement_period", statementPeriod);
++            }
 +        }
      }
  
--    // ── AFTER JOB ─────────────────────────────────────────────────────────────
--
-     @Override
-     public void afterJob(JobExecution jobExecution) {
-         String jobName = jobExecution.getJobInstance().getJobName();
-         String status = jobExecution.getStatus().toString();
- 
--        // Sum write counts across all steps to get total records processed.
--        // This mirrors what Data Jobs Monitoring surfaces as "records_processed".
--        long totalRecordsProcessed = jobExecution.getStepExecutions().stream()
--                .mapToLong(StepExecution::getWriteCount)
--                .sum();
-+        long written = jobExecution.getStepExecutions().stream().mapToLong(StepExecution::getWriteCount).sum();
-+        long read    = jobExecution.getStepExecutions().stream().mapToLong(StepExecution::getReadCount).sum();
-+        long skipped = jobExecution.getStepExecutions().stream()
-+                .mapToLong(s -> s.getReadSkipCount() + s.getProcessSkipCount() + s.getWriteSkipCount()).sum();
- 
--        long totalReadCount = jobExecution.getStepExecutions().stream()
--                .mapToLong(StepExecution::getReadCount)
--                .sum();
--
--        long totalSkipCount = jobExecution.getStepExecutions().stream()
--                .mapToLong(step -> step.getReadSkipCount()
--                        + step.getProcessSkipCount()
--                        + step.getWriteSkipCount())
--                .sum();
--
--        // ── Active: structured log at job completion (always enabled) ─────────
-         log.info("Batch job completed job.name={} job.status={} records.read={} records.written={} records.skipped={}",
--                jobName,
--                status,
--                totalReadCount,
--                totalRecordsProcessed,
--                totalSkipCount);
-+                jobName, status, read, written, skipped);
- 
-         if (jobExecution.getStatus().isUnsuccessful()) {
-             jobExecution.getAllFailureExceptions().forEach(ex ->
--                    log.error("Batch job failure job.name={} error={}",
--                            jobName, ex.getMessage(), ex));
-+                    log.error("Batch job failure job.name={} error={}", jobName, ex.getMessage(), ex));
+     // ── AFTER JOB ─────────────────────────────────────────────────────────────
+@@ -127,55 +103,38 @@
+                             jobName, ex.getMessage(), ex));
          }
  
 -        // ── DATADOG INSTRUMENTATION ───────────────────────────────────────────
@@ -162,12 +93,12 @@
 -        //   - Data Jobs Monitoring alerts (e.g. alert when job.status = FAILED)
 -        //   - Monitors on job.records_processed < threshold (partial run detection)
 -        //   - Deployment Tracking: correlate failed runs with DD_VERSION
--        //
+         //
 -        // Finance-domain tags applied here:
 -        //   job.status            → "COMPLETED" | "FAILED" | "STOPPED" (BatchStatus)
 -        //   job.records_processed → total write count — alert when below SLA threshold
 -        //   job.skip_count        → flag unexpectedly high skip rates
--        //
+         //
 -        // Tracer tracer = GlobalTracer.get();
 -        // Span span = tracer.activeSpan();
 -        // if (span != null) {
@@ -175,7 +106,14 @@
 -        //     span.setTag("job.records_processed", totalRecordsProcessed);
 -        //     span.setTag("job.read_count", totalReadCount);
 -        //     span.setTag("job.skip_count", totalSkipCount);
--        //
++        Tracer tracer = GlobalTracer.get();
++        Span span = tracer.activeSpan();
++        if (span != null) {
++            span.setTag("job.status", status);
++            span.setTag("job.records_processed", totalRecordsProcessed);
++            span.setTag("job.read_count", totalReadCount);
++            span.setTag("job.skip_count", totalSkipCount);
+         //
 -        //     // Mark the span as an error if the job failed — surfaces in APM error tracking
 -        //     if (jobExecution.getStatus().isUnsuccessful()) {
 -        //         span.setTag("error", true);
@@ -185,17 +123,28 @@
 -        //         });
 -        //     }
 -        // }
--        //
++            // Mark the span as an error if the job failed — surfaces in APM error tracking
++            if (jobExecution.getStatus().isUnsuccessful()) {
++                span.setTag("error", true);
++                jobExecution.getAllFailureExceptions().stream().findFirst().ifPresent(ex -> {
++                    span.setTag("error.type", ex.getClass().getName());
++                    span.setTag("error.message", ex.getMessage());
++                });
++            }
++        }
+         //
 -        // ── CUSTOM METRIC: batch records processed ────────────────────────────
 -        // Emit a DogStatsD counter so you can build dashboards and monitors
 -        // without relying solely on trace data.
 -        // Requires: DD_DOGSTATSD_PORT=8125 and statsd client on classpath.
 -        // Metric name: finance.batch.records_processed
 -        // Docs: https://docs.datadoghq.com/developers/dogstatsd/
--        //
+         //
 -        // import com.timgroup.statsd.NonBlockingStatsDClientBuilder;
 -        // import com.timgroup.statsd.StatsDClient;
--        //
++        import com.timgroup.statsd.NonBlockingStatsDClientBuilder;
++        import com.timgroup.statsd.StatsDClient;
+         //
 -        // StatsDClient statsd = new NonBlockingStatsDClientBuilder()
 -        //     .prefix("finance")
 -        //     .hostname(System.getenv().getOrDefault("DD_AGENT_HOST", "localhost"))
@@ -206,23 +155,15 @@
 -        //     "job.status:" + status,
 -        //     "env:" + System.getenv().getOrDefault("DD_ENV", "local"));
 -        // ─────────────────────────────────────────────────────────────────────
-+        // Tag the active span with outcome.
-+        // Datadog generates finance.batch.* metrics from these tags automatically
-+        // via Metrics from Traces — no DogStatsD code needed.
-+        Span span = GlobalTracer.get().scopeManager().activeSpan();
-+        if (span != null) {
-+            span.setTag("job.status", status);
-+            span.setTag("job.records_processed", written);
-+            span.setTag("job.read_count", read);
-+            span.setTag("job.skip_count", skipped);
-+            if (jobExecution.getStatus().isUnsuccessful()) {
-+                span.setTag("error", true);
-+                jobExecution.getAllFailureExceptions().stream().findFirst().ifPresent(ex -> {
-+                    span.setTag("error.type", ex.getClass().getName());
-+                    span.setTag("error.message", ex.getMessage());
-+                });
-+            }
-+        }
++        StatsDClient statsd = new NonBlockingStatsDClientBuilder()
++            .prefix("finance")
++            .hostname(System.getenv().getOrDefault("DD_AGENT_HOST", "localhost"))
++            .port(8125)
++            .build();
++        statsd.count("batch.records_processed", totalRecordsProcessed,
++            "job.name:" + jobName,
++            "job.status:" + status,
++            "env:" + System.getenv().getOrDefault("DD_ENV", "local"));
      }
  }
 --- a/batch-processor/build.gradle
@@ -240,7 +181,7 @@
  
  java {
      toolchain {
-@@ -45,43 +39,15 @@
+@@ -45,43 +39,18 @@
      testImplementation 'org.springframework.batch:spring-batch-test'
      testRuntimeOnly 'com.h2database:h2'   // In-memory DB for unit tests (no Postgres needed)
  
@@ -265,24 +206,37 @@
 -    // Docs: https://docs.datadoghq.com/data_jobs/java/
      //
 -    // compileOnly 'com.datadoghq:dd-trace-api:1.+'
--    //
++    compileOnly 'com.datadoghq:dd-trace-api:1.+'
+     //
 -    // ── DogStatsD client (optional — for custom metrics in DatadogJobListener) ─
 -    // Uncomment to enable finance.batch.records_processed counter emission.
 -    // Docs: https://docs.datadoghq.com/developers/dogstatsd/
--    //
+     //
 -    // implementation 'com.timgroup:java-statsd-client:3.1.0'
 -    // ─────────────────────────────────────────────────────────────────────────
-+    compileOnly 'io.opentracing:opentracing-api:0.33.0'
-+    compileOnly 'io.opentracing:opentracing-util:0.33.0'
++    implementation 'com.timgroup:java-statsd-client:3.1.0'
  }
  
  tasks.named('test') {
      useJUnitPlatform()
  }
--
+ 
 -// ── DATADOG AGENT JAR ─────────────────────────────────────────────────────────
 -// The dd-java-agent.jar is NOT a Gradle dependency — it is downloaded into the
 -// Docker image and attached via -javaagent in JAVA_TOOL_OPTIONS.
 -// See Dockerfile for the download step.
 -// Download URL: https://dtdg.co/latest-java-tracer
 -// ─────────────────────────────────────────────────────────────────────────────
+--- a/batch-processor/Dockerfile
++++ b/batch-processor/Dockerfile
+@@ -23,8 +23,8 @@
+ # Uncomment when enabling APM (Step 3), Data Jobs Monitoring (Step 11),
+ # or Continuous Profiler (Step 7).
+ #
+-# ADD https://dtdg.co/latest-java-tracer /dd-java-agent.jar
+-# RUN chmod 444 /dd-java-agent.jar
++ADD https://dtdg.co/latest-java-tracer /dd-java-agent.jar
++RUN chmod 444 /dd-java-agent.jar
+ # ─────────────────────────────────────────────────────────────────────────────
+ 
+ # ── JAVA_TOOL_OPTIONS ─────────────────────────────────────────────────────────

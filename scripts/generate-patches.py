@@ -31,6 +31,74 @@ def write_tmp(name, content):
     return p
 
 
+def append_diff_from_strings(orig_rel, original_content, patched_content, patch_name):
+    """Diff original_content against patched_content and APPEND to an existing patch file.
+    Both inputs are strings; orig_rel is used only for the patch headers.
+    """
+    tmp_orig = write_tmp("_orig_" + orig_rel.replace("/", "_"), original_content)
+    tmp_patched = write_tmp("_patched_" + orig_rel.replace("/", "_"), patched_content)
+
+    result = subprocess.run(
+        ["diff", "-u", str(tmp_orig), str(tmp_patched)], capture_output=True, text=True
+    )
+    if result.returncode == 2:
+        print(f"  ERROR running diff for {orig_rel}: {result.stderr}")
+        return False
+
+    diff = result.stdout
+    if not diff.strip():
+        print(f"  WARNING: no diff for {orig_rel} (already patched?)")
+        return False
+
+    diff = re.sub(
+        r"^--- .*\n", f"--- a/{orig_rel}\n", diff, count=1, flags=re.MULTILINE
+    )
+    diff = re.sub(
+        r"^\+\+\+ .*\n", f"+++ b/{orig_rel}\n", diff, count=1, flags=re.MULTILINE
+    )
+
+    out = ROOT / "scripts" / "patches" / f"{patch_name}.patch"
+    with out.open("a") as f:
+        f.write(diff)
+    lines = len(diff.splitlines())
+    print(f"  appended {orig_rel} to {out.relative_to(ROOT)}  ({lines} lines)")
+    return True
+
+
+def append_diff(orig_rel, patched_content, patch_name):
+    """Diff orig_rel against patched_content and APPEND the result to an existing patch file."""
+    orig_abs = ROOT / orig_rel
+    tmp_name = orig_rel.replace("/", "_")
+    tmp_path = write_tmp(tmp_name, patched_content)
+
+    result = subprocess.run(
+        ["diff", "-u", str(orig_abs), str(tmp_path)], capture_output=True, text=True
+    )
+    if result.returncode == 2:
+        print(f"  ERROR running diff for {orig_rel}: {result.stderr}")
+        return False
+
+    diff = result.stdout
+    if not diff.strip():
+        print(f"  WARNING: no diff for {orig_rel} (already patched?)")
+        return False
+
+    # Fix headers to be relative
+    diff = re.sub(
+        r"^--- .*\n", f"--- a/{orig_rel}\n", diff, count=1, flags=re.MULTILINE
+    )
+    diff = re.sub(
+        r"^\+\+\+ .*\n", f"+++ b/{orig_rel}\n", diff, count=1, flags=re.MULTILINE
+    )
+
+    out = ROOT / "scripts" / "patches" / f"{patch_name}.patch"
+    with out.open("a") as f:
+        f.write(diff)
+    lines = len(diff.splitlines())
+    print(f"  appended {orig_rel} to {out.relative_to(ROOT)}  ({lines} lines)")
+    return True
+
+
 def make_patch(orig_rel, tmp_path, patch_name):
     """Create a unified diff and write it to scripts/patches/<patch_name>.patch"""
     orig_abs = str(ROOT / orig_rel)
@@ -315,18 +383,142 @@ def patch_batch_processor():
     dry_run("batch-processor")
 
 
+# ── Dependency file patch helpers ────────────────────────────────────────────
+
+
+def patch_gateway_api_deps():
+    """Uncomment ddtrace==2.9.0 in gateway-api/requirements.txt."""
+    orig = "gateway-api/requirements.txt"
+    original_content = read(orig)
+    patched_content = re.sub(
+        r"^# (ddtrace==\S+)",
+        r"\1",
+        original_content,
+        flags=re.MULTILINE,
+    )
+    append_diff_from_strings(orig, original_content, patched_content, "gateway-api")
+
+
+def patch_fraud_detection_deps():
+    """Uncomment ddtrace[data_streams] in fraud-detection/requirements.txt."""
+    orig = "fraud-detection/requirements.txt"
+    original_content = read(orig)
+    patched_content = re.sub(
+        r"^# (ddtrace\[data_streams\]==\S+)",
+        r"\1",
+        original_content,
+        flags=re.MULTILINE,
+    )
+    append_diff_from_strings(orig, original_content, patched_content, "fraud-detection")
+
+
+def patch_transaction_service_deps():
+    """Add dd-trace ^5.0.0 to transaction-service/package.json dependencies."""
+    import copy
+    import json
+
+    orig = "transaction-service/package.json"
+    original_content = read(orig)
+    pkg = json.loads(original_content)
+
+    # Add dd-trace as the first dependency
+    deps = {"dd-trace": "^5.0.0"}
+    deps.update(pkg.get("dependencies", {}))
+    pkg_patched = copy.deepcopy(pkg)
+    pkg_patched["dependencies"] = deps
+    patched_content = json.dumps(pkg_patched, indent=2) + "\n"
+
+    append_diff_from_strings(
+        orig, original_content, patched_content, "transaction-service"
+    )
+
+
+def patch_notification_service_deps():
+    """Uncomment dd-trace-go require block in notification-service/go.mod.
+
+    The commented block in go.mod looks like:
+        // require (
+        //     // APM tracer — manual instrumentation and tracer.Start()
+        //     go.datadoghq.com/dd-trace-go/v2 v2.0.0
+        //
+        //     // Continuous Profiler — goroutine, heap, CPU profiles
+        //     gopkg.in/DataDog/dd-trace-go.v1 v1.67.0
+        //
+        //     // DogStatsD client — custom counters, histograms, gauges
+        //     github.com/DataDog/datadog-go/v5 v5.5.0
+        // )
+
+    We replace it with an active require block (go mod tidy must be run after
+    applying the patch to populate go.sum).
+    """
+    orig = "notification-service/go.mod"
+    original_content = read(orig)
+
+    # Build the exact commented block using a regex so inline comment variations
+    # don't break matching.
+    commented_pattern = re.compile(
+        r"// require \(\n"
+        r"(?://[^\n]*\n)*"
+        r"// \)",
+        re.MULTILINE,
+    )
+
+    match = commented_pattern.search(original_content)
+    if not match:
+        print("  WARNING: could not find commented require block in go.mod")
+        append_diff_from_strings(
+            orig, original_content, original_content, "notification-service"
+        )
+        return
+
+    uncommented_block = (
+        "require (\n"
+        "\tgo.datadoghq.com/dd-trace-go/v2 v2.0.0\n"
+        "\tgopkg.in/DataDog/dd-trace-go.v1 v1.67.0\n"
+        "\tgithub.com/DataDog/datadog-go/v5 v5.5.0\n"
+        ")"
+    )
+    patched_content = (
+        original_content[: match.start()]
+        + uncommented_block
+        + original_content[match.end() :]
+    )
+    append_diff_from_strings(
+        orig, original_content, patched_content, "notification-service"
+    )
+
+
+def patch_batch_processor_dockerfile():
+    """Append a Dockerfile hunk to batch-processor.patch to uncomment ADD agent line."""
+    orig = "batch-processor/Dockerfile"
+    content = read(orig)
+    patched = content.replace(
+        "# ADD https://dtdg.co/latest-java-tracer /dd-java-agent.jar\n"
+        "# RUN chmod 444 /dd-java-agent.jar",
+        "ADD https://dtdg.co/latest-java-tracer /dd-java-agent.jar\n"
+        "RUN chmod 444 /dd-java-agent.jar",
+    )
+    append_diff(orig, patched, "batch-processor")
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
+
 
 if __name__ == "__main__":
     (ROOT / "scripts" / "patches").mkdir(parents=True, exist_ok=True)
     print("Generating patches...\n")
     patch_gateway_api()
+    patch_gateway_api_deps()
     print()
     patch_fraud_detection()
+    patch_fraud_detection_deps()
     print()
     patch_transaction_service()
+    patch_transaction_service_deps()
     print()
     patch_notification_service()
+    patch_notification_service_deps()
     print()
     patch_batch_processor()
+    patch_batch_processor_dockerfile()
     print("\nDone.")

@@ -246,3 +246,28 @@
  }
  
  // connectSTOMP establishes a STOMP connection to the ActiveMQ Artemis broker.
+--- a/notification-service/go.mod
++++ b/notification-service/go.mod
+@@ -15,17 +15,12 @@
+ //   DogStatsD client:    https://docs.datadoghq.com/developers/dogstatsd/?tab=go
+ //   Orchestrion (auto):  https://docs.datadoghq.com/tracing/trace_collection/automatic_instrumentation/dd_libraries/go/
+ //
+-// require (
+-//     // APM tracer — manual instrumentation and tracer.Start()
+-//     go.datadoghq.com/dd-trace-go/v2 v2.0.0
++require (
++	go.datadoghq.com/dd-trace-go/v2 v2.0.0
++	gopkg.in/DataDog/dd-trace-go.v1 v1.67.0
++	github.com/DataDog/datadog-go/v5 v5.5.0
++)
+ //
+-//     // Continuous Profiler — goroutine, heap, CPU profiles
+-//     gopkg.in/DataDog/dd-trace-go.v1 v1.67.0
+-//
+-//     // DogStatsD client — custom counters, histograms, gauges
+-//     github.com/DataDog/datadog-go/v5 v5.5.0
+-// )
+-//
+ // NOTE on Orchestrion:
+ //   Orchestrion instruments this service at compile time without any import changes.
+ //   Install it as a build tool — do NOT add it to `require` here:

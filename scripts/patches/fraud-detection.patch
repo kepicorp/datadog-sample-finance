@@ -32,3 +32,14 @@
  
  import stomp
  
+--- a/fraud-detection/requirements.txt
++++ b/fraud-detection/requirements.txt
+@@ -9,7 +9,7 @@
+ # Progression steps in README.md.
+ #
+ # Step 3-7  — APM tracing, log injection, profiler, custom spans, DSM
+-# ddtrace[data_streams]==2.9.0
++ddtrace[data_streams]==2.9.0
+ #
+ # Step 6    — DogStatsD custom metrics (finance.fraud.score gauge)
+ # datadog==0.49.1
