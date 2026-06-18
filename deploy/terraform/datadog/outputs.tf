@@ -31,3 +31,21 @@ output "monitor_pods_not_running_id" {
   description = "ID of the pods-not-running monitor."
   value       = datadog_monitor.pods_not_running.id
 }
+
+output "span_metrics" {
+  description = "Span-based metrics generated from APM traces. Create dashboards and alerts using these metric names."
+  value = {
+    payment_hits     = datadog_spans_metric.payment_hits.name
+    payment_duration = datadog_spans_metric.payment_duration.name
+    fraud_hits       = datadog_spans_metric.fraud_hits.name
+    batch_records    = datadog_spans_metric.batch_records.name
+  }
+}
+
+output "log_metrics" {
+  description = "Log-based metrics generated from structured logs. Use in monitors and dashboards."
+  value = {
+    error_count        = datadog_logs_metric.error_count.name
+    payments_initiated = datadog_logs_metric.payments_initiated.name
+  }
+}

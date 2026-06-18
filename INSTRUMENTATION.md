@@ -338,6 +338,15 @@ defer span.Finish()
 
 ## Step 6 — Custom metrics (DogStatsD)
 
+> **Tip — Metrics from Traces (recommended):** For most Finance metrics
+> (`finance.payment.hits`, `finance.payment.duration`, `finance.fraud.hits`,
+> `finance.batch.records_processed`), the Datadog Terraform module
+> (`deploy/terraform/datadog/`) already creates these automatically from APM
+> spans via `datadog_spans_metric` resources. You do **NOT** need to add
+> DogStatsD code for these. Run `make tf-apply-dd` after completing Step 3
+> (APM traces) to activate them. DogStatsD is only needed for metrics that
+> have no corresponding trace or log (e.g. queue depth polled externally).
+
 > **What you get:** Finance-domain metrics in the Metrics Explorer and
 > dashboards: `finance.payment.initiated`, `finance.payment.processing_time`,
 > `finance.fraud.score`, `finance.batch.records_processed`.
