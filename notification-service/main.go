@@ -23,46 +23,46 @@ import (
 //   Docs:    https://docs.datadoghq.com/tracing/trace_collection/automatic_instrumentation/dd_libraries/go/
 //
 // Option B: Manual tracer initialisation (shown below).
-// Requires: go get go.datadoghq.com/dd-trace-go/v2/ddtrace/tracer
+// Requires: go get github.com/DataDog/dd-trace-go/v2/ddtrace/tracer
 //
 // import (
-//     "go.datadoghq.com/dd-trace-go/v2/ddtrace/tracer"
+//     "github.com/DataDog/dd-trace-go/v2/ddtrace/tracer"
 // )
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ── DATADOG INSTRUMENTATION — CONTINUOUS PROFILER ────────────────────────────
 // Uncomment the block below to enable the Continuous Profiler.
-// Requires: go get gopkg.in/DataDog/dd-trace-go.v1/profiler
+// Requires: go get github.com/DataDog/dd-trace-go/v2/profiler
 // Docs: https://docs.datadoghq.com/profiler/enabling/go/
 //
 // import (
-//     "gopkg.in/DataDog/dd-trace-go.v1/profiler"
+//     "github.com/DataDog/dd-trace-go/v2/profiler"
 // )
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ── DATADOG INSTRUMENTATION — DATA STREAMS MONITORING ───────────────────────
 // Uncomment to enable DSM consumer checkpoints on alert.queue.
-// Requires: go get go.datadoghq.com/dd-trace-go/v2/datastreams
+// Requires: go get github.com/DataDog/dd-trace-go/v2/datastreams
 //           DD_DATA_STREAMS_ENABLED=true
 // Docs: https://docs.datadoghq.com/data_streams/go/
 //
 // import (
-//     "go.datadoghq.com/dd-trace-go/v2/datastreams"
-//     "go.datadoghq.com/dd-trace-go/v2/datastreams/options"
+//     "github.com/DataDog/dd-trace-go/v2/datastreams"
+//     "github.com/DataDog/dd-trace-go/v2/datastreams/options"
 // )
 // ─────────────────────────────────────────────────────────────────────────────
 
 const (
-	alertQueue      = "/queue/alert.queue"
+	alertQueue       = "/queue/alert.queue"
 	defaultBrokerURL = "stomp://localhost:61613"
 )
 
 // AlertMessage represents the payload received on alert.queue.
 type AlertMessage struct {
-	EventType       string `json:"event_type"`        // e.g. "fraud_detected", "payment_failed"
-	AccountID       string `json:"account_id"`
-	Channel         string `json:"channel"`           // "email" or "sms"
-	CorrelationID   string `json:"correlation_id"`    // jms.correlation_id — business-level trace key
+	EventType     string `json:"event_type"` // e.g. "fraud_detected", "payment_failed"
+	AccountID     string `json:"account_id"`
+	Channel       string `json:"channel"`        // "email" or "sms"
+	CorrelationID string `json:"correlation_id"` // jms.correlation_id — business-level trace key
 	// ⚠️  HIGH CARDINALITY WARNING: do NOT log or tag raw account numbers, IBANs,
 	// card numbers, or transaction amounts. Tag with IDs only.
 	// Ref: https://docs.datadoghq.com/tagging/assigning_tags/#defining-tags

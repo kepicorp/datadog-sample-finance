@@ -14,47 +14,47 @@
 -//   Docs:    https://docs.datadoghq.com/tracing/trace_collection/automatic_instrumentation/dd_libraries/go/
  //
 -// Option B: Manual tracer initialisation (shown below).
--// Requires: go get go.datadoghq.com/dd-trace-go/v2/ddtrace/tracer
+-// Requires: go get github.com/DataDog/dd-trace-go/v2/ddtrace/tracer
  //
 -// import (
--//     "go.datadoghq.com/dd-trace-go/v2/ddtrace/tracer"
+-//     "github.com/DataDog/dd-trace-go/v2/ddtrace/tracer"
 -// )
 -// ─────────────────────────────────────────────────────────────────────────────
 +import (
-+    "go.datadoghq.com/dd-trace-go/v2/ddtrace/tracer"
++    "github.com/DataDog/dd-trace-go/v2/ddtrace/tracer"
 +)
  
 -// ── DATADOG INSTRUMENTATION — CONTINUOUS PROFILER ────────────────────────────
 -// Uncomment the block below to enable the Continuous Profiler.
--// Requires: go get gopkg.in/DataDog/dd-trace-go.v1/profiler
+-// Requires: go get github.com/DataDog/dd-trace-go/v2/profiler
 -// Docs: https://docs.datadoghq.com/profiler/enabling/go/
  //
 -// import (
--//     "gopkg.in/DataDog/dd-trace-go.v1/profiler"
+-//     "github.com/DataDog/dd-trace-go/v2/profiler"
 -// )
 -// ─────────────────────────────────────────────────────────────────────────────
 +import (
-+    "gopkg.in/DataDog/dd-trace-go.v1/profiler"
++    "github.com/DataDog/dd-trace-go/v2/profiler"
 +)
  
 -// ── DATADOG INSTRUMENTATION — DATA STREAMS MONITORING ───────────────────────
 -// Uncomment to enable DSM consumer checkpoints on alert.queue.
--// Requires: go get go.datadoghq.com/dd-trace-go/v2/datastreams
+-// Requires: go get github.com/DataDog/dd-trace-go/v2/datastreams
 -//           DD_DATA_STREAMS_ENABLED=true
 -// Docs: https://docs.datadoghq.com/data_streams/go/
  //
 -// import (
--//     "go.datadoghq.com/dd-trace-go/v2/datastreams"
--//     "go.datadoghq.com/dd-trace-go/v2/datastreams/options"
+-//     "github.com/DataDog/dd-trace-go/v2/datastreams"
+-//     "github.com/DataDog/dd-trace-go/v2/datastreams/options"
 -// )
 -// ─────────────────────────────────────────────────────────────────────────────
 +import (
-+    "go.datadoghq.com/dd-trace-go/v2/datastreams"
-+    "go.datadoghq.com/dd-trace-go/v2/datastreams/options"
++    "github.com/DataDog/dd-trace-go/v2/datastreams"
++    "github.com/DataDog/dd-trace-go/v2/datastreams/options"
 +)
  
  const (
- 	alertQueue      = "/queue/alert.queue"
+ 	alertQueue       = "/queue/alert.queue"
 @@ -78,43 +57,31 @@
  	}))
  	slog.SetDefault(logger)
@@ -248,22 +248,18 @@
  // connectSTOMP establishes a STOMP connection to the ActiveMQ Artemis broker.
 --- a/notification-service/go.mod
 +++ b/notification-service/go.mod
-@@ -15,17 +15,12 @@
+@@ -15,14 +15,11 @@
  //   DogStatsD client:    https://docs.datadoghq.com/developers/dogstatsd/?tab=go
  //   Orchestrion (auto):  https://docs.datadoghq.com/tracing/trace_collection/automatic_instrumentation/dd_libraries/go/
  //
 -// require (
--//     // APM tracer — manual instrumentation and tracer.Start()
--//     go.datadoghq.com/dd-trace-go/v2 v2.0.0
+-//     // APM tracer + DSM — manual instrumentation and tracer.Start()
+-//     github.com/DataDog/dd-trace-go/v2 v2.0.0
 +require (
-+	go.datadoghq.com/dd-trace-go/v2 v2.0.0
-+	gopkg.in/DataDog/dd-trace-go.v1 v1.67.0
++	github.com/DataDog/dd-trace-go/v2 v2.0.0
 +	github.com/DataDog/datadog-go/v5 v5.5.0
 +)
  //
--//     // Continuous Profiler — goroutine, heap, CPU profiles
--//     gopkg.in/DataDog/dd-trace-go.v1 v1.67.0
--//
 -//     // DogStatsD client — custom counters, histograms, gauges
 -//     github.com/DataDog/datadog-go/v5 v5.5.0
 -// )

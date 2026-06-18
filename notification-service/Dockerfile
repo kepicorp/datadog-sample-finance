@@ -12,8 +12,10 @@ WORKDIR /app
 # Install git for go mod download (some dependencies require it).
 RUN apk add --no-cache git
 
-COPY go.mod go.sum ./
-RUN go mod download
+COPY go.mod go.sum* ./
+# go mod tidy resolves any new dependencies added by the instrumentation patch
+# (e.g. dd-trace-go/v2). go.sum may not include them until tidy is run.
+RUN go mod tidy && go mod download
 COPY . .
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldflags="-s -w" -o /notification-service .
 

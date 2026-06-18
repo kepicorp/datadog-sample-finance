@@ -438,18 +438,15 @@ def patch_notification_service_deps():
 
     The commented block in go.mod looks like:
         // require (
-        //     // APM tracer — manual instrumentation and tracer.Start()
-        //     go.datadoghq.com/dd-trace-go/v2 v2.0.0
-        //
-        //     // Continuous Profiler — goroutine, heap, CPU profiles
-        //     gopkg.in/DataDog/dd-trace-go.v1 v1.67.0
+        //     // APM tracer + DSM — manual instrumentation and tracer.Start()
+        //     github.com/DataDog/dd-trace-go/v2 v2.0.0
         //
         //     // DogStatsD client — custom counters, histograms, gauges
         //     github.com/DataDog/datadog-go/v5 v5.5.0
         // )
 
-    We replace it with an active require block (go mod tidy must be run after
-    applying the patch to populate go.sum).
+    We replace it with an active require block (go mod tidy must be run in the
+    Docker build stage to populate go.sum for the new transitive deps).
     """
     orig = "notification-service/go.mod"
     original_content = read(orig)
@@ -473,8 +470,7 @@ def patch_notification_service_deps():
 
     uncommented_block = (
         "require (\n"
-        "\tgo.datadoghq.com/dd-trace-go/v2 v2.0.0\n"
-        "\tgopkg.in/DataDog/dd-trace-go.v1 v1.67.0\n"
+        "\tgithub.com/DataDog/dd-trace-go/v2 v2.0.0\n"
         "\tgithub.com/DataDog/datadog-go/v5 v5.5.0\n"
         ")"
     )

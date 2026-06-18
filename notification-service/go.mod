@@ -16,11 +16,8 @@ require github.com/go-stomp/stomp/v3 v3.0.5
 //   Orchestrion (auto):  https://docs.datadoghq.com/tracing/trace_collection/automatic_instrumentation/dd_libraries/go/
 //
 // require (
-//     // APM tracer — manual instrumentation and tracer.Start()
-//     go.datadoghq.com/dd-trace-go/v2 v2.0.0
-//
-//     // Continuous Profiler — goroutine, heap, CPU profiles
-//     gopkg.in/DataDog/dd-trace-go.v1 v1.67.0
+//     // APM tracer + DSM — manual instrumentation and tracer.Start()
+//     github.com/DataDog/dd-trace-go/v2 v2.0.0
 //
 //     // DogStatsD client — custom counters, histograms, gauges
 //     github.com/DataDog/datadog-go/v5 v5.5.0
