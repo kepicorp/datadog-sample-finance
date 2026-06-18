@@ -289,16 +289,60 @@ make build-ecr
 make deploy-k8s-eks
 
 # 8. Optionally add the Datadog Agent
-#    Set DD_API_KEY in AWS Secrets Manager first:
+#    Set DD_API_KEY in AWS Secrets Manager first (if not already set):
 #    aws secretsmanager put-secret-value --secret-id finance-app/staging/dd-api-key \
-#      --secret-string "your-key" --profile <your-profile>
+#      --secret-string "your-key" --profile <your-profile> --region <region>
 #    deploy-k8s-dd auto-detects EKS and fetches the key from Secrets Manager:
 make deploy-k8s-dd
 
-# 9. Tear down when done
+# 9. Apply Datadog observability resources (log index, pipeline, monitors, dashboard)
+#    dd-secrets reads aws_region + aws_profile from staging.tfvars automatically:
+eval "$(make dd-secrets)"
+make tf-apply-dd
+
+# 10. Enable instrumentation, rebuild images, and roll out
+make instrument
+make build-ecr
+make deploy-k8s-eks
+
+# 11. Tear down when done
 make undeploy-k8s      # removes K8s resources first (incl. cluster-scoped gp3 StorageClass)
 make tf-destroy-aws    # destroys AWS infrastructure
 ```
+
+#### Datadog Terraform credentials
+
+`make tf-apply-dd` and `make tf-plan-dd` require two Terraform variables that
+must **never** be committed to source control:
+
+| Variable | Secret Manager path |
+|---|---|
+| `TF_VAR_datadog_api_key` | `finance-app/staging/dd-api-key` |
+| `TF_VAR_datadog_app_key` | `finance-app/staging/dd-app-key` |
+
+Use `dd-secrets` to export them in one step — it reads `aws_region` and
+`aws_profile` from `deploy/terraform/aws/staging.tfvars` automatically:
+
+```bash
+eval "$(make dd-secrets)"   # exports both TF_VAR_* into your current shell
+make tf-apply-dd
+```
+
+If the secrets haven't been populated yet, set them once:
+
+```bash
+aws secretsmanager put-secret-value \
+  --secret-id finance-app/staging/dd-api-key \
+  --secret-string "<your-dd-api-key>" \
+  --profile <your-profile> --region <region>
+
+aws secretsmanager put-secret-value \
+  --secret-id finance-app/staging/dd-app-key \
+  --secret-string "<your-dd-app-key>" \
+  --profile <your-profile> --region <region>
+```
+
+---
 
 #### Teardown and troubleshooting
 
