@@ -186,7 +186,7 @@ deploy/
     datadog/               Datadog Agent overlay (Operator CRD + checks)
   terraform/
     aws/                   AWS EKS + ECR + VPC + IAM + Secrets Manager
-    gcp/                   GCP GKE + Artifact Registry + IAM + Secret Manager
+    gcp/                   GCP GKE — scaffolded, not yet available
 ```
 
 ---
@@ -223,7 +223,7 @@ See `deploy/docker/README.md` for Keycloak users, all make commands, and the 12-
 
 ### Kubernetes — any cluster
 
-Once `kubectl` is pointed at a cluster (local, EKS, or GKE), the deployment is identical:
+Once `kubectl` is pointed at a cluster (local or EKS), the deployment is identical:
 
 ```bash
 make deploy-k8s      # deploys deploy/kubernetes/base/ — no Datadog
@@ -334,69 +334,14 @@ Reference: https://docs.datadoghq.com/integrations/amazon_web_services/
 
 ---
 
-### GCP — GKE via Terraform
+### GCP — GKE via Terraform *(coming soon)*
 
-Terraform creates the GCP infrastructure; `make deploy-k8s` deploys the app.
-
-#### Prerequisites
-- `gcloud` CLI >= 450
-- Terraform >= 1.5
-- A GCP project with billing enabled
-
-#### Full workflow
-
-```bash
-# 1. Authenticate
-gcloud auth application-default login
-gcloud config set project YOUR_GCP_PROJECT_ID
-
-# 2. Configure Terraform variables
-cp deploy/terraform/gcp/staging.tfvars.example deploy/terraform/gcp/staging.tfvars
-# edit staging.tfvars: set project_id, region, cluster_name
-
-# 3. Plan and review
-make tf-plan-gcp
-
-# 4. Provision GCP infrastructure (~10-15 min)
-#    Creates: GKE cluster, Artifact Registry, IAM roles, Secret Manager entries
-make tf-apply-gcp
-
-# 5. Configure kubectl
-make tf-configure-kubectl-gcp
-# kubectl get nodes  — verify cluster is reachable
-
-# 6. Push service images to Artifact Registry
-cd deploy/terraform/gcp
-eval "$(terraform output -raw docker_auth_command)"
-IMAGE_TAG=$(git rev-parse --short HEAD)
-for SVC in gateway-api account-service transaction-service \
-           fraud-detection notification-service batch-processor; do
-  AR_URL=$(terraform output -json artifact_registry_urls | jq -r ".\"${SVC}\"")
-  docker tag  finance-sample-app-${SVC}:latest ${AR_URL}:${IMAGE_TAG}
-  docker push ${AR_URL}:${IMAGE_TAG}
-done
-# Update image: fields in deploy/kubernetes/base/services/*.yaml to use AR URLs
-
-# 7. Deploy the application
-make deploy-k8s
-
-# 8. Optionally add the Datadog Agent
-#    Set DD_API_KEY in Secret Manager first:
-#    echo -n "your-key" | gcloud secrets versions add dd-api-key --data-file=-
-make deploy-k8s-dd
-
-# 9. Connect Datadog to GCP (Cloud Monitoring metrics, no agent required)
-#    Get the integration SA email and register it in Datadog > Integrations > GCP:
-#    cd deploy/terraform/gcp && terraform output datadog_integration_sa_email
-
-# 10. Tear down when done
-make undeploy-k8s
-make tf-destroy-gcp
-```
-
-See `deploy/terraform/gcp/README.md` for full details on authentication, outputs reference, remote state, and Datadog integration steps (Pub/Sub log forwarding, SA key, etc.).
-
-Reference: https://docs.datadoghq.com/integrations/google_cloud_platform/
+> The GCP Terraform module is scaffolded in `deploy/terraform/gcp/` but has not
+> been tested end-to-end yet. The Makefile targets (`tf-plan-gcp`, `tf-apply-gcp`,
+> etc.) are commented out until GCP support is complete.
+>
+> See `deploy/terraform/gcp/README.md` and
+> https://docs.datadoghq.com/integrations/google_cloud_platform/ for reference.
 
 ---
 
@@ -407,7 +352,7 @@ Reference: https://docs.datadoghq.com/integrations/google_cloud_platform/
 - Docker: export `DD_API_KEY` in your shell before running `make up`, or copy `.env.example` to `.env` and fill in the value (`.env` is git-ignored)
 - Kubernetes: store in a K8s Secret and reference via `valueFrom.secretKeyRef`
 - AWS: store in AWS Secrets Manager; the Terraform module creates the entry
-- GCP: store in GCP Secret Manager; the Terraform module creates the entry
+- GCP: store in GCP Secret Manager *(coming soon — see `deploy/terraform/gcp/`)*
 
 **PII masking:** Financial data (card numbers, IBANs, SSNs, account balances) must never appear in trace tags, log messages, or DBM query samples. The Agent `obfuscation_config` and `replace_tags` examples are documented in each service's `env.example`.
 

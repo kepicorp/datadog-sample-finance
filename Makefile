@@ -30,7 +30,7 @@
 #   make deploy-k8s-dd        Deploy the Datadog Agent (auto-detects local vs EKS)
 #   make tf-destroy-aws       Destroy all AWS Terraform resources
 #   make tf-force-destroy-aws Force-destroy in dependency order (use when tf-destroy-aws fails)
-#   make tf-plan-gcp          Terraform plan for GCP / GKE target
+#   # make tf-plan-gcp        [GCP — not yet available, see deploy/terraform/gcp/]
 #
 # AWS + K8s workflow:
 #   aws sso login --profile <profile>   # authenticate
@@ -41,14 +41,14 @@
 #   make deploy-k8s-eks                 # deploy app (includes gp3 StorageClass)
 #   make deploy-k8s-dd                  # deploy Datadog Agent (auto-detects EKS)
 #
-# GCP + K8s workflow:
-#   gcloud auth application-default login  # authenticate
-#   make tf-plan-gcp                       # review the plan first
-#   make tf-apply-gcp                      # provision GKE, AR, IAM (~10-15 min)
-#   make tf-configure-kubectl-gcp          # configure kubectl
-#   make deploy-k8s                        # deploy app
+# GCP + K8s workflow:  [not yet available — Terraform module scaffolded but untested]
+#   # gcloud auth application-default login
+#   # make tf-plan-gcp
+#   # make tf-apply-gcp
+#   # make tf-configure-kubectl-gcp
+#   # make deploy-k8s
 
-.PHONY: all build build-ecr up up-dd down down-dd logs health version test test-traffic restart clean-data reset-db deploy-k8s deploy-k8s-eks deploy-k8s-dd undeploy-k8s instrument uninstrument tf-plan-aws tf-apply-aws tf-configure-kubectl frontend-url tf-destroy-aws tf-force-destroy-aws tf-plan-gcp tf-apply-gcp tf-configure-kubectl-gcp tf-destroy-gcp tf-plan-dd tf-apply-dd tf-destroy-dd help
+.PHONY: all build build-ecr up up-dd down down-dd logs health version test test-traffic restart clean-data reset-db deploy-k8s deploy-k8s-eks deploy-k8s-dd undeploy-k8s instrument uninstrument tf-plan-aws tf-apply-aws tf-configure-kubectl frontend-url tf-destroy-aws tf-force-destroy-aws tf-plan-dd tf-apply-dd tf-destroy-dd help
 
 # Resolve DD_VERSION once so all targets share the same value.
 # Falls back to 'dev' when git is not available (e.g. in a bare CI image).
@@ -448,22 +448,19 @@ tf-apply-dd:
 tf-destroy-dd:
 	cd deploy/terraform/datadog && terraform destroy $(TF_DD_VARS)
 
-## tf-plan-gcp: Initialise and plan the Terraform GCP (GKE) target.
-TF_GCP_VARS ?= -var-file=staging.tfvars
-tf-plan-gcp:
-	cd deploy/terraform/gcp && terraform init && terraform plan $(TF_GCP_VARS)
-
-## tf-apply-gcp: Apply the Terraform GCP plan (creates GKE, Artifact Registry, IAM).
-##               WARNING: this provisions real GCP resources and incurs cost.
-tf-apply-gcp:
-	cd deploy/terraform/gcp && terraform init && terraform apply $(TF_GCP_VARS)
-
-## tf-configure-kubectl-gcp: Update kubeconfig to point kubectl at the GKE cluster.
-##                            Run after tf-apply-gcp before deploy-k8s.
-tf-configure-kubectl-gcp:
-	eval "$$(cd deploy/terraform/gcp && terraform output -raw get_credentials_command)"
-
-## tf-destroy-gcp: Destroy all GCP resources created by Terraform.
-##                  WARNING: this deletes the GKE cluster and all data.
-tf-destroy-gcp:
-	cd deploy/terraform/gcp && terraform destroy $(TF_GCP_VARS)
+# ── GCP targets (scaffolded but not yet tested — coming soon) ──────────────────
+# Uncomment when GCP support is ready:
+#
+# TF_GCP_VARS ?= -var-file=staging.tfvars
+#
+# tf-plan-gcp:
+# 	cd deploy/terraform/gcp && terraform init && terraform plan $(TF_GCP_VARS)
+#
+# tf-apply-gcp:
+# 	cd deploy/terraform/gcp && terraform init && terraform apply $(TF_GCP_VARS)
+#
+# tf-configure-kubectl-gcp:
+# 	eval "$$(cd deploy/terraform/gcp && terraform output -raw get_credentials_command)"
+#
+# tf-destroy-gcp:
+# 	cd deploy/terraform/gcp && terraform destroy $(TF_GCP_VARS)

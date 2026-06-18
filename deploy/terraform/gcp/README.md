@@ -1,4 +1,8 @@
-# GCP GKE — Terraform
+# GCP GKE — Terraform *(coming soon)*
+
+> **Status:** This module is scaffolded and documented but has not been tested
+> end-to-end. The Makefile targets are commented out in the root `Makefile`.
+> Contributions welcome.
 
 Provisions the GCP infrastructure for the Finance sample app.
 Application workloads are deployed separately using the standard Kubernetes
