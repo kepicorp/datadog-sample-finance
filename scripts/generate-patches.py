@@ -198,7 +198,7 @@ def uncomment_java_block(block):
             indent, rest = m.group(1), m.group(2)
             if (
                 re.match(
-                    r"^(import |Tracer |Span |tracer\.|span\.|if |statsd|StatsDClient|NonBlocking|    |\}|\))",
+                    r"^(import |Tracer |Span |tracer\.|span\.|if |statsd|StatsDClient|NonBlocking|compileOnly |implementation |    |\}|\))",
                     rest,
                 )
                 or rest.strip().startswith('"')
@@ -268,16 +268,51 @@ def patch_notification_service():
 
 
 def patch_batch_processor():
+    # Patch both the Java source (custom spans) and build.gradle (dependencies)
     print(
         "batch-processor/src/main/java/com/example/finance/batch/listener/DatadogJobListener.java"
     )
-    orig = "batch-processor/src/main/java/com/example/finance/batch/listener/DatadogJobListener.java"
-    content = read(orig)
-    patched = process_java(content)
-    tmp = write_tmp("djl.java", patched)
-    ok = make_patch(orig, tmp, "batch-processor")
-    if ok:
-        dry_run("batch-processor")
+    orig_java = "batch-processor/src/main/java/com/example/finance/batch/listener/DatadogJobListener.java"
+    content_java = read(orig_java)
+    patched_java = process_java(content_java)
+    tmp_java = write_tmp("djl.java", patched_java)
+
+    print("batch-processor/build.gradle")
+    orig_gradle = "batch-processor/build.gradle"
+    content_gradle = read(orig_gradle)
+    patched_gradle = process_java(content_gradle)  # same // banner style
+    tmp_gradle = write_tmp("build.gradle", patched_gradle)
+
+    # Combine both diffs into one patch file
+    import re as _re
+    import subprocess
+
+    def _diff(orig_rel, tmp_path):
+        orig_abs = str(ROOT / orig_rel)
+        r = subprocess.run(
+            ["diff", "-u", orig_abs, str(tmp_path)], capture_output=True, text=True
+        )
+        if not r.stdout.strip():
+            return ""
+        patch = r.stdout
+        patch = _re.sub(
+            r"^--- .*\n", f"--- a/{orig_rel}\n", patch, count=1, flags=_re.MULTILINE
+        )
+        patch = _re.sub(
+            r"^\+\+\+ .*\n", f"+++ b/{orig_rel}\n", patch, count=1, flags=_re.MULTILINE
+        )
+        return patch
+
+    combined = _diff(orig_java, tmp_java) + _diff(orig_gradle, tmp_gradle)
+    if not combined.strip():
+        print("  WARNING: no diff generated for batch-processor")
+        return
+
+    out = ROOT / "scripts" / "patches" / "batch-processor.patch"
+    out.write_text(combined)
+    lines = len(combined.splitlines())
+    print(f"  wrote scripts/patches/batch-processor.patch  ({lines} lines)")
+    dry_run("batch-processor")
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
