@@ -89,6 +89,11 @@ version:
 ## instrument: Uncomment all Datadog instrumentation blocks across all services.
 ##             Applies unified diff patches — fully reversible with make uninstrument.
 ##             See INSTRUMENTATION.md for what each patch enables.
+##
+##             After patching, redeploy:
+##               Local:  make build && make down && make up-dd
+##               EKS:    make build-ecr && make deploy-k8s-eks
+##                       kubectl rollout restart deployment -n finance
 instrument:
 	@echo "Applying instrumentation patches..."
 	@for p in scripts/patches/*.patch; do \
@@ -96,10 +101,17 @@ instrument:
 		echo "  $$svc"; \
 		patch -p1 --forward -s < $$p || true; \
 	done
-	@echo "Done. Rebuild and redeploy to activate: make build && make up-dd"
+	@echo ""
+	@echo "✓ Instrumentation enabled. Redeploy to activate:"
+	@echo "   Local: make build && make down && make up-dd"
+	@echo "   EKS:   make build-ecr && make deploy-k8s-eks"
 
 ## uninstrument: Re-comment all Datadog instrumentation blocks (reverse of make instrument).
 ##               Restores every file to its original commented-out state.
+##
+##               After patching, redeploy:
+##                 Local:  make build && make down && make up-dd
+##                 EKS:    make build-ecr && make deploy-k8s-eks
 uninstrument:
 	@echo "Reversing instrumentation patches..."
 	@for p in scripts/patches/*.patch; do \
@@ -107,7 +119,10 @@ uninstrument:
 		echo "  $$svc"; \
 		patch -p1 --reverse -s < $$p || true; \
 	done
-	@echo "Done. Rebuild and redeploy to deactivate: make build && make up-dd"
+	@echo ""
+	@echo "✓ Instrumentation disabled. Redeploy to deactivate:"
+	@echo "   Local: make build && make down && make up-dd"
+	@echo "   EKS:   make build-ecr && make deploy-k8s-eks"
 
 ## build: Build all service images for the LOCAL platform (use for Docker Compose / Colima).
 build:
