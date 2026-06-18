@@ -48,7 +48,7 @@
 #   # make tf-configure-kubectl-gcp
 #   # make deploy-k8s
 
-.PHONY: all build build-ecr up up-dd down down-dd logs health version test test-traffic restart clean-data reset-db deploy-k8s deploy-k8s-eks deploy-k8s-dd undeploy-k8s instrument uninstrument tf-plan-aws tf-apply-aws tf-configure-kubectl frontend-url tf-destroy-aws tf-force-destroy-aws tf-plan-dd tf-apply-dd tf-destroy-dd help
+.PHONY: all build build-ecr up up-dd down down-dd logs health version test test-traffic restart clean-data reset-db deploy-k8s deploy-k8s-eks deploy-k8s-dd undeploy-k8s instrument uninstrument tf-plan-aws tf-apply-aws tf-configure-kubectl frontend-url tf-destroy-aws tf-force-destroy-aws dd-secrets tf-plan-dd tf-apply-dd tf-destroy-dd help
 
 # Resolve DD_VERSION once so all targets share the same value.
 # Falls back to 'dev' when git is not available (e.g. in a bare CI image).
@@ -425,15 +425,35 @@ tf-destroy-aws:
 tf-force-destroy-aws:
 	bash scripts/aws-force-destroy.sh
 
+## dd-secrets: Print eval-ready export commands for TF_VAR_datadog_api_key and
+##             TF_VAR_datadog_app_key, sourced from AWS Secrets Manager.
+##             Usage: eval "$(make dd-secrets)"
+##             Requires: valid AWS SSO session (aws sso login --profile <profile>)
+.PHONY: dd-secrets
+dd-secrets:
+	@AWS_REGION=$$(grep '^aws_region' deploy/terraform/aws/staging.tfvars 2>/dev/null | sed 's/.*=[ ]*//' | tr -d '"' | tr -d ' '); \
+	if [ -z "$$AWS_REGION" ]; then AWS_REGION=eu-west-1; fi; \
+	AWS_PROF=$$(grep '^aws_profile' deploy/terraform/aws/staging.tfvars 2>/dev/null | sed 's/.*=[ ]*//' | tr -d '"' | tr -d ' '); \
+	PROFILE_FLAG=$$([ -n "$$AWS_PROF" ] && echo "--profile $$AWS_PROF" || echo ''); \
+	API_KEY=$$(aws secretsmanager get-secret-value \
+		--secret-id finance-app/staging/dd-api-key \
+		--query SecretString --output text \
+		--region $$AWS_REGION $$PROFILE_FLAG 2>/dev/null); \
+	APP_KEY=$$(aws secretsmanager get-secret-value \
+		--secret-id finance-app/staging/dd-app-key \
+		--query SecretString --output text \
+		--region $$AWS_REGION $$PROFILE_FLAG 2>/dev/null); \
+	if [ -z "$$API_KEY" ] || [ -z "$$APP_KEY" ]; then \
+		echo "# ERROR: could not fetch secrets from Secrets Manager (region=$$AWS_REGION profile=$$AWS_PROF)" >&2; \
+		echo "# Make sure your AWS SSO session is valid: aws sso login --profile $$AWS_PROF" >&2; \
+		exit 1; \
+	fi; \
+	echo "export TF_VAR_datadog_api_key=\"$$API_KEY\""; \
+	echo "export TF_VAR_datadog_app_key=\"$$APP_KEY\""
+
 ## tf-plan-dd: Plan the Datadog observability resources (index, pipeline, monitors, dashboard).
 ##             Requires TF_VAR_datadog_api_key and TF_VAR_datadog_app_key env vars.
-##             Source from Secrets Manager:
-##               export TF_VAR_datadog_api_key="$(aws secretsmanager get-secret-value \
-##                 --secret-id finance-app/staging/dd-api-key \
-##                 --query SecretString --output text --profile partner)"
-##               export TF_VAR_datadog_app_key="$(aws secretsmanager get-secret-value \
-##                 --secret-id finance-app/staging/dd-app-key \
-##                 --query SecretString --output text --profile partner)"
+##             Easiest way to set them: eval "$(make dd-secrets)"
 TF_DD_VARS ?= -var-file=staging.tfvars
 tf-plan-dd:
 	cd deploy/terraform/datadog && terraform init && terraform plan $(TF_DD_VARS)
