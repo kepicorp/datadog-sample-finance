@@ -1,0 +1,102 @@
+# =============================================================================
+# Finance Sample App — batch-processor (Java / Spring Batch)
+# =============================================================================
+# Nightly reconciliation and settlement batch job. Responsibilities:
+#   - End-of-day reconciliation (ReconciliationJob)
+#   - Monthly statement generation (StatementJob)
+#   - Reads/writes to the `ledger` PostgreSQL database
+#
+# This service exposes no HTTP port. It is scheduled internally by Spring Batch
+# (via @Scheduled or Spring Batch JobLauncher).
+#
+# Resource limits are intentionally higher than other services because batch
+# jobs are CPU and memory intensive during peak processing windows.
+#
+# NOTE: For production, consider running batch jobs as a Kubernetes CronJob
+# instead of a long-running Deployment, so pods are created on demand and
+# resources are released after each run.
+# =============================================================================
+
+# ── Deployment ────────────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: batch-processor
+  namespace: finance
+  labels:
+    app: batch-processor
+    component: service
+spec:
+  # Only one instance should run at a time to prevent duplicate batch runs.
+  replicas: 1
+  selector:
+    matchLabels:
+      app: batch-processor
+  template:
+    metadata:
+      labels:
+        app: batch-processor
+        component: service
+    spec:
+      # Wait for PostgreSQL before starting Spring Batch — it creates
+      # its metadata tables on first run (initialize-schema: always).
+      initContainers:
+        - name: wait-for-postgres
+          image: busybox:1.36
+          command:
+            [
+              "sh",
+              "-c",
+              'until nc -z postgres-ledger 5432; do echo "waiting for postgres..."; sleep 3; done',
+            ]
+      containers:
+        - name: batch-processor
+          image: finance-sample-app-batch-processor:latest
+          imagePullPolicy: IfNotPresent
+
+          # No ports — this is a batch job runner only.
+
+          env:
+            # ── Spring Boot DataSource ────────────────────────────────────────
+            # Spring Boot auto-configures a DataSource from these properties.
+            - name: SPRING_DATASOURCE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: app-config
+                  key: POSTGRES_URL
+            - name: SPRING_DATASOURCE_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: app-secrets
+                  key: postgres-user
+            - name: SPRING_DATASOURCE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: app-secrets
+                  key: postgres-password
+
+          # ── Health check ──────────────────────────────────────────────
+          # batch-processor is a non-web Spring Boot app (no HTTP server).
+          # Use a process-existence check instead of an HTTP probe.
+          # The JVM process name is 'app.jar' (from the Docker CMD).
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", 'pgrep -f "java" > /dev/null']
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            failureThreshold: 3
+
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", 'pgrep -f "java" > /dev/null']
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            failureThreshold: 3
+
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "512Mi"
+            limits:
+              cpu: "1000m"
+              memory: "1Gi"

@@ -1,0 +1,574 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# Finance Sample App — Docker Compose
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# Prerequisites:
+#   1. cp .env.example .env
+#   2. Edit .env — set a real DD_API_KEY and strong passwords
+#   3. Add .env to .gitignore (it is already listed in the repo's root .gitignore)
+#   4. docker compose up --build
+#
+# Services overview:
+#   postgres-ledger   — PostgreSQL 15 primary ledger database
+#   redis             — Session cache
+#   activemq-artemis  — JMS 2.0 message broker (STOMP + OpenWire + JMX)
+#   gateway-api       — Python/FastAPI public REST gateway        :8080
+#   account-service   — Java/Spring Boot account management       :8081
+#   transaction-service — Node.js/Express payment processing      :8082
+#   fraud-detection   — Python async fraud scoring (JMS consumer)
+#   notification-service — Go async alerts (JMS consumer)
+#   batch-processor   — Java/Spring Batch nightly reconciliation
+#   datadog-agent     — Datadog Agent 7 (APM, logs, DogStatsD, DSM)
+#
+# Datadog instrumentation is commented out throughout the application code.
+# The app runs cleanly without a DD_API_KEY. Set it in .env only when you are
+# ready to activate telemetry (Learning Progression Step 1).
+#
+# Docs: https://docs.datadoghq.com/containers/docker/
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: finance-sample-app
+
+# ── Shared network ────────────────────────────────────────────────────────────
+networks:
+  finance-net:
+    driver: bridge
+
+# ── Named volumes ─────────────────────────────────────────────────────────────
+volumes:
+  postgres-data:
+  redis-data:
+  artemis-data:
+  datadog-run: # UDS socket directory shared between app containers and Agent
+
+# ═══════════════════════════════════════════════════════════════════════════════
+services:
+  # ── Infrastructure ───────────────────────────────────────────────────────────
+
+  # ── Identity Provider (Keycloak) ─────────────────────────────────────────────
+  #
+  # Keycloak runs in dev mode (embedded H2, no TLS) — suitable for local
+  # development and learning only. For staging/production use a dedicated
+  # PostgreSQL database and an HTTPS ingress.
+  #
+  # Admin console: http://localhost:8089
+  # Finance realm OIDC discovery: http://localhost:8089/realms/finance/.well-known/openid-configuration
+  # SAML IdP metadata (give to Datadog during SSO setup):
+  #   http://localhost:8089/realms/finance/protocol/saml/descriptor
+  #
+  # Docs: https://www.keycloak.org/server/containers
+  # Datadog SAML SSO: https://docs.datadoghq.com/account_management/saml/
+  # ─────────────────────────────────────────────────────────────────────────────
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0
+    container_name: keycloak
+    restart: unless-stopped
+    command: start-dev --import-realm
+    networks:
+      - finance-net
+    environment:
+      KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN:-admin}
+      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin}
+      # Dev mode uses embedded H2 — no external DB config needed.
+      # For production, switch KC_DB to 'postgres' and add KC_DB_URL / KC_DB_USERNAME / KC_DB_PASSWORD.
+      KC_HTTP_ENABLED: "true"
+      KC_HOSTNAME_STRICT: "false"
+      KC_HOSTNAME_STRICT_HTTPS: "false"
+      KC_LOG_LEVEL: INFO
+    ports:
+      - "8089:8080" # Admin console + realm endpoints (host:container)
+    volumes:
+      # Realm export auto-imported on first start.
+      # H2 state is kept inside the container (ephemeral) — fine for dev.
+      # In production use KC_DB=postgres and a persistent PVC instead.
+      - ../../identity-provider/realm-export:/opt/keycloak/data/import:ro
+    healthcheck:
+      # curl/wget are not present in the UBI-based Keycloak image;
+      # use bash's built-in /dev/tcp to check that the HTTP port is open.
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/8080"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 90s
+    labels:
+      com.datadoghq.tags.service: "keycloak"
+      com.datadoghq.tags.env: "${DD_ENV:-staging}"
+      com.datadoghq.tags.version: "26.0"
+      # com.datadoghq.ad.logs: '[{"source":"keycloak","service":"keycloak"}]'
+
+  postgres-ledger:
+    image: postgres:15
+    container_name: postgres-ledger
+    restart: unless-stopped
+    networks:
+      - finance-net
+    environment:
+      POSTGRES_DB: ledger
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    # Enable pg_stat_statements for Database Monitoring (DBM).
+    # track=all captures nested statements inside stored procedures / functions —
+    # important for Finance workloads that use PL/pgSQL.
+    # Docs: https://docs.datadoghq.com/database_monitoring/setup_postgres/selfhosted/
+    command: >
+      postgres
+        -c shared_preload_libraries=pg_stat_statements
+        -c pg_stat_statements.track=all
+        -c pg_stat_statements.max=10000
+        -c track_activity_query_size=4096
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ledger"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    labels:
+      com.datadoghq.ad.check_names: '["postgres"]'
+      # ── DATADOG AUTO-DISCOVERY (commented out) ────────────────────────
+      # Uncomment the ad.instances label below after completing DBM setup
+      # (Learning Progression Step 9). The datadog user and pg_stat_statements
+      # extension must exist in PostgreSQL first — see:
+      # datadog-agent/conf.d/postgres.d/conf.yaml for the full DBM config.
+      #
+      # com.datadoghq.ad.instances: >-
+      #   [{"host":"postgres-ledger","port":5432,"username":"datadog",
+      #     "password":"%%env_DATADOG_DBM_PASSWORD%%","dbm":true,
+      #     "database":"ledger","tags":["db:ledger","env:%%env_DD_ENV%%"]}]
+      # ─────────────────────────────────────────────────────────────────────
+
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    restart: unless-stopped
+    networks:
+      - finance-net
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  activemq-artemis:
+    image: apache/activemq-artemis:latest
+    container_name: activemq-artemis
+    restart: unless-stopped
+    networks:
+      - finance-net
+    environment:
+      ARTEMIS_USER: ${ARTEMIS_USER}
+      ARTEMIS_PASSWORD: ${ARTEMIS_PASSWORD}
+      # Expose JMX so the Datadog ActiveMQ check can collect broker metrics.
+      # Docs: https://docs.datadoghq.com/integrations/activemq/
+      JAVA_ARGS: >-
+        -Dcom.sun.jndi.rmiURLParsing=legacy
+        -Dcom.sun.management.jmxremote=true
+        -Dcom.sun.management.jmxremote.port=1099
+        -Dcom.sun.management.jmxremote.rmi.port=1099
+        -Dcom.sun.management.jmxremote.ssl=false
+        -Dcom.sun.management.jmxremote.authenticate=false
+        -Djava.rmi.server.hostname=activemq-artemis
+    ports:
+      - "61616:61616" # OpenWire (JMS) + STOMP multiplexed
+      - "61613:61613" # STOMP (used by Python stomp.py clients)
+      - "8161:8161" # ActiveMQ management web UI (admin/admin by default)
+      - "1099:1099" # JMX — required for Datadog ActiveMQ check
+    volumes:
+      - artemis-data:/var/lib/artemis-instance
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8161/console/ || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 40s
+
+  # ── Application services ──────────────────────────────────────────────────────
+
+  # ── Frontend dashboard ─────────────────────────────────────────────────────
+  # nginx serves frontend-stub/index.html on :3000 and reverse-proxies:
+  #   /v1/         → gateway-api:8080  (Bearer JWT required)
+  #   /internal/accounts → account-service:8081 (no auth)
+  # Open http://localhost:3000 after make up.
+  frontend:
+    image: nginx:1.25-alpine
+    container_name: frontend
+    restart: unless-stopped
+    networks:
+      - finance-net
+    ports:
+      - "3000:80"
+    volumes:
+      - ../../frontend-stub/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ../../frontend-stub/index.html:/usr/share/nginx/html/index.html:ro
+    depends_on:
+      - gateway-api
+      - account-service
+      - keycloak
+    labels:
+      com.datadoghq.tags.service: "frontend"
+      com.datadoghq.tags.env: "${DD_ENV:-staging}"
+      # com.datadoghq.ad.logs: '[{"source":"nginx","service":"frontend"}]'
+
+  gateway-api:
+    build:
+      context: ../../gateway-api
+      dockerfile: Dockerfile
+    container_name: gateway-api
+    restart: unless-stopped
+    networks:
+      - finance-net
+    ports:
+      - "8080:8080"
+    environment:
+      # ── Application config ─────────────────────────────────────────────
+      ACCOUNT_SERVICE_URL: http://account-service:8081
+      TRANSACTION_SERVICE_URL: http://transaction-service:8082
+      REDIS_URL: redis://redis:6379
+      # ── KEYCLOAK OIDC ───────────────────────────────────────────────────────
+      # JWT validation is active — gateway-api verifies every Bearer token
+      # against Keycloak's JWKS endpoint before processing the request.
+      KEYCLOAK_ISSUER: http://keycloak:8080/realms/finance
+      KEYCLOAK_JWKS_URI: http://keycloak:8080/realms/finance/protocol/openid-connect/certs
+      KEYCLOAK_CLIENT_SECRET: ${KEYCLOAK_CLIENT_SECRET:-REPLACE_WITH_SECRET}
+      # ── UNIFIED SERVICE TAGGING ────────────────────────────────────────
+      # https://docs.datadoghq.com/getting_started/tagging/unified_service_tagging/
+      DD_SERVICE: gateway-api
+      DD_ENV: ${DD_ENV:-staging}
+      DD_VERSION: ${DD_VERSION:-1.0.0}
+      # ── DATADOG AGENT CONNECTION ───────────────────────────────────────
+      # DD_AGENT_HOST routes traces and DogStatsD metrics to the Agent container.
+      # Use the UDS socket path below for lower-latency comms in production.
+      DD_AGENT_HOST: datadog-agent
+      DD_TRACE_AGENT_PORT: 8126
+      DD_DOGSTATSD_PORT: 8125
+      # DD_TRACE_AGENT_URL: unix:///var/run/datadog/apm.socket   # UDS alternative
+      # DD_DOGSTATSD_SOCKET: /var/run/datadog/dsd.socket          # UDS alternative
+      DD_RUNTIME_METRICS_ENABLED: "true"
+      # ── APM SAMPLING (Learning Progression Step 3) ─────────────────────
+      # 100% sampling in dev/staging; lower for high-traffic production.
+      # DD_TRACE_SAMPLE_RATE: "1.0"
+    volumes:
+      - datadog-run:/var/run/datadog # UDS socket (used when DD_DOGSTATSD_SOCKET is set)
+    depends_on:
+      keycloak:
+        condition: service_healthy
+      datadog-agent:
+        condition: service_started
+      postgres-ledger:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    labels:
+      com.datadoghq.tags.service: "gateway-api"
+      com.datadoghq.tags.env: "${DD_ENV:-staging}"
+      com.datadoghq.tags.version: "${DD_VERSION:-1.0.0}"
+      # ── LOG COLLECTION (Learning Progression Step 4) ──────────────────
+      # com.datadoghq.ad.logs: '[{"source":"python","service":"gateway-api"}]'
+
+  account-service:
+    build:
+      context: ../../account-service
+      dockerfile: Dockerfile
+    container_name: account-service
+    restart: unless-stopped
+    networks:
+      - finance-net
+    ports:
+      - "8081:8081"
+    environment:
+      # ── Application config ─────────────────────────────────────────────
+      POSTGRES_URL: jdbc:postgresql://postgres-ledger:5432/ledger
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      ACTIVEMQ_URL: tcp://activemq-artemis:61616
+      ACTIVEMQ_USER: ${ARTEMIS_USER}
+      ACTIVEMQ_PASSWORD: ${ARTEMIS_PASSWORD}
+      # ── UNIFIED SERVICE TAGGING ────────────────────────────────────────
+      DD_SERVICE: account-service
+      DD_ENV: ${DD_ENV:-staging}
+      DD_VERSION: ${DD_VERSION:-1.0.0}
+      # ── DATADOG AGENT CONNECTION ───────────────────────────────────────
+      DD_AGENT_HOST: datadog-agent
+      DD_TRACE_AGENT_PORT: 8126
+      DD_DOGSTATSD_PORT: 8125
+      DD_RUNTIME_METRICS_ENABLED: "true"
+      # ── JAVA AGENT (Learning Progression Step 3) ───────────────────────
+      # Uncomment JAVA_TOOL_OPTIONS to attach dd-java-agent at JVM startup.
+      # The agent JAR must be present in the container image at /dd-java-agent.jar.
+      # JAVA_TOOL_OPTIONS: >-
+      #   -javaagent:/dd-java-agent.jar
+      #   -Ddd.logs.injection=true
+      #   -Ddd.profiling.enabled=false
+      #   -Ddd.data.jobs.enabled=false
+      # ── APM SAMPLING ───────────────────────────────────────────────────
+      # DD_TRACE_SAMPLE_RATE: "1.0"
+    volumes:
+      - datadog-run:/var/run/datadog
+    depends_on:
+      postgres-ledger:
+        condition: service_healthy
+      activemq-artemis:
+        condition: service_healthy
+      datadog-agent:
+        condition: service_started
+    labels:
+      com.datadoghq.tags.service: "account-service"
+      com.datadoghq.tags.env: "${DD_ENV:-staging}"
+      com.datadoghq.tags.version: "${DD_VERSION:-1.0.0}"
+      # com.datadoghq.ad.logs: '[{"source":"java","service":"account-service"}]'
+
+  transaction-service:
+    build:
+      context: ../../transaction-service
+      dockerfile: Dockerfile
+    container_name: transaction-service
+    restart: unless-stopped
+    networks:
+      - finance-net
+    ports:
+      - "8082:8082"
+    environment:
+      # ── Application config ─────────────────────────────────────────────
+      ACTIVEMQ_URL: tcp://activemq-artemis:61616
+      ACTIVEMQ_STOMP_URL: stomp://activemq-artemis:61613
+      ACTIVEMQ_USER: ${ARTEMIS_USER}
+      ACTIVEMQ_PASSWORD: ${ARTEMIS_PASSWORD}
+      ACCOUNT_SERVICE_URL: http://account-service:8081
+      REDIS_URL: redis://redis:6379
+      # ── UNIFIED SERVICE TAGGING ────────────────────────────────────────
+      DD_SERVICE: transaction-service
+      DD_ENV: ${DD_ENV:-staging}
+      DD_VERSION: ${DD_VERSION:-1.0.0}
+      # ── DATADOG AGENT CONNECTION ───────────────────────────────────────
+      DD_AGENT_HOST: datadog-agent
+      DD_TRACE_AGENT_PORT: 8126
+      DD_DOGSTATSD_PORT: 8125
+      DD_RUNTIME_METRICS_ENABLED: "true"
+      # DD_TRACE_SAMPLE_RATE: "1.0"
+    volumes:
+      - datadog-run:/var/run/datadog
+    depends_on:
+      activemq-artemis:
+        condition: service_healthy
+      datadog-agent:
+        condition: service_started
+    labels:
+      com.datadoghq.tags.service: "transaction-service"
+      com.datadoghq.tags.env: "${DD_ENV:-staging}"
+      com.datadoghq.tags.version: "${DD_VERSION:-1.0.0}"
+      # com.datadoghq.ad.logs: '[{"source":"nodejs","service":"transaction-service"}]'
+
+  fraud-detection:
+    build:
+      context: ../../fraud-detection
+      dockerfile: Dockerfile
+    container_name: fraud-detection
+    restart: unless-stopped
+    networks:
+      - finance-net
+    environment:
+      # ── Application config ─────────────────────────────────────────────
+      # fraud-detection listens on fraud.score.queue via STOMP
+      ACTIVEMQ_STOMP_URL: stomp://activemq-artemis:61613
+      ACTIVEMQ_USER: ${ARTEMIS_USER}
+      ACTIVEMQ_PASSWORD: ${ARTEMIS_PASSWORD}
+      FRAUD_QUEUE: fraud.score.queue
+      # ── UNIFIED SERVICE TAGGING ────────────────────────────────────────
+      DD_SERVICE: fraud-detection
+      DD_ENV: ${DD_ENV:-staging}
+      DD_VERSION: ${DD_VERSION:-1.0.0}
+      # ── DATADOG AGENT CONNECTION ───────────────────────────────────────
+      DD_AGENT_HOST: datadog-agent
+      DD_TRACE_AGENT_PORT: 8126
+      DD_DOGSTATSD_PORT: 8125
+      DD_RUNTIME_METRICS_ENABLED: "true"
+      # ── DATA STREAMS MONITORING (Learning Progression Step 10) ─────────
+      # DD_DATA_STREAMS_ENABLED: "true"
+      # DD_TRACE_SAMPLE_RATE: "1.0"
+    volumes:
+      - datadog-run:/var/run/datadog
+    depends_on:
+      activemq-artemis:
+        condition: service_healthy
+      datadog-agent:
+        condition: service_started
+    labels:
+      com.datadoghq.tags.service: "fraud-detection"
+      com.datadoghq.tags.env: "${DD_ENV:-staging}"
+      com.datadoghq.tags.version: "${DD_VERSION:-1.0.0}"
+      # com.datadoghq.ad.logs: '[{"source":"python","service":"fraud-detection"}]'
+
+  notification-service:
+    build:
+      context: ../../notification-service
+      dockerfile: Dockerfile
+    container_name: notification-service
+    restart: unless-stopped
+    networks:
+      - finance-net
+    environment:
+      # ── Application config ─────────────────────────────────────────────
+      # notification-service listens on alert.queue via STOMP
+      ACTIVEMQ_STOMP_URL: stomp://activemq-artemis:61613
+      ACTIVEMQ_USER: ${ARTEMIS_USER}
+      ACTIVEMQ_PASSWORD: ${ARTEMIS_PASSWORD}
+      ALERT_QUEUE: alert.queue
+      # ── UNIFIED SERVICE TAGGING ────────────────────────────────────────
+      DD_SERVICE: notification-service
+      DD_ENV: ${DD_ENV:-staging}
+      DD_VERSION: ${DD_VERSION:-1.0.0}
+      # ── DATADOG AGENT CONNECTION ───────────────────────────────────────
+      DD_AGENT_HOST: datadog-agent
+      DD_TRACE_AGENT_PORT: 8126
+      DD_DOGSTATSD_PORT: 8125
+      DD_RUNTIME_METRICS_ENABLED: "true"
+      # ── DATA STREAMS MONITORING (Learning Progression Step 10) ─────────
+      # DD_DATA_STREAMS_ENABLED: "true"
+      # DD_TRACE_SAMPLE_RATE: "1.0"
+    volumes:
+      - datadog-run:/var/run/datadog
+    depends_on:
+      activemq-artemis:
+        condition: service_healthy
+      datadog-agent:
+        condition: service_started
+    labels:
+      com.datadoghq.tags.service: "notification-service"
+      com.datadoghq.tags.env: "${DD_ENV:-staging}"
+      com.datadoghq.tags.version: "${DD_VERSION:-1.0.0}"
+      # com.datadoghq.ad.logs: '[{"source":"go","service":"notification-service"}]'
+
+  batch-processor:
+    build:
+      context: ../../batch-processor
+      dockerfile: Dockerfile
+    container_name: batch-processor
+    restart: unless-stopped
+    networks:
+      - finance-net
+    environment:
+      # ── Application config ─────────────────────────────────────────────
+      # Spring Boot reads SPRING_DATASOURCE_* — not the generic POSTGRES_* names
+      # used by account-service and transaction-service.
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres-ledger:5432/ledger
+      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER}
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD}
+      # ── UNIFIED SERVICE TAGGING ────────────────────────────────────────
+      DD_SERVICE: batch-processor
+      DD_ENV: ${DD_ENV:-staging}
+      DD_VERSION: ${DD_VERSION:-1.0.0}
+      # ── DATADOG AGENT CONNECTION ───────────────────────────────────────
+      DD_AGENT_HOST: datadog-agent
+      DD_TRACE_AGENT_PORT: 8126
+      DD_DOGSTATSD_PORT: 8125
+      # ── JAVA AGENT + DATA JOBS MONITORING (Learning Progression Step 11)
+      # Sample every batch run — jobs run infrequently so 100% is appropriate.
+      # JAVA_TOOL_OPTIONS: >-
+      #   -javaagent:/dd-java-agent.jar
+      #   -Ddd.logs.injection=true
+      #   -Ddd.data.jobs.enabled=true
+      #   -Ddd.profiling.enabled=true
+      # DD_TRACE_SAMPLE_RATE: "1.0"
+    volumes:
+      - datadog-run:/var/run/datadog
+    depends_on:
+      postgres-ledger:
+        condition: service_healthy
+      datadog-agent:
+        condition: service_started
+    labels:
+      com.datadoghq.tags.service: "batch-processor"
+      com.datadoghq.tags.env: "${DD_ENV:-staging}"
+      com.datadoghq.tags.version: "${DD_VERSION:-1.0.0}"
+      # com.datadoghq.ad.logs: '[{"source":"java","service":"batch-processor"}]'
+
+  # ── Datadog Agent ─────────────────────────────────────────────────────────
+
+  datadog-agent:
+    image: datadog/agent:7
+    container_name: datadog-agent
+    restart: unless-stopped
+    networks:
+      - finance-net
+    environment:
+      # ┌─────────────────────────────────────────────────────────────────────┐
+      # │  SECURITY: DD_API_KEY MUST come from the .env file.                 │
+      # │                                                                     │
+      # │  NEVER hardcode your Datadog API key here or commit it to git.      │
+      # │  Steps:                                                             │
+      # │    1. cp .env.example .env                                          │
+      # │    2. Edit .env and set: DD_API_KEY=<your key from                  │
+      # │       https://app.datadoghq.com/organization-settings/api-keys>     │
+      # │    3. Confirm .env is in .gitignore before running compose up.      │
+      # │                                                                     │
+      # │  The line below is intentionally commented out — you must opt in.   │
+      # │  Uncomment it as part of Learning Progression Step 1.               │
+      # └─────────────────────────────────────────────────────────────────────┘
+      # DD_API_KEY: ${DD_API_KEY}
+
+      DD_SITE: ${DD_SITE:-datadoghq.com}
+
+      # ── APM ────────────────────────────────────────────────────────────────
+      # Receives traces from all application containers on port 8126.
+      # Docs: https://docs.datadoghq.com/tracing/
+      DD_APM_ENABLED: "true"
+      DD_APM_NON_LOCAL_TRAFFIC: "true"
+
+      # ── Log collection ─────────────────────────────────────────────────────
+      # Collects stdout/stderr from all containers. Per-container source and
+      # service are set via com.datadoghq.ad.logs labels on each service.
+      # Docs: https://docs.datadoghq.com/logs/log_collection/docker/
+      DD_LOGS_ENABLED: "true"
+      DD_LOGS_CONFIG_CONTAINER_COLLECT_ALL: "true"
+      DD_LOGS_CONFIG_AUTO_MULTI_LINE_DETECTION: "true"
+
+      # ── Process Agent ──────────────────────────────────────────────────────
+      # Enables live process monitoring and container map in Datadog UI.
+      DD_PROCESS_AGENT_ENABLED: "true"
+
+      # ── Data Streams Monitoring ────────────────────────────────────────────
+      # Enables pipeline visibility for JMS / ActiveMQ Artemis flows.
+      # Docs: https://docs.datadoghq.com/data_streams/
+      DD_DATA_STREAMS_ENABLED: "true"
+
+      # ── DogStatsD ──────────────────────────────────────────────────────────
+      # Accepts custom metrics from all containers via UDP :8125 or UDS socket.
+      # Docs: https://docs.datadoghq.com/developers/dogstatsd/
+      DD_DOGSTATSD_NON_LOCAL_TRAFFIC: "true"
+      DD_DOGSTATSD_SOCKET: /var/run/datadog/dsd.socket
+
+      # ── Unified Service Tagging — Agent-level defaults ─────────────────────
+      DD_ENV: ${DD_ENV:-staging}
+
+    volumes:
+      # Docker socket — required for container log collection and auto-discovery
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # Host proc and cgroup — required for process and container metrics
+      - /proc/:/host/proc/:ro
+      - /sys/fs/cgroup/:/host/sys/fs/cgroup:ro
+      # UDS socket directory — shared with app containers for low-latency comms.
+      # App containers must mount datadog-run at /var/run/datadog and set:
+      #   DD_TRACE_AGENT_URL: unix:///var/run/datadog/apm.socket
+      #   DD_DOGSTATSD_SOCKET: /var/run/datadog/dsd.socket
+      - datadog-run:/var/run/datadog
+      # Agent integration configs (postgres.d, activemq.d) — mounted read-only.
+      # Uncomment the relevant conf.yaml files as you progress through the steps.
+      - ./datadog-agent/conf.d:/etc/datadog-agent/conf.d:ro
+    ports:
+      - "8125:8125/udp" # DogStatsD UDP — custom metrics from app containers
+      - "8126:8126" # APM trace receiver
+    healthcheck:
+      test: ["CMD", "agent", "health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s

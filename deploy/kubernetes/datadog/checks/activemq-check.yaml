@@ -1,0 +1,98 @@
+# ── DATADOG ACTIVEMQ AGENT CHECK ConfigMap ────────────────────────────────────
+# This ConfigMap is mounted into the Datadog Agent DaemonSet at:
+#   /etc/datadog-agent/conf.d/activemq.d/conf.yaml
+#
+# Mount it via the DatadogAgent CRD override or Helm values:
+#
+#   agents:
+#     volumes:
+#       - name: activemq-check-config
+#         configMap:
+#           name: datadog-activemq-check
+#     volumeMounts:
+#       - name: activemq-check-config
+#         mountPath: /etc/datadog-agent/conf.d/activemq.d/conf.yaml
+#         subPath: conf.yaml
+#
+# Prerequisites:
+#   - JMX port (1099) must be exposed on the ActiveMQ Artemis pod/service.
+#   - A dedicated 'datadog' JMX user should be configured in ActiveMQ.
+#
+# Finance use case: monitor queue depth and consumer count for
+#   fraud.score.queue and alert.queue — trigger alerts on consumer lag.
+#
+# Docs: https://docs.datadoghq.com/integrations/activemq/
+# Docs: https://docs.datadoghq.com/data_streams/   (complement with DSM)
+# ─────────────────────────────────────────────────────────────────────────────
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: datadog-activemq-check
+  namespace: datadog
+  labels:
+    app.kubernetes.io/name: datadog-activemq-check
+    app.kubernetes.io/part-of: finance-sample-app
+data:
+  conf.yaml: |
+    # ── DATADOG ACTIVEMQ CHECK CONFIG ───────────────────────────────────────
+    # Uncomment the block below to enable ActiveMQ broker metrics collection.
+    # Collects: queue depth, consumer count, producer count, memory usage,
+    #           enqueue/dequeue rates — all tagged by queue name.
+    # Docs: https://docs.datadoghq.com/integrations/activemq/
+
+    # init_config:
+    #   is_jmx: true
+    #   collect_default_metrics: true
+
+    # instances:
+    #   - host: activemq-artemis        # K8s Service name for the Artemis broker
+    #     port: 1099                    # JMX RMI port — must be exposed in the pod spec
+    #     user: datadog                 # Dedicated read-only JMX monitoring user
+    #     # ── PASSWORD from K8s Secret ────────────────────────────────────
+    #     # Reference via Agent environment variable injection — never hardcode.
+    #     # password: ENC[k8s_secret,datadog-secret,activemq-jmx-password]
+
+    #     # ── Metric collection ─────────────────────────────────────────────
+    #     # Default JMX beans collected automatically (when collect_default_metrics: true):
+    #     #   - activemq.queue.size           (queue depth)
+    #     #   - activemq.queue.consumer_count
+    #     #   - activemq.queue.producer_count
+    #     #   - activemq.queue.enqueue_count
+    #     #   - activemq.queue.dequeue_count
+    #     #   - activemq.broker.memory_percent_usage
+    #     #   - activemq.broker.store_percent_usage
+
+    #     # ── Custom JMX beans for Artemis-specific metrics ─────────────────
+    #     # Artemis exposes queues under a different JMX domain than Classic ActiveMQ.
+    #     # Adjust the object_name pattern if using Artemis (broker 2.x):
+    #     conf:
+    #       - include:
+    #           domain: org.apache.activemq.artemis
+    #           destinationType: Queue
+    #           attribute:
+    #             MessageCount:
+    #               alias: activemq.artemis.queue.message_count
+    #               metric_type: gauge
+    #             ConsumerCount:
+    #               alias: activemq.artemis.queue.consumer_count
+    #               metric_type: gauge
+    #             MessagesAdded:
+    #               alias: activemq.artemis.queue.messages_added
+    #               metric_type: rate
+    #             MessagesAcknowledged:
+    #               alias: activemq.artemis.queue.messages_acknowledged
+    #               metric_type: rate
+    #           bean_regex: >
+    #             org.apache.activemq.artemis:broker=".*",component=addresses,
+    #             address="(fraud\.score\.queue|alert\.queue|payment\.events)",
+    #             subcomponent=queues,routing-type="anycast",queue=".*"
+
+    #     # ── Tagging ────────────────────────────────────────────────────────
+    #     # ⚠ HIGH CARDINALITY WARNING: do not tag with message IDs or content.
+    #     # Tag with queue name only (bounded set).
+    #     tags:
+    #       - "broker:activemq-artemis"
+    #       - "env:staging"
+    #       - "service:activemq-artemis"
+    # ────────────────────────────────────────────────────────────────────────

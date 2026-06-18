@@ -1,0 +1,149 @@
+# ── DATADOG OPERATOR — DatadogAgent CRD ──────────────────────────────────────
+# apiVersion: datadoghq.com/v2alpha1
+# Requires the Datadog Operator to be installed first:
+#   helm repo add datadog https://helm.datadoghq.com
+#   helm install datadog-operator datadog/datadog-operator
+#
+# Docs: https://github.com/DataDog/datadog-operator
+# Docs: https://docs.datadoghq.com/containers/kubernetes/
+# ─────────────────────────────────────────────────────────────────────────────
+
+apiVersion: datadoghq.com/v2alpha1
+kind: DatadogAgent
+metadata:
+  name: datadog
+  namespace: datadog
+  labels:
+    app.kubernetes.io/name: datadog-agent
+    app.kubernetes.io/part-of: finance-sample-app
+spec:
+  # ── GLOBAL SETTINGS ────────────────────────────────────────────────────────
+  global:
+    site: datadoghq.com # Change to datadoghq.eu for EU region
+
+    # ── CREDENTIALS (never inline the API key) ───────────────────────────────
+    # The API key is read from a K8s Secret created separately:
+    #   kubectl create secret generic datadog-secret \
+    #     --from-literal api-key=<YOUR_DD_API_KEY> \
+    #     --namespace datadog
+    # Docs: https://docs.datadoghq.com/containers/kubernetes/installation/
+    credentials:
+      apiSecret:
+        secretName: datadog-secret # Name of the K8s Secret
+        keyName: api-key # Key inside the Secret
+
+    # ── UNIFIED SERVICE TAGGING ───────────────────────────────────────────────
+    # These tags propagate to ALL telemetry: traces, logs, metrics, profiles.
+    # Docs: https://docs.datadoghq.com/getting_started/tagging/unified_service_tagging/
+    tags:
+      - env:staging
+      - app:finance-sample-app
+
+    # ── KUBELET TLS ───────────────────────────────────────────────────────────
+    kubelet:
+      tlsVerify: false # Set to true in production with proper cert
+
+  # ── FEATURES ──────────────────────────────────────────────────────────────
+  features:
+    # ── APM / DISTRIBUTED TRACING ─────────────────────────────────────────────
+    # Enables the trace agent. Application pods send traces to the Agent via
+    # DD_AGENT_HOST (set to status.hostIP via downward API in each pod spec).
+    # Docs: https://docs.datadoghq.com/tracing/
+    apm:
+      enabled: true
+      hostPortConfig:
+        enabled: true
+        hostPort: 8126 # Default APM port
+
+    # ── LOG COLLECTION ─────────────────────────────────────────────────────────
+    # Collects container stdout/stderr logs and forwards them to Datadog.
+    # containerCollectAll: true collects from ALL containers — restrict per-pod
+    # using the ad.datadoghq.com/<container>.logs annotation when needed.
+    # Docs: https://docs.datadoghq.com/logs/log_collection/
+    logCollection:
+      enabled: true
+      containerCollectAll: true
+      containerLogsPath: /var/lib/docker/containers
+
+    # ── PROCESS DISCOVERY ─────────────────────────────────────────────────────
+    # Enables the process agent for Live Processes and Network Performance
+    # Monitoring visibility.
+    liveProcessCollection:
+      enabled: true
+
+    # ── DATA STREAMS MONITORING (DSM) ──────────────────────────────────────────
+    # DSM is enabled automatically when APM is enabled in Operator >= 1.0.
+    # No separate feature flag needed.
+    # Docs: https://docs.datadoghq.com/data_streams/
+
+    # ── DOGSTATSD (CUSTOM METRICS) ─────────────────────────────────────────────
+    # Receives custom DogStatsD metrics from application pods.
+    # Finance metrics: finance.payment.initiated, finance.fraud.score, etc.
+    # Applications should use DD_DOGSTATSD_URL=udp://$(DD_AGENT_HOST):8125
+    # Docs: https://docs.datadoghq.com/developers/dogstatsd/
+    dogstatsd:
+      hostPortConfig:
+        enabled: true
+        hostPort: 8125
+
+    # ── LIVE CONTAINER MONITORING ──────────────────────────────────────────────
+    liveContainerCollection:
+      enabled: true
+
+    # ── ORCHESTRATOR EXPLORER ──────────────────────────────────────────────────
+    # Provides K8s resource visibility (pods, deployments, nodes) in the UI.
+    orchestratorExplorer:
+      enabled: true
+
+    # ── CONTINUOUS PROFILER ───────────────────────────────────────────────────
+    # Agent-side profiler intake. Per-service profiler must also be enabled:
+    #   Python: DD_PROFILING_ENABLED=true
+    #   Java:   -Ddd.profiling.enabled=true
+    #   Go:     profiler.Start() call in code
+    # Docs: https://docs.datadoghq.com/profiler/
+    #
+    # NOTE: The profiler is currently enabled at the Agent level.
+    # Each service must still opt in via its own env var / JVM flag.
+
+    # ── CLUSTER CHECKS ────────────────────────────────────────────────────────
+    # Required for postgres.d and activemq.d ConfigMap-mounted checks.
+    clusterChecks:
+      enabled: true
+
+    # ── ADMISSION CONTROLLER ─────────────────────────────────────────────────
+    # Auto-injects DD_AGENT_HOST, DD_TRACE_AGENT_URL, DD_ENTITY_ID into
+    # pods annotated with admission.datadoghq.com/enabled: "true".
+    # Docs: https://docs.datadoghq.com/containers/cluster_agent/admission_controller/
+    admissionController:
+      enabled: true
+      mutateUnlabelled: false # Only inject into annotated pods
+
+  # Cluster Agent replicas via override (Operator v2alpha1 >= 1.0)
+  override:
+    clusterAgent:
+      replicas: 2 # HA for production
+
+
+  # ── OVERRIDE PER COMPONENT (optional) ────────────────────────────────────
+  # Use overrides to set resource limits, node selectors, tolerations, etc.
+  # on the Node Agent, Cluster Agent, or Cluster Checks Runner.
+  #
+  # override:
+  #   nodeAgent:
+  #     tolerations:
+  #       - operator: Exists
+  #     resources:
+  #       requests:
+  #         cpu: 200m
+  #         memory: 256Mi
+  #       limits:
+  #         cpu: 400m
+  #         memory: 512Mi
+  #   clusterAgent:
+  #     resources:
+  #       requests:
+  #         cpu: 100m
+  #         memory: 128Mi
+  #       limits:
+  #         cpu: 200m
+  #         memory: 256Mi

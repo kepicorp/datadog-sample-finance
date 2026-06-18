@@ -1,0 +1,94 @@
+# =============================================================================
+# Finance Sample App — fraud-detection (Python)
+# =============================================================================
+# Async fraud-scoring consumer. Responsibilities:
+#   - Listens on `fraud.score.queue` via STOMP (ActiveMQ Artemis)
+#   - Scores transactions and emits results back to the broker
+#
+# This service exposes no HTTP port — it is a pure message consumer.
+# There is therefore no Service resource in this file.
+#
+# Health check strategy: exec into the container and verify the STOMP
+# connection process is running, as there is no HTTP endpoint.
+# =============================================================================
+
+# ── Deployment ────────────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fraud-detection
+  namespace: finance
+  labels:
+    app: fraud-detection
+    component: service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: fraud-detection
+  template:
+    metadata:
+      labels:
+        app: fraud-detection
+        component: service
+    spec:
+      # fraud-detection exits after connection failures if ActiveMQ is not reachable.
+      # The init container ensures it only starts once the STOMP port is open.
+      initContainers:
+        - name: wait-for-activemq
+          image: busybox:1.36
+          command:
+            [
+              "sh",
+              "-c",
+              'until nc -z activemq-artemis 61613; do echo "waiting for activemq stomp..."; sleep 3; done',
+            ]
+      containers:
+        - name: fraud-detection
+          image: finance-sample-app-fraud-detection:latest
+          imagePullPolicy: IfNotPresent
+
+          # No ports — this is a JMS consumer only.
+
+          env:
+            # ── ActiveMQ (STOMP) ────────────────────────────────────────────────
+            # The Python stomp.py client reads host/port/credentials separately.
+            # STOMP_HOST, STOMP_PORT, STOMP_USER, STOMP_PASS match main.py's os.environ.get() calls.
+            - name: STOMP_HOST
+              value: "activemq-artemis"
+            - name: STOMP_PORT
+              value: "61613"
+            - name: STOMP_USER
+              valueFrom:
+                secretKeyRef:
+                  name: app-secrets
+                  key: artemis-user
+            - name: STOMP_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: app-secrets
+                  key: artemis-password
+            # ── Queue configuration ──────────────────────────────────────────
+            - name: FRAUD_QUEUE
+              value: "fraud.score.queue"
+
+          # ── Health check ───────────────────────────────────────────────────
+          # Verify the main consumer process is alive.
+          # Adjust the process name to match your entrypoint if needed.
+          # /proc/1 always exists while the main process (PID 1) is alive.
+          # pgrep is not available in minimal Python images, so we use /proc directly.
+          livenessProbe:
+            exec:
+              command: ["/bin/sh", "-c", "[ -d /proc/1 ]"]
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "200m"
+              memory: "256Mi"

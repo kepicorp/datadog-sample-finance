@@ -1,0 +1,90 @@
+# =============================================================================
+# Finance Sample App — notification-service (Go)
+# =============================================================================
+# Async notification consumer. Responsibilities:
+#   - Listens on `alert.queue` via STOMP (ActiveMQ Artemis)
+#   - Sends email / SMS stubs based on alert payload
+#
+# This service exposes no HTTP port — it is a pure message consumer.
+# There is therefore no Service resource in this file.
+# =============================================================================
+
+# ── Deployment ────────────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notification-service
+  namespace: finance
+  labels:
+    app: notification-service
+    component: service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: notification-service
+  template:
+    metadata:
+      labels:
+        app: notification-service
+        component: service
+    spec:
+      # notification-service exits after max retries if ActiveMQ is not reachable.
+      # The init container ensures it only starts once the STOMP port is open.
+      initContainers:
+        - name: wait-for-activemq
+          image: busybox:1.36
+          command:
+            [
+              "sh",
+              "-c",
+              'until nc -z activemq-artemis 61613; do echo "waiting for activemq stomp..."; sleep 3; done',
+            ]
+      containers:
+        - name: notification-service
+          image: finance-sample-app-notification-service:latest
+          imagePullPolicy: IfNotPresent
+
+          # No ports — this is a JMS consumer only.
+
+          env:
+            # ── ActiveMQ (STOMP) ────────────────────────────────────────────────
+            # The Go service reads credentials from the URL itself (url.Parse),
+            # not from separate ACTIVEMQ_USER/PASSWORD vars. K8s env-var
+            # substitution ($(VAR)) is used to embed the secret values in the URL.
+            - name: ARTEMIS_USER
+              valueFrom:
+                secretKeyRef:
+                  name: app-secrets
+                  key: artemis-user
+            - name: ARTEMIS_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: app-secrets
+                  key: artemis-password
+            - name: ACTIVEMQ_URL
+              value: "stomp://$(ARTEMIS_USER):$(ARTEMIS_PASS)@activemq-artemis:61613"
+            # ── Queue configuration ──────────────────────────────────────────
+            - name: ALERT_QUEUE
+              value: "alert.queue"
+
+          # ── Health check ───────────────────────────────────────────────────
+          # Verify the main consumer process is alive.
+          livenessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - "pgrep -f 'notification' > /dev/null"
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "200m"
+              memory: "256Mi"

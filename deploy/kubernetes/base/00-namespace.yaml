@@ -1,0 +1,16 @@
+# =============================================================================
+# Finance Sample App — Namespace
+# =============================================================================
+# All application resources live in the `finance` namespace.
+# Apply first before any other manifest in this directory.
+#
+# Usage:
+#   kubectl apply -f deploy/kubernetes/base/00-namespace.yaml
+# =============================================================================
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: finance
+  labels:
+    name: finance

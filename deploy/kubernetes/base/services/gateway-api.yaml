@@ -1,0 +1,121 @@
+# =============================================================================
+# Finance Sample App — gateway-api (Python / FastAPI)
+# =============================================================================
+# Public-facing REST API. Responsibilities:
+#   - OIDC bearer-token validation against Keycloak
+#   - Routes authenticated requests to account-service and transaction-service
+#   - Manages sessions via Redis
+#
+# Health endpoint: GET /health  →  200 OK
+# Main API:        GET/POST /v1/*
+# =============================================================================
+
+# ── Service ───────────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: Service
+metadata:
+  name: gateway-api
+  namespace: finance
+  labels:
+    app: gateway-api
+    component: service
+spec:
+  type: ClusterIP
+  selector:
+    app: gateway-api
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+
+---
+# ── Deployment ────────────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway-api
+  namespace: finance
+  labels:
+    app: gateway-api
+    component: service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: gateway-api
+  template:
+    metadata:
+      labels:
+        app: gateway-api
+        component: service
+    spec:
+      containers:
+        - name: gateway-api
+          image: finance-sample-app-gateway-api:latest
+          imagePullPolicy: IfNotPresent
+
+          ports:
+            - name: http
+              containerPort: 8080
+
+          env:
+            # ── Internal service URLs ────────────────────────────────────────
+            - name: ACCOUNT_SERVICE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: app-config
+                  key: ACCOUNT_SERVICE_URL
+            - name: TRANSACTION_SERVICE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: app-config
+                  key: TRANSACTION_SERVICE_URL
+            # ── Session / cache ──────────────────────────────────────────────
+            - name: REDIS_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: app-config
+                  key: REDIS_URL
+            # ── OIDC / Keycloak ──────────────────────────────────────────────
+            - name: KEYCLOAK_ISSUER
+              valueFrom:
+                configMapKeyRef:
+                  name: app-config
+                  key: KEYCLOAK_ISSUER
+            - name: KEYCLOAK_JWKS_URI
+              valueFrom:
+                configMapKeyRef:
+                  name: app-config
+                  key: KEYCLOAK_JWKS_URI
+            - name: KEYCLOAK_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: app-secrets
+                  key: keycloak-client-secret
+
+          # ── Health checks ──────────────────────────────────────────────────
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 20
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"

@@ -1,0 +1,16 @@
+# ── RUNTIME DEPENDENCIES ─────────────────────────────────────────────
+# Core dependencies — always required, no Datadog config needed.
+
+stomp.py==8.1.1
+python-json-logger==2.0.7
+
+# ── DATADOG INSTRUMENTATION DEPENDENCIES ─────────────────────────────
+# Uncomment the packages below as you work through the Learning
+# Progression steps in README.md.
+#
+# Step 3-7  — APM tracing, log injection, profiler, custom spans, DSM
+# ddtrace[data_streams]==2.x
+#
+# Step 6    — DogStatsD custom metrics (finance.fraud.score gauge)
+# datadog==0.49.1
+# ─────────────────────────────────────────────────────────────────────

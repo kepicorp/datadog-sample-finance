@@ -1,0 +1,360 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"log/slog"
+	"net/url"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	"github.com/go-stomp/stomp/v3"
+)
+
+// ── DATADOG INSTRUMENTATION — APM ────────────────────────────────────────────
+// Uncomment the block below to enable APM distributed tracing.
+//
+// Option A (recommended): Use Orchestrion for automatic compile-time
+// instrumentation — no manual import changes required.
+//   Install: go install github.com/DataDog/orchestrion@latest
+//   Run:     orchestrion go build ./...
+//   Docs:    https://docs.datadoghq.com/tracing/trace_collection/automatic_instrumentation/dd_libraries/go/
+//
+// Option B: Manual tracer initialisation (shown below).
+// Requires: go get go.datadoghq.com/dd-trace-go/v2/ddtrace/tracer
+//
+// import (
+//     "go.datadoghq.com/dd-trace-go/v2/ddtrace/tracer"
+// )
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── DATADOG INSTRUMENTATION — CONTINUOUS PROFILER ────────────────────────────
+// Uncomment the block below to enable the Continuous Profiler.
+// Requires: go get gopkg.in/DataDog/dd-trace-go.v1/profiler
+// Docs: https://docs.datadoghq.com/profiler/enabling/go/
+//
+// import (
+//     "gopkg.in/DataDog/dd-trace-go.v1/profiler"
+// )
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── DATADOG INSTRUMENTATION — DATA STREAMS MONITORING ───────────────────────
+// Uncomment to enable DSM consumer checkpoints on alert.queue.
+// Requires: go get go.datadoghq.com/dd-trace-go/v2/datastreams
+//           DD_DATA_STREAMS_ENABLED=true
+// Docs: https://docs.datadoghq.com/data_streams/go/
+//
+// import (
+//     "go.datadoghq.com/dd-trace-go/v2/datastreams"
+//     "go.datadoghq.com/dd-trace-go/v2/datastreams/options"
+// )
+// ─────────────────────────────────────────────────────────────────────────────
+
+const (
+	alertQueue      = "/queue/alert.queue"
+	defaultBrokerURL = "stomp://localhost:61613"
+)
+
+// AlertMessage represents the payload received on alert.queue.
+type AlertMessage struct {
+	EventType       string `json:"event_type"`        // e.g. "fraud_detected", "payment_failed"
+	AccountID       string `json:"account_id"`
+	Channel         string `json:"channel"`           // "email" or "sms"
+	CorrelationID   string `json:"correlation_id"`    // jms.correlation_id — business-level trace key
+	// ⚠️  HIGH CARDINALITY WARNING: do NOT log or tag raw account numbers, IBANs,
+	// card numbers, or transaction amounts. Tag with IDs only.
+	// Ref: https://docs.datadoghq.com/tagging/assigning_tags/#defining-tags
+}
+
+func main() {
+	// ── Structured JSON logging (stdlib log/slog) ─────────────────────────────
+	// All log lines are JSON so Datadog Log Management can parse them without a
+	// custom pipeline processor. The "dd.trace_id" and "dd.span_id" fields are
+	// injected automatically once APM log correlation is enabled (Step 4).
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+		Level: slog.LevelInfo,
+	}))
+	slog.SetDefault(logger)
+
+	// ── DATADOG INSTRUMENTATION — APM tracer start ───────────────────────────
+	// Uncomment the block below to start the APM tracer.
+	// Requires: DD_API_KEY, DD_ENV, DD_SERVICE=notification-service, DD_VERSION,
+	//           DD_AGENT_HOST=datadog-agent (or localhost for local dev)
+	// Docs: https://docs.datadoghq.com/tracing/trace_collection/dd_libraries/go/
+	//
+	// tracer.Start(
+	//     tracer.WithServiceName(getEnv("DD_SERVICE", "notification-service")),
+	//     tracer.WithEnv(getEnv("DD_ENV", "local")),
+	//     tracer.WithServiceVersion(getEnv("DD_VERSION", "dev")),
+	//     tracer.WithAgentAddr(getEnv("DD_AGENT_HOST", "datadog-agent") + ":8126"),
+	//     tracer.WithRuntimeMetrics(),  // Enable Go runtime metrics (goroutines, GC, heap)
+	//     tracer.WithAnalytics(true),   // Enable App Analytics for this service
+	// )
+	// defer tracer.Stop()
+	// ─────────────────────────────────────────────────────────────────────────
+
+	// ── DATADOG INSTRUMENTATION — CONTINUOUS PROFILER start ──────────────────
+	// Uncomment to start the Continuous Profiler. Run AFTER tracer.Start().
+	// Correlates CPU flame graphs with slow notification-processing traces.
+	// Docs: https://docs.datadoghq.com/profiler/enabling/go/
+	//
+	// if err := profiler.Start(
+	//     profiler.WithService(getEnv("DD_SERVICE", "notification-service")),
+	//     profiler.WithEnv(getEnv("DD_ENV", "local")),
+	//     profiler.WithVersion(getEnv("DD_VERSION", "dev")),
+	//     profiler.WithProfileTypes(
+	//         profiler.CPUProfile,
+	//         profiler.HeapProfile,
+	//         profiler.GoroutineProfile,
+	//         profiler.MutexProfile,
+	//     ),
+	// ); err != nil {
+	//     slog.Error("failed to start Datadog profiler", "error", err)
+	// }
+	// defer profiler.Stop()
+	// ─────────────────────────────────────────────────────────────────────────
+
+	brokerURL := getEnv("ACTIVEMQ_URL", defaultBrokerURL)
+
+	slog.Info("notification-service starting",
+		"broker_url", brokerURL,
+		"queue", alertQueue,
+	)
+
+	conn, err := connectSTOMP(brokerURL)
+	if err != nil {
+		slog.Error("failed to connect to STOMP broker", "error", err, "broker_url", brokerURL)
+		os.Exit(1)
+	}
+	defer conn.Disconnect()
+
+	slog.Info("connected to STOMP broker", "broker_url", brokerURL)
+
+	sub, err := conn.Subscribe(alertQueue, stomp.AckClient)
+	if err != nil {
+		slog.Error("failed to subscribe to queue", "queue", alertQueue, "error", err)
+		os.Exit(1)
+	}
+
+	slog.Info("subscribed to queue", "queue", alertQueue)
+
+	// Graceful shutdown on SIGTERM / SIGINT (important for K8s pod lifecycle).
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+
+	for {
+		select {
+		case <-ctx.Done():
+			slog.Info("shutdown signal received, stopping consumer")
+			return
+		case msg, ok := <-sub.C:
+			if !ok {
+				slog.Warn("subscription channel closed, exiting")
+				return
+			}
+			processMessage(conn, msg)
+		}
+	}
+}
+
+// processMessage deserialises the STOMP frame and dispatches to sendNotification.
+func processMessage(conn *stomp.Conn, msg *stomp.Message) {
+	if msg.Err != nil {
+		slog.Error("received error frame from broker", "error", msg.Err)
+		return
+	}
+
+	// ── DATADOG INSTRUMENTATION — DSM consume checkpoint ─────────────────────
+	// Uncomment to record a Data Streams Monitoring consumer checkpoint.
+	// This stamps the message with the consumer lag and end-to-end latency
+	// relative to the producer checkpoint set in transaction-service or
+	// account-service. Visible in Datadog > Data Streams > Pathways.
+	// Requires: DD_DATA_STREAMS_ENABLED=true
+	// Docs: https://docs.datadoghq.com/data_streams/go/
+	//
+	// edgesMap := map[string]string{}
+	// for _, h := range msg.Header.Values("datadog-pathway-ctx") {
+	//     edgesMap["datadog-pathway-ctx"] = h
+	// }
+	// ctx := datastreams.SetConsumerCheckpoint(
+	//     context.Background(),
+	//     options.CheckpointParams{
+	//         PayloadSize: int64(len(msg.Body)),
+	//         Topic:       "alert.queue",
+	//         Type:        "jms",
+	//         Headers:     edgesMap,
+	//     },
+	// )
+	// _ = ctx  // pass ctx into sendNotification if you open a child span
+	// ─────────────────────────────────────────────────────────────────────────
+
+	var alert AlertMessage
+	if err := json.Unmarshal(msg.Body, &alert); err != nil {
+		slog.Error("failed to unmarshal alert message",
+			"error", err,
+			"raw_body_length", len(msg.Body),
+		)
+		// NACK the message so the broker can redeliver or dead-letter it.
+		if nackErr := conn.Nack(msg); nackErr != nil {
+			slog.Error("failed to NACK message", "error", nackErr)
+		}
+		return
+	}
+
+	slog.Info("jms.message.process",
+		"queue", alertQueue,
+		"event_type", alert.EventType,
+		"account_id", alert.AccountID,
+		"channel", alert.Channel,
+		"correlation_id", alert.CorrelationID,
+		// dd.trace_id and dd.span_id are injected here automatically
+		// once APM log correlation is enabled (Step 4 in README).
+	)
+
+	sendNotification(alert)
+
+	if err := conn.Ack(msg); err != nil {
+		slog.Error("failed to ACK message", "error", err, "correlation_id", alert.CorrelationID)
+	}
+}
+
+// sendNotification stubs the email / SMS dispatch logic.
+// In production this would call an SMTP relay or SMS gateway API.
+func sendNotification(alert AlertMessage) {
+	// ── DATADOG INSTRUMENTATION — custom span: alert.send ────────────────────
+	// Uncomment to create a manual APM span for the notification dispatch.
+	// This span will appear as a child of the JMS consumer span created by the
+	// auto-instrumented STOMP/JMS integration.
+	// Docs: https://docs.datadoghq.com/tracing/trace_collection/custom_instrumentation/go/
+	//
+	// span := tracer.StartSpan(
+	//     "alert.send",
+	//     tracer.ResourceName(alert.EventType),
+	//     tracer.Tag("notification.channel", alert.Channel),
+	//     tracer.Tag("notification.event_type", alert.EventType),
+	//     tracer.Tag("account.id", alert.AccountID),
+	//     // jms.correlation_id: business-level key linking producer → consumer.
+	//     // Safe to tag: it is an opaque ID with no PII.
+	//     tracer.Tag("jms.correlation_id", alert.CorrelationID),
+	//     // messaging.destination: the queue this message was consumed from.
+	//     tracer.Tag("messaging.destination", "alert.queue"),
+	// )
+	// defer span.Finish()
+	//
+	// // On error, mark the span as failed and capture the stack:
+	// // span.Finish(tracer.WithError(err))
+	// ─────────────────────────────────────────────────────────────────────────
+
+	start := time.Now()
+
+	switch alert.Channel {
+	case "email":
+		slog.Info("alert.send",
+			"channel", "email",
+			"event_type", alert.EventType,
+			"account_id", alert.AccountID,
+			"correlation_id", alert.CorrelationID,
+		)
+		// TODO: integrate with SMTP relay (e.g. SendGrid, SES)
+	case "sms":
+		slog.Info("alert.send",
+			"channel", "sms",
+			"event_type", alert.EventType,
+			"account_id", alert.AccountID,
+			"correlation_id", alert.CorrelationID,
+		)
+		// TODO: integrate with SMS gateway (e.g. Twilio, SNS)
+	default:
+		slog.Warn("alert.send.unknown_channel",
+			"channel", alert.Channel,
+			"event_type", alert.EventType,
+			"correlation_id", alert.CorrelationID,
+		)
+	}
+
+	duration := time.Since(start).Milliseconds()
+
+	slog.Info("alert.send.complete",
+		"channel", alert.Channel,
+		"event_type", alert.EventType,
+		"duration_ms", duration,
+		"correlation_id", alert.CorrelationID,
+	)
+
+	// ── DATADOG INSTRUMENTATION — DogStatsD custom metric ───────────────────
+	// Uncomment to emit a histogram tracking notification dispatch latency.
+	// Requires: go get github.com/DataDog/datadog-go/v5/statsd
+	//           DogStatsD agent listening on DD_AGENT_HOST:8125
+	// Docs: https://docs.datadoghq.com/developers/dogstatsd/
+	//
+	// statsdClient.Histogram(
+	//     "finance.notification.dispatch_time",
+	//     float64(duration),
+	//     []string{
+	//         "channel:" + alert.Channel,
+	//         "event_type:" + alert.EventType,
+	//         "env:" + getEnv("DD_ENV", "local"),
+	//         "service:notification-service",
+	//     },
+	//     1.0, // sample rate — 1.0 = 100% (appropriate for low-volume notifications)
+	// )
+	// statsdClient.Incr(
+	//     "finance.notification.sent",
+	//     []string{
+	//         "channel:" + alert.Channel,
+	//         "event_type:" + alert.EventType,
+	//     },
+	//     1.0,
+	// )
+	// ─────────────────────────────────────────────────────────────────────────
+}
+
+// connectSTOMP establishes a STOMP connection to the ActiveMQ Artemis broker.
+// Retries with a fixed delay to handle broker startup ordering in Docker Compose.
+func connectSTOMP(rawURL string) (*stomp.Conn, error) {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return nil, err
+	}
+
+	host := u.Host
+	var password string
+	if u.User != nil {
+		password, _ = u.User.Password()
+	}
+	user := u.User.Username()
+
+	opts := []func(*stomp.Conn) error{
+		stomp.ConnOpt.HeartBeat(10*time.Second, 10*time.Second),
+	}
+	if user != "" {
+		opts = append(opts, stomp.ConnOpt.Login(user, password))
+	}
+
+	const maxRetries = 10
+	for i := range maxRetries {
+		conn, dialErr := stomp.Dial("tcp", host, opts...)
+		if dialErr == nil {
+			return conn, nil
+		}
+		slog.Warn("STOMP connection failed, retrying",
+			"attempt", i+1,
+			"max_attempts", maxRetries,
+			"error", dialErr,
+		)
+		time.Sleep(3 * time.Second)
+	}
+
+	// Final attempt — return the error directly.
+	return stomp.Dial("tcp", host, opts...)
+}
+
+// getEnv returns the value of an environment variable or a fallback default.
+func getEnv(key, fallback string) string {
+	if v, ok := os.LookupEnv(key); ok && v != "" {
+		return v
+	}
+	return fallback
+}

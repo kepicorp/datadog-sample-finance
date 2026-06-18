@@ -1,0 +1,126 @@
+# =============================================================================
+# Finance Sample App — transaction-service (Node.js / Express)
+# =============================================================================
+# Payment initiation and ledger write service. Responsibilities:
+#   - Accepts payment initiation requests from gateway-api
+#   - Writes to the ledger (via account-service or direct DB)
+#   - Produces JMS messages to ActiveMQ via STOMP
+#
+# Health endpoint: GET /health  →  200 OK
+# Main API:        POST /v1/payments
+# =============================================================================
+
+# ── Service ───────────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: Service
+metadata:
+  name: transaction-service
+  namespace: finance
+  labels:
+    app: transaction-service
+    component: service
+spec:
+  type: ClusterIP
+  selector:
+    app: transaction-service
+  ports:
+    - name: http
+      port: 8082
+      targetPort: 8082
+
+---
+# ── Deployment ────────────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: transaction-service
+  namespace: finance
+  labels:
+    app: transaction-service
+    component: service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: transaction-service
+  template:
+    metadata:
+      labels:
+        app: transaction-service
+        component: service
+    spec:
+      # transaction-service uses ActiveMQ STOMP to publish fraud-scoring events.
+      # The init container prevents startup failures while the broker is initialising.
+      initContainers:
+        - name: wait-for-activemq
+          image: busybox:1.36
+          command:
+            [
+              "sh",
+              "-c",
+              'until nc -z activemq-artemis 61613; do echo "waiting for activemq stomp..."; sleep 3; done',
+            ]
+      containers:
+        - name: transaction-service
+          image: finance-sample-app-transaction-service:latest
+          imagePullPolicy: IfNotPresent
+
+          ports:
+            - name: http
+              containerPort: 8082
+
+          env:
+            # ── ActiveMQ (STOMP) ─────────────────────────────────────────────
+            - name: ACTIVEMQ_STOMP_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: app-config
+                  key: ACTIVEMQ_STOMP_URL
+            - name: ACTIVEMQ_USER
+              valueFrom:
+                secretKeyRef:
+                  name: app-secrets
+                  key: artemis-user
+            - name: ACTIVEMQ_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: app-secrets
+                  key: artemis-password
+            # ── Upstream services ────────────────────────────────────────────
+            - name: ACCOUNT_SERVICE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: app-config
+                  key: ACCOUNT_SERVICE_URL
+            - name: REDIS_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: app-config
+                  key: REDIS_URL
+
+          # ── Health checks ──────────────────────────────────────────────────
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8082
+            initialDelaySeconds: 20
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8082
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"

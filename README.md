@@ -1,0 +1,457 @@
+# Finance Sample App — Datadog Observability
+
+A hands-on instrumentation learning tool for Datadog observability. The application simulates a simplified financial platform. All Datadog-specific code ships **commented out** so engineers can progressively uncomment, configure, and validate each observability layer.
+
+---
+
+## Architecture
+
+```
+                        ┌─────────────────────────────────────────────────────┐
+                        │                  NGINX (reverse proxy)               │
+                        └────────────────────────┬────────────────────────────┘
+                                                 │
+                        ┌────────────────────────▼────────────────────────────┐
+                        │           gateway-api  (Python / FastAPI)            │
+                        │         REST API · auth middleware · :8080           │
+                        └──────────────────┬──────────────────┬───────────────┘
+                                           │                  │
+               ┌───────────────────────────▼──┐    ┌──────────▼──────────────────┐
+               │  account-service              │    │  transaction-service         │
+               │  (Java / Spring Boot)         │    │  (Node.js / Express)         │
+               │  Account CRUD · balance · :8081│   │  Payment · ledger · :8082    │
+               └───────────────┬───────────────┘    └──────────┬──────────────────┘
+                               │    JMS produce                │    JMS produce
+                               │    fraud.score.queue          │    alert.queue
+                               │                               │
+                        ┌──────▼───────────────────────────────▼──────────────┐
+                        │           Apache ActiveMQ Artemis (JMS broker)       │
+                        └────────────────┬─────────────────────┬──────────────┘
+                                         │ JMS consume          │ JMS consume
+                     ┌───────────────────▼───┐       ┌──────────▼──────────────┐
+                     │  fraud-detection       │       │  notification-service    │
+                     │  (Python)              │       │  (Go)                    │
+                     │  Async fraud scoring   │       │  Email / SMS stubs       │
+                     │  fraud.score.queue     │       │  alert.queue             │
+                     └───────────────────────┘       └─────────────────────────┘
+
+                        ┌─────────────────────────────────────────────────────┐
+                        │           batch-processor  (Java / Spring Batch)     │
+                        │   Nightly reconciliation · end-of-day settlement     │
+                        │   Runs on schedule — not in the request path         │
+                        └──────────────────────────┬──────────────────────────┘
+                                                   │
+                        ┌──────────────────────────▼──────────────────────────┐
+                        │           PostgreSQL  (primary ledger DB · :5432)    │
+                        └─────────────────────────────────────────────────────┘
+
+                        ┌─────────────────────────────────────────────────────┐
+                        │           Redis  (session cache · :6379)             │
+                        └─────────────────────────────────────────────────────┘
+```
+
+---
+
+## Services
+
+| Service | Language | Port | Role |
+|---|---|---|---|
+| `gateway-api` | Python (FastAPI) | 8080 | Public REST API, authentication middleware, request routing |
+| `account-service` | Java (Spring Boot) | 8081 | Account CRUD, balance enquiry, JMS producer to `fraud.score.queue` |
+| `transaction-service` | Node.js (Express) | 8082 | Payment initiation, ledger write, JMS producer to `alert.queue` |
+| `fraud-detection` | Python | — | Async fraud scoring, JMS consumer on `fraud.score.queue` |
+| `notification-service` | Go | — | Async email/SMS stubs, JMS consumer on `alert.queue` |
+| `batch-processor` | Java (Spring Batch) | — | Nightly reconciliation job and end-of-day settlement |
+
+Supporting infrastructure:
+
+| Component | Image | Port | Purpose |
+|---|---|---|---|
+| PostgreSQL | `postgres:15` | 5432 | Primary ledger database |
+| Redis | `redis:7` | 6379 | Session store and application cache |
+| ActiveMQ Artemis | `apache/activemq-artemis` | 61616 / 8161 | JMS 2.0 broker for async messaging |
+| NGINX | `nginx:1.25` | 80 | Reverse proxy in front of gateway-api |
+| **Keycloak** | `quay.io/keycloak/keycloak:26.0` | **8089** | **Open-source IdP — SAML 2.0 SSO for Datadog + OIDC for gateway-api** |
+
+> **Why Keycloak?** Keycloak is the most widely deployed open-source SAML 2.0 / OIDC identity provider in banking and insurance environments. It mirrors enterprise IdPs (Okta, Azure AD, PingFederate) while staying fully open-source, making it ideal for Datadog SSO demos and partner workshops. See `identity-provider/README.md` for the full Datadog SAML SSO setup guide.
+
+> **Why ActiveMQ Artemis?** It is a JMS 2.0-compliant broker natively supported by Spring Boot (`spring-boot-starter-artemis`) and auto-instrumented by `dd-trace-java`. It mirrors messaging patterns common in banking and insurance (IBM MQ, TIBCO EMS) while being open-source and easy to run locally.
+
+---
+
+## Quick Start (Docker — no Datadog config required)
+
+The application runs cleanly with all instrumentation commented out. No `DD_API_KEY` is needed for the first run.
+
+```bash
+# 1. Clone and enter the repository
+git clone <repo-url> && cd impl
+
+# 2. Build all service images
+make build
+
+# 3. Start the full stack
+make up
+```
+
+Verify the stack is healthy:
+
+```bash
+make health
+# Expected: {"status": "ok", "services": {...}}
+```
+
+Useful commands:
+
+```bash
+make logs     # Tail all service logs
+make down     # Tear down the stack
+make version  # Print the current DD_VERSION (git short SHA)
+```
+
+Gateway API is available at `http://localhost:8080`. ActiveMQ management console is at `http://localhost:8161` (admin / admin).
+
+---
+
+## Generating Traffic
+
+Once the stack is up, use the included traffic generator to drive realistic load against all services:
+
+```bash
+# Smoke-test: one pass through every scenario type
+python3 scripts/generate-traffic.py --once
+
+# Continuous traffic at 1 req/s — Ctrl-C to stop
+python3 scripts/generate-traffic.py
+
+# Higher rate for populating APM dashboards
+python3 scripts/generate-traffic.py --rate 3 --duration 300
+```
+
+The script (pure Python stdlib — no install needed) automatically:
+- Obtains JWT Bearer tokens from Keycloak for all four finance-realm users
+- Seeds test accounts on `account-service`
+- Runs a weighted mix of balance checks, payments, account lookups, health probes, and intentional error scenarios (401, 404, 422)
+- Refreshes tokens before they expire
+
+| Scenario | Weight | Path |
+|---|---|---|
+| Balance check (JWT) | 30 % | gateway-api → account-service |
+| Payment initiation (JWT) | 25 % | gateway-api → transaction-service → ActiveMQ |
+| Account lookup (direct) | 20 % | account-service → PostgreSQL |
+| Health checks | 10 % | gateway-api, account-service, transaction-service |
+| 404 / 401 / 422 error cases | 15 % | Various |
+
+Full documentation: `scripts/README.md`
+
+---
+
+## Learning Progression
+
+Each service directory contains its own `README.md` with a **12-step Learning Progression** for progressively enabling Datadog observability. The steps are the same across all services:
+
+| Step | What you enable |
+|---|---|
+| 1 | Datadog Agent sidecar / DaemonSet |
+| 2 | Unified Service Tags (`DD_ENV`, `DD_SERVICE`, `DD_VERSION`) |
+| 3 | APM auto-instrumentation — verify traces in APM > Services |
+| 4 | Log correlation — verify `trace_id` in Log Management |
+| 5 | Custom spans for critical business operations |
+| 6 | DogStatsD custom metrics (counters, histograms, gauges) |
+| 7 | Continuous Profiler — validate CPU flame graphs |
+| 8 | RUM Browser SDK (frontend stub) |
+| 9 | Database Monitoring (DBM) for PostgreSQL |
+| 10 | Data Streams Monitoring (DSM) for the JMS / ActiveMQ pipeline |
+| 11 | Data Jobs Monitoring for the Spring Batch reconciliation job |
+| 12 | Synthetic API tests for `/health` and `/v1/payments` |
+
+**For step-by-step instrumentation instructions covering all services**, see
+[**INSTRUMENTATION.md**](./INSTRUMENTATION.md). It covers Steps 1–9 above with
+exact file locations, code snippets for each language (Python, Java, Node.js,
+Go), and validation steps for each signal.
+
+Start with `gateway-api/README.md` and work outward to the downstream services.
+
+---
+
+## Deployment Targets
+
+Deployment artefacts live under `deploy/`. All three targets share the same application manifests in `deploy/kubernetes/base/` — only the infrastructure provisioning differs.
+
+```
+deploy/
+  docker/                  Docker Compose — fastest local start, two files
+  kubernetes/
+    base/                  K8s manifests — used by all three targets
+    datadog/               Datadog Agent overlay (Operator CRD + checks)
+  terraform/
+    aws/                   AWS EKS + ECR + VPC + IAM + Secrets Manager
+    gcp/                   GCP GKE + Artifact Registry + IAM + Secret Manager
+```
+
+---
+
+### Docker Compose — local development
+
+Two files are provided — start without Datadog first to verify the app works:
+
+| Command | File | Purpose |
+|---|---|---|
+| `make up` | `docker-compose.base.yml` | No Datadog — fastest start |
+| `make up-dd` | `docker-compose.datadog.yml` | Adds the Datadog Agent + DD_ env vars |
+
+```bash
+# 1. Configure credentials
+cp deploy/docker/.env.example deploy/docker/.env
+# edit .env: set POSTGRES_PASSWORD, ARTEMIS_PASSWORD
+# (DD_API_KEY only needed for make up-dd)
+
+# 2. Build and start
+make build
+make up
+
+# 3. Open the dashboard
+open http://localhost:3000   # nginx frontend + Keycloak login
+
+# 4. Run tests
+make test                    # 37 assertions, all green
+```
+
+See `deploy/docker/README.md` for Keycloak users, all make commands, and the 12-step Learning Progression.
+
+---
+
+### Kubernetes — any cluster
+
+Once `kubectl` is pointed at a cluster (local, EKS, or GKE), the deployment is identical:
+
+```bash
+make deploy-k8s      # deploys deploy/kubernetes/base/ — no Datadog
+make deploy-k8s-dd   # adds deploy/kubernetes/datadog/ overlay (Agent, checks)
+make undeploy-k8s    # removes the finance namespace
+```
+
+See `deploy/kubernetes/base/README.md` for image-loading instructions for local clusters (kind, minikube, Docker Desktop).
+
+See `deploy/kubernetes/datadog/README.md` for the Datadog Operator + Agent setup.
+
+---
+
+### AWS — EKS via Terraform
+
+Terraform creates the AWS infrastructure; `make deploy-k8s` deploys the app.
+
+#### Prerequisites
+- AWS CLI >= 2.x
+- Terraform >= 1.5
+- An AWS SSO profile configured: `aws configure sso`
+
+#### Full workflow
+
+```bash
+# 1. Authenticate
+aws sso login --profile <your-profile>
+
+# 2. Configure Terraform variables
+cp deploy/terraform/aws/staging.tfvars.example deploy/terraform/aws/staging.tfvars
+# edit staging.tfvars: set aws_profile, aws_region, cluster_name
+
+# 3. Plan and review
+make tf-plan-aws
+
+# 4. Provision AWS infrastructure (~15-20 min)
+#    Creates: EKS cluster, VPC, ECR repositories, IAM roles, Secrets Manager entries
+make tf-apply-aws
+
+# 5. Configure kubectl
+make tf-configure-kubectl
+# kubectl get nodes  — verify cluster is reachable
+
+# 6. Build and push service images to ECR
+#    Ensure AWS_PROFILE is still exported from step 1.
+eval "$(cd deploy/terraform/aws && terraform output -raw ecr_login_command)"
+
+# On Apple Silicon (ARM) Macs — use build-ecr which cross-compiles for linux/amd64.
+# EKS nodes run x86_64; pushing ARM images causes 'exec format error' on startup.
+make build-ecr
+
+# On x86_64 hosts — build locally then tag and push:
+# make build
+# IMAGE_TAG=$(git rev-parse --short HEAD)
+# for SVC in gateway-api account-service transaction-service \
+#            fraud-detection notification-service batch-processor; do
+#   ECR_URL=$(cd deploy/terraform/aws && terraform output -json ecr_registry_urls | jq -r ".\"${SVC}\"")
+#   docker tag  finance-sample-app-${SVC}:latest ${ECR_URL}:${IMAGE_TAG}
+#   docker push ${ECR_URL}:${IMAGE_TAG}
+# done
+
+# 7. Deploy the application (use deploy-k8s-eks when kubectl points at EKS)
+make deploy-k8s-eks
+
+# 8. Optionally add the Datadog Agent
+#    Set DD_API_KEY in AWS Secrets Manager first:
+#    aws secretsmanager put-secret-value --secret-id finance-app/staging/dd-api-key \
+#      --secret-string "your-key" --profile <your-profile>
+#    deploy-k8s-dd auto-detects EKS and fetches the key from Secrets Manager:
+make deploy-k8s-dd
+
+# 9. Tear down when done
+make undeploy-k8s      # removes K8s resources first (incl. cluster-scoped gp3 StorageClass)
+make tf-destroy-aws    # destroys AWS infrastructure
+```
+
+#### Teardown and troubleshooting
+
+Two targets handle teardown, serving different scenarios:
+
+| Target | When to use |
+|---|---|
+| `make tf-destroy-aws` | Normal teardown — Terraform handles dependency ordering automatically |
+| `make tf-force-destroy-aws` | When `tf-destroy-aws` fails — see failure modes below |
+
+**`make tf-destroy-aws` can fail in two situations:**
+
+**1. `ResourceInUseException: Cluster has nodegroups attached`**
+EKS requires node groups to be deleted before the cluster. This happens when
+Terraform state is partially applied and the dependency graph is broken.
+`tf-force-destroy-aws` deletes node groups and add-ons via the AWS CLI first,
+then hands off to `terraform destroy` for the remaining resources.
+
+**2. `InvalidRequestException: secret is scheduled for deletion`**
+AWS Secrets Manager soft-deletes secrets for 7 days by default. If you destroy
+and re-apply within that window, Terraform cannot recreate secrets with the same
+name. `tf-force-destroy-aws` calls `delete-secret --force-delete-without-recovery`
+which bypasses the recovery window immediately.
+
+> **Note:** `recovery_window_in_days = 0` is set in `main.tf` so Terraform always
+> force-deletes secrets immediately on `destroy`. The `tf-force-destroy-aws` path
+> for secrets is only needed if a secret was left in the soft-delete queue by a
+> previous run that predates this setting.
+
+See `deploy/terraform/aws/README.md` for full details on SSO profiles, outputs reference, remote state, and Datadog integration steps.
+
+Reference: https://docs.datadoghq.com/integrations/amazon_web_services/
+
+---
+
+### GCP — GKE via Terraform
+
+Terraform creates the GCP infrastructure; `make deploy-k8s` deploys the app.
+
+#### Prerequisites
+- `gcloud` CLI >= 450
+- Terraform >= 1.5
+- A GCP project with billing enabled
+
+#### Full workflow
+
+```bash
+# 1. Authenticate
+gcloud auth application-default login
+gcloud config set project YOUR_GCP_PROJECT_ID
+
+# 2. Configure Terraform variables
+cp deploy/terraform/gcp/staging.tfvars.example deploy/terraform/gcp/staging.tfvars
+# edit staging.tfvars: set project_id, region, cluster_name
+
+# 3. Plan and review
+make tf-plan-gcp
+
+# 4. Provision GCP infrastructure (~10-15 min)
+#    Creates: GKE cluster, Artifact Registry, IAM roles, Secret Manager entries
+make tf-apply-gcp
+
+# 5. Configure kubectl
+make tf-configure-kubectl-gcp
+# kubectl get nodes  — verify cluster is reachable
+
+# 6. Push service images to Artifact Registry
+cd deploy/terraform/gcp
+eval "$(terraform output -raw docker_auth_command)"
+IMAGE_TAG=$(git rev-parse --short HEAD)
+for SVC in gateway-api account-service transaction-service \
+           fraud-detection notification-service batch-processor; do
+  AR_URL=$(terraform output -json artifact_registry_urls | jq -r ".\"${SVC}\"")
+  docker tag  finance-sample-app-${SVC}:latest ${AR_URL}:${IMAGE_TAG}
+  docker push ${AR_URL}:${IMAGE_TAG}
+done
+# Update image: fields in deploy/kubernetes/base/services/*.yaml to use AR URLs
+
+# 7. Deploy the application
+make deploy-k8s
+
+# 8. Optionally add the Datadog Agent
+#    Set DD_API_KEY in Secret Manager first:
+#    echo -n "your-key" | gcloud secrets versions add dd-api-key --data-file=-
+make deploy-k8s-dd
+
+# 9. Connect Datadog to GCP (Cloud Monitoring metrics, no agent required)
+#    Get the integration SA email and register it in Datadog > Integrations > GCP:
+#    cd deploy/terraform/gcp && terraform output datadog_integration_sa_email
+
+# 10. Tear down when done
+make undeploy-k8s
+make tf-destroy-gcp
+```
+
+See `deploy/terraform/gcp/README.md` for full details on authentication, outputs reference, remote state, and Datadog integration steps (Pub/Sub log forwarding, SA key, etc.).
+
+Reference: https://docs.datadoghq.com/integrations/google_cloud_platform/
+
+---
+
+## Security Notes
+
+**`DD_API_KEY` is never committed to this repository.** Set it as an environment variable or inject it from a secrets manager at runtime:
+
+- Docker: export `DD_API_KEY` in your shell before running `make up`, or copy `.env.example` to `.env` and fill in the value (`.env` is git-ignored)
+- Kubernetes: store in a K8s Secret and reference via `valueFrom.secretKeyRef`
+- AWS: store in AWS Secrets Manager; the Terraform module creates the entry
+- GCP: store in GCP Secret Manager; the Terraform module creates the entry
+
+**PII masking:** Financial data (card numbers, IBANs, SSNs, account balances) must never appear in trace tags, log messages, or DBM query samples. The Agent `obfuscation_config` and `replace_tags` examples are documented in each service's `env.example`.
+
+**DBM monitoring user:** The PostgreSQL monitoring user must be read-only (`pg_monitor` role only — never `pg_superuser`). Set it up before enabling DBM: `deploy/kubernetes/datadog/checks/postgres-check.yaml` contains the setup SQL in its header comments.
+
+**RUM Session Replay:** The frontend stub enables privacy mode by default (`defaultPrivacyLevel: 'mask-user-input'`). Do not disable this for any environment that processes real financial data.
+
+**Keycloak passwords:** The sample user passwords in `identity-provider/realm-export/finance-realm.json` are for local development only. Rotate them via the Keycloak admin console before any staging or production deployment. Store the admin password in your secrets manager — never hardcode it in `.env` files committed to source control.
+
+---
+
+## Identity Provider
+
+Keycloak (`identity-provider/`) provides:
+
+- **Datadog SAML SSO** — configure organisation-level SSO so your team logs into Datadog via Keycloak (or any upstream corporate IdP federated through Keycloak)
+- **OIDC for gateway-api** — validate JWT Bearer tokens per request and inject authenticated user identity into APM traces and logs
+- **Finance roles** — `finance-analyst`, `finance-trader`, `finance-admin`, `finance-auditor` mapped to Datadog roles
+
+Admin console: http://localhost:8089 (running after `make up`)
+
+Full guide: `identity-provider/README.md`
+
+---
+
+## Key Datadog Documentation
+
+| Topic | URL |
+|---|---|
+| Unified Service Tagging | https://docs.datadoghq.com/getting_started/tagging/unified_service_tagging/ |
+| APM setup (all languages) | https://docs.datadoghq.com/tracing/trace_collection/ |
+| Log correlation | https://docs.datadoghq.com/tracing/other_telemetry/connect_logs_and_traces/ |
+| DogStatsD custom metrics | https://docs.datadoghq.com/developers/dogstatsd/ |
+| Continuous Profiler | https://docs.datadoghq.com/profiler/ |
+| Database Monitoring | https://docs.datadoghq.com/database_monitoring/ |
+| DBM — PostgreSQL self-hosted | https://docs.datadoghq.com/database_monitoring/setup_postgres/selfhosted/ |
+| DBM + APM correlation | https://docs.datadoghq.com/database_monitoring/connect_dbm_and_apm/ |
+| Data Streams Monitoring | https://docs.datadoghq.com/data_streams/ |
+| Data Jobs Monitoring | https://docs.datadoghq.com/data_jobs/ |
+| ActiveMQ integration | https://docs.datadoghq.com/integrations/activemq/ |
+| Datadog Operator | https://github.com/DataDog/datadog-operator |
+| Helm chart | https://github.com/DataDog/helm-charts |
+| Tagging best practices | https://docs.datadoghq.com/tagging/assigning_tags/ |
+| Agent config reference | https://github.com/DataDog/datadog-agent/blob/main/pkg/config/config_template.yaml |
+| Datadog SAML SSO | https://docs.datadoghq.com/account_management/saml/ |
+| SAML role mapping | https://docs.datadoghq.com/account_management/saml/mapping/ |
+| Trace data security (PII) | https://docs.datadoghq.com/tracing/configure_data_security/ |

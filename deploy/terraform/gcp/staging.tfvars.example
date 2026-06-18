@@ -1,0 +1,35 @@
+# =============================================================================
+# Finance Sample App — GCP staging environment (non-sensitive values)
+# =============================================================================
+# Copy to staging.tfvars and fill in your values.
+# staging.tfvars is safe to commit — it contains NO secrets.
+#
+# Usage:
+#   cp staging.tfvars.example staging.tfvars
+#   terraform plan  -var-file="staging.tfvars"
+#   terraform apply -var-file="staging.tfvars"
+# =============================================================================
+
+# ── GCP project ───────────────────────────────────────────────────────────────
+# Your GCP project ID (not project number).
+# Find it: gcloud config get-value project
+project_id = "REPLACE_WITH_YOUR_GCP_PROJECT_ID"
+
+# ── Region & cluster ─────────────────────────────────────────────────────────
+region       = "europe-west1"
+cluster_name = "finance-gke"
+environment  = "staging"
+
+# ── Cluster sizing ────────────────────────────────────────────────────────────
+# e2-standard-2 (2 vCPU / 8 GB) is the minimum for the full Finance app stack.
+# Use e2-standard-4 if you enable the Datadog Agent DaemonSet + profiling.
+node_machine_type = "e2-standard-2"
+nodes_per_zone    = 1   # 1 per zone × 3 zones = 3 nodes total
+
+# ── Datadog ───────────────────────────────────────────────────────────────────
+# Site must match where your Datadog org lives.
+# US1: datadoghq.com  |  EU: datadoghq.eu  |  US3: us3.datadoghq.com
+dd_site = "datadoghq.com"
+
+# datadog_api_key — do NOT put here. Inject via environment variable instead:
+#   export TF_VAR_datadog_api_key=$(gcloud secrets versions access latest --secret=dd-api-key)

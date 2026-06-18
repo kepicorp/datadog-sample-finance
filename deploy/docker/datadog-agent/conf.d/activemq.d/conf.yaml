@@ -1,0 +1,139 @@
+# ══════════════════════════════════════════════════════════════════════════════
+# Datadog Agent — ActiveMQ Artemis JMX Integration
+# File: /etc/datadog-agent/conf.d/activemq.d/conf.yaml
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# Learning Progression Step 10 — Data Streams Monitoring (DSM) + ActiveMQ metrics
+#
+# This check collects broker-level metrics from ActiveMQ Artemis via JMX:
+#   - Queue depth per destination (fraud.score.queue, alert.queue, etc.)
+#   - Consumer count per queue
+#   - Messages enqueued / dequeued rates
+#   - Broker memory and disk usage
+#
+# These metrics complement DSM pathway data by showing raw broker state
+# alongside the end-to-end pipeline latency that DSM tracks.
+#
+# PREREQUISITES:
+#   1. JMX port 1099 must be exposed on the activemq-artemis container.
+#      This is already configured in docker-compose.yml (JAVA_ARGS + ports).
+#   2. The Datadog Agent JMX collector (dd-java-agent) must be available.
+#      It is bundled with datadog/agent:7 — no extra installation needed.
+#   3. Optionally create a dedicated JMX user in Artemis broker.xml for
+#      production environments (see security note below).
+#
+# Docs: https://docs.datadoghq.com/integrations/activemq/
+# DSM docs: https://docs.datadoghq.com/data_streams/
+# ══════════════════════════════════════════════════════════════════════════════
+
+# init_config:
+#   # is_jmx: true tells the Agent to use the JMX collector (Jmxfetch).
+#   is_jmx: true
+#   collect_default_metrics: true
+
+# instances:
+#   - host: activemq-artemis       # Docker Compose service name / K8s ClusterIP
+#     port: 1099                   # JMX RMI port (exposed in docker-compose.yml)
+
+#     # ── SECURITY ──────────────────────────────────────────────────────────
+#     # In development, JMX auth is disabled on the Artemis container
+#     # (com.sun.management.jmxremote.authenticate=false in JAVA_ARGS).
+#     # For staging/production, enable JMX authentication in Artemis and
+#     # create a dedicated read-only monitoring user. Then uncomment:
+#     # user: datadog
+#     # password: "ENC[k8s_secret,datadog-jmx-password]"
+#     # ─────────────────────────────────────────────────────────────────────
+
+#     # ── Tagging ───────────────────────────────────────────────────────────
+#     tags:
+#       - "broker:activemq-artemis"
+#       - "env:staging"
+#       - "service:activemq-artemis"
+
+#     # ── JMX bean collection ───────────────────────────────────────────────
+#     # The default ActiveMQ check collects standard broker beans.
+#     # Extend with custom Finance queue beans below if needed.
+#     conf:
+
+#       # ── Broker-level metrics ─────────────────────────────────────────────
+#       # These track overall broker health: memory pressure, total throughput.
+#       - include:
+#           domain: org.apache.activemq.artemis
+#           type: Broker
+#           attribute:
+#             TotalMessageCount:
+#               alias: activemq.artemis.broker.message_count
+#               metric_type: gauge
+#             TotalConsumerCount:
+#               alias: activemq.artemis.broker.consumer_count
+#               metric_type: gauge
+#             AddressMemoryUsage:
+#               alias: activemq.artemis.broker.address_memory_usage_bytes
+#               metric_type: gauge
+#             AddressMemoryUsagePercentage:
+#               alias: activemq.artemis.broker.address_memory_usage_pct
+#               metric_type: gauge
+
+#       # ── Per-queue metrics ─────────────────────────────────────────────────
+#       # Track depth and consumer count for each Finance queue.
+#       # Queue depth on fraud.score.queue is a leading indicator of fraud
+#       # scoring backlog — a sustained spike delays payment confirmation.
+#       # Docs (DSM consumer lag): https://docs.datadoghq.com/data_streams/
+#       - include:
+#           domain: org.apache.activemq.artemis
+#           type: Queue
+#           attribute:
+#             MessageCount:
+#               alias: activemq.artemis.queue.message_count
+#               metric_type: gauge
+#             ConsumerCount:
+#               alias: activemq.artemis.queue.consumer_count
+#               metric_type: gauge
+#             MessagesAdded:
+#               alias: activemq.artemis.queue.messages_added
+#               metric_type: monotonic_count
+#             MessagesAcknowledged:
+#               alias: activemq.artemis.queue.messages_acknowledged
+#               metric_type: monotonic_count
+#             DeliveringCount:
+#               alias: activemq.artemis.queue.messages_delivering
+#               metric_type: gauge
+#         # Tag each metric with the queue name so you can alert per-queue.
+#         # messaging.destination matches the DSM and APM span tag — enables
+#         # correlation between broker-level metrics and distributed traces.
+#         bean_tags:
+#           - "messaging.destination"
+#           - "queue_name"
+
+#       # ── Address-level metrics (Artemis uses Address -> Queue hierarchy) ──
+#       - include:
+#           domain: org.apache.activemq.artemis
+#           type: Address
+#           attribute:
+#             RoutedMessageCount:
+#               alias: activemq.artemis.address.routed_message_count
+#               metric_type: monotonic_count
+#             UnRoutedMessageCount:
+#               alias: activemq.artemis.address.unrouted_message_count
+#               metric_type: monotonic_count
+#             AddressSize:
+#               alias: activemq.artemis.address.size_bytes
+#               metric_type: gauge
+#         bean_tags:
+#           - "address_name"
+
+# ── Finance-specific alerting guidance ──────────────────────────────────────
+# After uncommenting and validating the check above, consider adding these
+# Datadog monitors (via Terraform datadog_monitor resource or the UI):
+#
+#   1. fraud.score.queue depth alert:
+#      metric: activemq.artemis.queue.message_count{queue_name:fraud.score.queue} > 500
+#      message: "Fraud scoring backlog detected — payments may be delayed"
+#
+#   2. alert.queue consumer count drop:
+#      metric: activemq.artemis.queue.consumer_count{queue_name:alert.queue} < 1
+#      message: "notification-service has no active consumers on alert.queue"
+#
+#   3. Broker memory pressure:
+#      metric: activemq.artemis.broker.address_memory_usage_pct > 85
+#      message: "ActiveMQ Artemis broker nearing memory limit"

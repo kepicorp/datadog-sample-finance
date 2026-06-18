@@ -1,0 +1,145 @@
+# =============================================================================
+# Finance Sample App — account-service (Java / Spring Boot)
+# =============================================================================
+# Core account management service. Responsibilities:
+#   - Account CRUD and balance enquiry
+#   - Produces JMS messages to ActiveMQ (OpenWire / JMS 2.0)
+#   - Persists account and ledger data to PostgreSQL
+#
+# Health endpoint: GET /actuator/health  →  200 OK
+# Main API:        GET/POST /v1/accounts/*
+# =============================================================================
+
+# ── Service ───────────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: Service
+metadata:
+  name: account-service
+  namespace: finance
+  labels:
+    app: account-service
+    component: service
+spec:
+  type: ClusterIP
+  selector:
+    app: account-service
+  ports:
+    - name: http
+      port: 8081
+      targetPort: 8081
+
+---
+# ── Deployment ────────────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: account-service
+  namespace: finance
+  labels:
+    app: account-service
+    component: service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: account-service
+  template:
+    metadata:
+      labels:
+        app: account-service
+        component: service
+    spec:
+      # Wait for both PostgreSQL and ActiveMQ before starting.
+      # account-service's Spring Actuator health check includes JMS, so
+      # the readiness probe would fail until ActiveMQ accepts connections.
+      initContainers:
+        - name: wait-for-postgres
+          image: busybox:1.36
+          command:
+            [
+              "sh",
+              "-c",
+              'until nc -z postgres-ledger 5432; do echo "waiting for postgres..."; sleep 3; done',
+            ]
+        - name: wait-for-activemq
+          image: busybox:1.36
+          command:
+            [
+              "sh",
+              "-c",
+              'until nc -z activemq-artemis 61616; do echo "waiting for activemq..."; sleep 3; done',
+            ]
+      containers:
+        - name: account-service
+          image: finance-sample-app-account-service:latest
+          imagePullPolicy: IfNotPresent
+
+          ports:
+            - name: http
+              containerPort: 8081
+
+          env:
+            # ── PostgreSQL ───────────────────────────────────────────────────
+            - name: POSTGRES_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: app-config
+                  key: POSTGRES_URL
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: app-secrets
+                  key: postgres-user
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: app-secrets
+                  key: postgres-password
+            # ── ActiveMQ (OpenWire / JMS) ────────────────────────────────────
+            - name: ACTIVEMQ_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: app-config
+                  key: ACTIVEMQ_URL
+            - name: ACTIVEMQ_USER
+              valueFrom:
+                secretKeyRef:
+                  name: app-secrets
+                  key: artemis-user
+            - name: ACTIVEMQ_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: app-secrets
+                  key: artemis-password
+
+          # ── Health checks ──────────────────────────────────────────────
+          # Use the custom /health endpoint (not /actuator/health) because Spring
+          # Actuator includes the JMS health indicator which would report DOWN
+          # if ActiveMQ has a transient hiccup, causing unnecessary pod restarts.
+          # /health is the hand-rolled endpoint in AccountController that only
+          # checks the service itself.
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8081
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8081
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "256Mi"
+            limits:
+              cpu: "1000m"
+              memory: "1Gi"

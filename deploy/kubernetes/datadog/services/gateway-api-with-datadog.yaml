@@ -1,0 +1,202 @@
+# ── gateway-api — Kubernetes Deployment + Service ─────────────────────────────
+# Public-facing REST API (Python / FastAPI).
+# Handles authentication middleware and routes requests to downstream services.
+#
+# Datadog instrumentation highlights:
+#   - Admission Controller auto-injection via admission.datadoghq.com/enabled
+#   - DD_AGENT_HOST set via downward API (hostIP) as fallback if Admission
+#     Controller is not available
+#   - Unified Service Tags (DD_ENV, DD_SERVICE, DD_VERSION) from ConfigMap
+#   - Log collection annotation (commented — uncomment for Step 4)
+#
+# Learning Progression:
+#   Step 1  — Deploy this manifest; confirm pod is Running
+#   Step 2  — Uncomment DD_* env vars and verify Unified Service Tags in APM
+#   Step 3  — Uncomment APM init in gateway_api/main.py and verify traces
+#   Step 4  — Uncomment log annotations below and verify trace_id in logs
+#   Step 5  — Uncomment custom spans in gateway_api/routes/payments.py
+# ─────────────────────────────────────────────────────────────────────────────
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway-api
+  namespace: finance
+  labels:
+    app: gateway-api
+    app.kubernetes.io/name: gateway-api
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/part-of: finance-sample-app
+    tags.datadoghq.com/env: staging
+    tags.datadoghq.com/service: gateway-api
+    tags.datadoghq.com/version: "1.0.0"
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: gateway-api
+  template:
+    metadata:
+      labels:
+        app: gateway-api
+        app.kubernetes.io/name: gateway-api
+        # ── UNIFIED SERVICE TAGGING — pod labels ─────────────────────────────
+        # These labels are required for Datadog Unified Service Tagging to work
+        # at the pod level. They propagate to all telemetry (traces, logs, metrics).
+        # Docs: https://docs.datadoghq.com/getting_started/tagging/unified_service_tagging/
+        tags.datadoghq.com/env: staging
+        tags.datadoghq.com/service: gateway-api
+        tags.datadoghq.com/version: "1.0.0"
+      annotations:
+        # ── ADMISSION CONTROLLER AUTO-INJECTION ──────────────────────────────
+        # This annotation tells the Datadog Admission Controller to automatically
+        # inject DD_AGENT_HOST, DD_TRACE_AGENT_URL, and DD_ENTITY_ID into this pod.
+        # Requires: Cluster Agent with Admission Controller enabled (see datadog-agent.yaml).
+        # Docs: https://docs.datadoghq.com/containers/cluster_agent/admission_controller/
+        admission.datadoghq.com/enabled: "true"
+
+        # ── LOG COLLECTION ANNOTATION (uncomment for Step 4) ─────────────────
+        # Instructs the Datadog Agent to collect logs from this container,
+        # label them with source=python and service=gateway-api, and apply
+        # the Python log pipeline for parsing.
+        # Uncomment when you are ready to enable log correlation (Step 4).
+        # Docs: https://docs.datadoghq.com/logs/log_collection/
+        #
+        # ad.datadoghq.com/gateway-api.logs: |
+        #   [{
+        #     "source": "python",
+        #     "service": "gateway-api",
+        #     "log_processing_rules": [{
+        #       "type": "multi_line",
+        #       "name": "log_start_with_date",
+        #       "pattern": "\\d{4}-\\d{2}-\\d{2}"
+        #     }]
+        #   }]
+
+    spec:
+      containers:
+        - name: gateway-api
+          image: finance-sample-app/gateway-api:1.0.0
+          ports:
+            - containerPort: 8000
+              name: http
+          env:
+            # ── UNIFIED SERVICE TAGGING env vars ───────────────────────────────
+            # These are injected from the ConfigMap below so they can be updated
+            # centrally across all pods without modifying individual Deployments.
+            - name: DD_ENV
+              valueFrom:
+                configMapKeyRef:
+                  name: finance-app-config
+                  key: DD_ENV
+            - name: DD_SERVICE
+              value: gateway-api      # Service-specific — set directly
+            - name: DD_VERSION
+              valueFrom:
+                configMapKeyRef:
+                  name: finance-app-config
+                  key: APP_VERSION
+
+            # ── DD_AGENT_HOST via Downward API (fallback) ────────────────────
+            # When the Admission Controller is enabled, this is injected
+            # automatically. Keep it here as a fallback for environments where
+            # the Admission Controller is not available (e.g. local dev).
+            # The Datadog Node Agent runs as a DaemonSet, so the Agent on the
+            # same node is always reachable at the node's IP (status.hostIP).
+            # Docs: https://docs.datadoghq.com/containers/kubernetes/apm/
+            - name: DD_AGENT_HOST
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
+
+            # ── DD_ENTITY_ID (for container-level tagging) ───────────────────
+            # Links this pod's telemetry to the correct container entity in Datadog.
+            # Also injected automatically by the Admission Controller.
+            - name: DD_ENTITY_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.uid
+
+            # ── APM TRACE AGENT URL ───────────────────────────────────────────
+            - name: DD_TRACE_AGENT_URL
+              value: "http://$(DD_AGENT_HOST):8126"
+
+            # ── DOGSTATSD URL (custom metrics) ────────────────────────────────
+            - name: DD_DOGSTATSD_URL
+              value: "udp://$(DD_AGENT_HOST):8125"
+
+            # ── APPLICATION ENV VARS ──────────────────────────────────────────
+            - name: APP_PORT
+              value: "8000"
+            - name: LOG_LEVEL
+              value: "INFO"
+            - name: LOG_FORMAT
+              value: "json"           # Structured JSON required for log correlation
+
+            # ── RUNTIME METRICS (uncomment for Step 6) ────────────────────────
+            # Enables Python runtime metrics: GC stats, memory, CPU time.
+            # Docs: https://docs.datadoghq.com/tracing/metrics/runtime_metrics/python/
+            # - name: DD_RUNTIME_METRICS_ENABLED
+            #   value: "true"
+
+            # ── CONTINUOUS PROFILER (uncomment for Step 7) ────────────────────
+            # Docs: https://docs.datadoghq.com/profiler/enabling/python/
+            # - name: DD_PROFILING_ENABLED
+            #   value: "true"
+
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 15
+            periodSeconds: 20
+
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gateway-api
+  namespace: finance
+  labels:
+    app: gateway-api
+    app.kubernetes.io/name: gateway-api
+    app.kubernetes.io/part-of: finance-sample-app
+spec:
+  selector:
+    app: gateway-api
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8000
+      protocol: TCP
+  type: ClusterIP
+
+---
+# ── ConfigMap for shared Finance app configuration ────────────────────────────
+# Centralises DD_ENV and APP_VERSION so all service Deployments stay in sync.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: finance-app-config
+  namespace: finance
+  labels:
+    app.kubernetes.io/part-of: finance-sample-app
+data:
+  DD_ENV: "staging"
+  APP_VERSION: "1.0.0"
+  DD_SITE: "datadoghq.com"

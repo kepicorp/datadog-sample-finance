@@ -1,0 +1,752 @@
+# =============================================================================
+# Finance Sample App — AWS EKS Deployment
+# =============================================================================
+# Provisions:
+#   - EKS cluster (terraform-aws-modules/eks/aws ~>20.0)
+#   - ECR repositories for all six microservices
+#   - AWS Secrets Manager secrets for DD_API_KEY and DATADOG_DBM_PASSWORD
+#   - IAM role for the Datadog AWS integration (read-only)
+#   - CloudWatch log group + Lambda forwarder subscription
+#   - Datadog AWS integration resource (commented out — requires DD_API_KEY)
+#
+# Security note: DD_API_KEY and DBM passwords are NEVER hardcoded here.
+# Supply them via AWS Secrets Manager or TF_VAR_datadog_api_key env var.
+# Docs: https://docs.datadoghq.com/integrations/amazon_web_services/
+# =============================================================================
+
+terraform {
+  required_version = ">= 1.5.0"
+
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 6.0"
+    }
+    # datadog provider is only needed when uncommenting the Datadog integration
+    # resources below (monitors, dashboards, AWS integration link).
+    # datadog = {
+    #   source  = "DataDog/datadog"
+    #   version = "~> 3.0"
+    # }
+  }
+
+  # ── REMOTE STATE (recommended for teams) ─────────────────────────────────
+  # backend "s3" {
+  #   bucket         = "your-terraform-state-bucket"
+  #   key            = "finance-app/aws/terraform.tfstate"
+  #   region         = "eu-west-1"
+  #   dynamodb_table = "terraform-lock"
+  #   encrypt        = true
+  # }
+
+
+}
+
+# =============================================================================
+# PROVIDERS
+# =============================================================================
+
+provider "aws" {
+  region = var.aws_region
+
+  # SSO / named profile support.
+  # Set via:  aws_profile = "my-profile"  in your .tfvars
+  # OR:       export AWS_PROFILE=my-profile  before running terraform
+  # Leave empty to fall back to the default credential chain.
+  profile = var.aws_profile != "" ? var.aws_profile : null
+
+  default_tags {
+    tags = {
+      Environment = var.environment
+      ManagedBy   = "terraform"
+      Project     = "finance-sample-app"
+    }
+  }
+}
+
+# The Kubernetes provider is NOT used here — application workloads are deployed
+# via `make deploy-k8s` (kubectl manifests in deploy/kubernetes/base/) after
+# Terraform provisions the cluster. This avoids the chicken-and-egg problem
+# where the K8s provider would try to authenticate to a cluster that doesn't
+# exist yet during the first `terraform plan`.
+#
+# After `terraform apply`, run the kubeconfig_command output to configure kubectl:
+#   eval "$(terraform output -raw kubeconfig_command)"
+# Then deploy the application:
+#   make deploy-k8s
+
+
+# ── DATADOG PROVIDER ──────────────────────────────────────────────────────────
+# The Datadog provider is configured but Datadog resources are individually
+# commented out below. Uncomment provider config when ready to enable the
+# Datadog AWS integration.
+# Docs: https://registry.terraform.io/providers/DataDog/datadog/latest/docs
+#
+# provider "datadog" {
+#   api_key = var.datadog_api_key     # sourced from TF_VAR_datadog_api_key or Secrets Manager
+#   api_url = "https://api.${var.dd_site}"
+# }
+# ─────────────────────────────────────────────────────────────────────────────
+
+# =============================================================================
+# DATA SOURCES
+# =============================================================================
+
+data "aws_caller_identity" "current" {}
+data "aws_partition" "current" {}
+
+data "aws_availability_zones" "available" {
+  state = "available"
+}
+
+# =============================================================================
+# NETWORKING — VPC
+# =============================================================================
+
+module "vpc" {
+  source  = "terraform-aws-modules/vpc/aws"
+  version = "~> 5.0"
+
+  name = "${var.cluster_name}-vpc"
+  cidr = "10.0.0.0/16"
+
+  azs             = slice(data.aws_availability_zones.available.names, 0, 3)
+  private_subnets = ["10.0.1.0/24", "10.0.2.0/24", "10.0.3.0/24"]
+  public_subnets  = ["10.0.101.0/24", "10.0.102.0/24", "10.0.103.0/24"]
+
+  enable_nat_gateway   = true
+  single_nat_gateway   = var.environment != "production" # save cost in non-prod
+  enable_dns_hostnames = true
+  enable_dns_support   = true
+
+  # EKS-required subnet tags
+  private_subnet_tags = {
+    "kubernetes.io/role/internal-elb"           = "1"
+    "kubernetes.io/cluster/${var.cluster_name}" = "owned"
+  }
+  public_subnet_tags = {
+    "kubernetes.io/role/elb"                    = "1"
+    "kubernetes.io/cluster/${var.cluster_name}" = "owned"
+  }
+}
+
+# =============================================================================
+# EKS CLUSTER
+# =============================================================================
+# Docs: https://registry.terraform.io/modules/terraform-aws-modules/eks/aws
+
+module "eks" {
+  source  = "terraform-aws-modules/eks/aws"
+  version = "~> 21.0"
+
+  name               = var.cluster_name
+  kubernetes_version = var.eks_kubernetes_version
+
+  vpc_id                 = module.vpc.vpc_id
+  subnet_ids             = module.vpc.private_subnets
+  endpoint_public_access = true
+
+  # Pin the service CIDR so it is known at plan time — Bottlerocket bootstrap
+  # user data requires this value to configure the in-cluster DNS resolver.
+  # Without it the launch template is created with empty user data and nodes
+  # never join the cluster. Must not overlap with the VPC CIDR (10.0.0.0/16).
+  service_ipv4_cidr = "172.20.0.0/16"
+
+  eks_managed_node_groups = {
+    finance_app = {
+      name           = "${var.cluster_name}-ng"
+      instance_types = [var.node_instance_type]
+
+      min_size     = var.node_group_min_size
+      max_size     = var.node_group_max_size
+      desired_size = var.node_group_desired_size
+
+      # Bottlerocket: container-optimised, immutable root FS, no SSH, automatic updates.
+      # cluster_service_cidr must match service_ipv4_cidr set on the cluster above so
+      # Bottlerocket can write the correct DNS resolver IP into its bootstrap config.
+      # Docs: https://docs.aws.amazon.com/eks/latest/userguide/eks-optimized-ami-bottlerocket.html
+      ami_type                   = "BOTTLEROCKET_x86_64"
+      cluster_service_cidr       = "172.20.0.0/16"
+      enable_bootstrap_user_data = true
+
+      # EKS module 21.x lowered the IMDS hop limit default from 2 to 1.
+      # Bottlerocket runs kubelet inside a container, so requests to IMDS
+      # traverse an extra network hop. Hop limit 1 drops the packet before
+      # it reaches kubelet, preventing credential fetch and node registration.
+      metadata_options = {
+        http_endpoint               = "enabled"
+        http_tokens                 = "required" # IMDSv2 enforced
+        http_put_response_hop_limit = 2
+      }
+
+      # SSM Session Manager is the only way to access Bottlerocket nodes (no SSH).
+      # AmazonSSMManagedInstanceCore lets the SSM agent register with the cluster.
+      iam_role_additional_policies = {
+        AmazonSSMManagedInstanceCore = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+      }
+
+      labels = {
+        role        = "finance-app"
+        environment = var.environment
+      }
+
+      # ── DATADOG NODE GROUP TAGS ───────────────────────────────────────────
+      # These tags flow into Datadog host tags via the AWS integration.
+      # Docs: https://docs.datadoghq.com/getting_started/tagging/unified_service_tagging/
+      tags = {
+        "dd:env"     = var.environment
+        "dd:service" = "finance-app"
+      }
+      # ─────────────────────────────────────────────────────────────────────
+    }
+  }
+
+  # Let the module manage the EKS control-plane log group so there is no
+  # duplicate conflict. Retention is set to 30 days to match the app log group.
+  create_cloudwatch_log_group            = true
+  cloudwatch_log_group_retention_in_days = var.log_retention_days
+  cloudwatch_log_group_tags = {
+    Application = "finance-app"
+  }
+
+  # Cluster addons — 'addons' is the new key name in module ~> 21.0.
+  # vpc-cni MUST use before_compute = true so it is installed before the node
+  # group is created. Without it there is a deadlock: the node group waits for
+  # nodes to be Ready, nodes need vpc-cni to be Ready, vpc-cni waits for the
+  # node group to exist. before_compute breaks this by deploying vpc-cni first.
+  addons = {
+    coredns = {
+      most_recent = true
+    }
+    kube-proxy = {
+      most_recent = true
+    }
+    vpc-cni = {
+      most_recent    = true
+      before_compute = true # install before node group to avoid deadlock
+    }
+    # EBS CSI driver — needed for persistent volumes (PostgreSQL, ActiveMQ data).
+    # service_account_role_arn grants the controller pod EC2 permissions via IRSA
+    # (IAM Roles for Service Accounts). Without it the controller uses the node
+    # role, which has no EBS permissions, and crashes with UnauthorizedOperation.
+    aws-ebs-csi-driver = {
+      most_recent              = true
+      service_account_role_arn = aws_iam_role.ebs_csi_driver.arn
+    }
+  }
+
+  # Ensure the IAM identity that runs Terraform always has cluster-admin access.
+  # Without this, kubectl and Terraform itself cannot authenticate to the cluster
+  # after creation (EKS module 21.x uses API auth, not aws-auth ConfigMap).
+  enable_cluster_creator_admin_permissions = true
+
+  # Allow the EKS cluster to pull from ECR without additional auth
+  node_security_group_additional_rules = {
+    ingress_self_all = {
+      description = "Node-to-node traffic"
+      protocol    = "-1"
+      from_port   = 0
+      to_port     = 0
+      type        = "ingress"
+      self        = true
+    }
+    egress_all = {
+      description = "Allow all outbound"
+      protocol    = "-1"
+      from_port   = 0
+      to_port     = 0
+      type        = "egress"
+      cidr_blocks = ["0.0.0.0/0"]
+    }
+  }
+
+  tags = {
+    cluster = var.cluster_name
+  }
+}
+
+# =============================================================================
+# ECR REPOSITORIES — one per microservice
+# =============================================================================
+# Docs: https://docs.aws.amazon.com/AmazonECR/latest/userguide/what-is-ecr.html
+
+locals {
+  services = [
+    "gateway-api",
+    "account-service",
+    "transaction-service",
+    "fraud-detection",
+    "notification-service",
+    "batch-processor",
+  ]
+}
+
+resource "aws_ecr_repository" "services" {
+  for_each = toset(local.services)
+
+  name                 = "finance-app/${each.key}"
+  image_tag_mutability = "MUTABLE" # use IMMUTABLE in production for deploy traceability
+
+  image_scanning_configuration {
+    scan_on_push = true
+  }
+
+  encryption_configuration {
+    encryption_type = "AES256"
+  }
+
+  tags = {
+    Service = each.key
+  }
+}
+
+# Lifecycle policy: keep last 10 tagged images, delete untagged after 1 day
+resource "aws_ecr_lifecycle_policy" "services" {
+  for_each   = aws_ecr_repository.services
+  repository = each.value.name
+
+  policy = jsonencode({
+    rules = [
+      {
+        rulePriority = 1
+        description  = "Expire untagged images after 1 day"
+        selection = {
+          tagStatus   = "untagged"
+          countType   = "sinceImagePushed"
+          countUnit   = "days"
+          countNumber = 1
+        }
+        action = { type = "expire" }
+      },
+      {
+        rulePriority = 2
+        description  = "Keep last 10 tagged images per service"
+        selection = {
+          tagStatus     = "tagged"
+          tagPrefixList = ["v", "sha-"]
+          countType     = "imageCountMoreThan"
+          countNumber   = 10
+        }
+        action = { type = "expire" }
+      },
+    ]
+  })
+}
+
+# =============================================================================
+# IAM — EBS CSI Driver (IRSA)
+# =============================================================================
+# The EBS CSI controller needs EC2 permissions (CreateVolume, AttachVolume, etc.)
+# to provision PersistentVolumes. IRSA (IAM Roles for Service Accounts) gives the
+# controller pod its own scoped IAM role instead of inheriting the broad node role.
+# Docs: https://docs.aws.amazon.com/eks/latest/userguide/ebs-csi.html
+
+data "aws_iam_policy_document" "ebs_csi_driver_assume_role" {
+  statement {
+    effect = "Allow"
+    principals {
+      type        = "Federated"
+      identifiers = [module.eks.oidc_provider_arn]
+    }
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+    condition {
+      test     = "StringEquals"
+      variable = "${module.eks.oidc_provider}:aud"
+      values   = ["sts.amazonaws.com"]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "${module.eks.oidc_provider}:sub"
+      values   = ["system:serviceaccount:kube-system:ebs-csi-controller-sa"]
+    }
+  }
+}
+
+resource "aws_iam_role" "ebs_csi_driver" {
+  name               = "${var.cluster_name}-ebs-csi-driver"
+  description        = "IRSA role for the EBS CSI driver controller in cluster ${var.cluster_name}"
+  assume_role_policy = data.aws_iam_policy_document.ebs_csi_driver_assume_role.json
+
+  tags = {
+    Component = "ebs-csi-driver"
+  }
+}
+
+resource "aws_iam_role_policy_attachment" "ebs_csi_driver" {
+  role       = aws_iam_role.ebs_csi_driver.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"
+}
+
+# =============================================================================
+# AWS SECRETS MANAGER — sensitive credentials
+# =============================================================================
+# IMPORTANT: values are placeholder strings — never hardcode real secrets here.
+# Populate via:
+#   aws secretsmanager put-secret-value --secret-id finance-app/<environment>/dd-api-key \
+#       --secret-string "your-actual-key"
+# Or use AWS Console / CI pipeline secret injection.
+
+resource "aws_secretsmanager_secret" "dd_api_key" {
+  name                    = "finance-app/${var.environment}/dd-api-key"
+  description             = "Datadog API key for the Finance sample app. Populate manually — never commit to git."
+  recovery_window_in_days = 0 # 0 = force-delete immediately; avoids 'scheduled for deletion' error on re-apply
+
+  tags = {
+    Purpose = "datadog-integration"
+  }
+}
+
+resource "aws_secretsmanager_secret_version" "dd_api_key" {
+  secret_id     = aws_secretsmanager_secret.dd_api_key.id
+  secret_string = "REPLACE_ME" # Replace via CLI or CI — never commit the real key
+}
+
+resource "aws_secretsmanager_secret" "dd_app_key" {
+  name                    = "finance-app/${var.environment}/dd-app-key"
+  description             = "Datadog Application key for the Finance sample app Terraform provider. Populate manually — never commit to git."
+  recovery_window_in_days = 0
+
+  tags = {
+    Purpose = "datadog-integration"
+  }
+}
+
+resource "aws_secretsmanager_secret_version" "dd_app_key" {
+  secret_id     = aws_secretsmanager_secret.dd_app_key.id
+  secret_string = "REPLACE_ME" # Replace via CLI or CI — never commit the real key
+}
+
+resource "aws_secretsmanager_secret" "datadog_dbm_password" {
+  name                    = "finance-app/${var.environment}/datadog-dbm-password"
+  description             = "Password for the read-only Datadog DBM PostgreSQL user. Populate manually."
+  recovery_window_in_days = 0 # 0 = force-delete immediately; avoids 'scheduled for deletion' error on re-apply
+
+  tags = {
+    Purpose = "datadog-dbm"
+  }
+}
+
+resource "aws_secretsmanager_secret_version" "datadog_dbm_password" {
+  secret_id     = aws_secretsmanager_secret.datadog_dbm_password.id
+  secret_string = "REPLACE_ME" # Replace via CLI or CI — never commit the real password
+}
+
+# =============================================================================
+# IAM — Datadog AWS Integration role (read-only)
+# =============================================================================
+# Docs: https://docs.datadoghq.com/integrations/amazon_web_services/
+#
+# This role is assumed by Datadog's AWS account to collect CloudWatch metrics,
+# EC2/EKS resource metadata, and forward events.
+# The ExternalId prevents confused-deputy attacks.
+
+locals {
+  # Datadog's AWS account ID — do not change
+  datadog_aws_account_id = "464622532012"
+  # Generate a unique external ID per integration; store in Secrets Manager for audit
+  # In practice, retrieve this from Datadog's AWS integration page before applying
+  datadog_external_id = "finance-app-${var.environment}-REPLACE_WITH_DD_EXTERNAL_ID"
+}
+
+data "aws_iam_policy_document" "datadog_assume_role" {
+  statement {
+    actions = ["sts:AssumeRole"]
+    principals {
+      type        = "AWS"
+      identifiers = ["arn:${data.aws_partition.current.partition}:iam::${local.datadog_aws_account_id}:root"]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "sts:ExternalId"
+      values   = [local.datadog_external_id]
+    }
+  }
+}
+
+resource "aws_iam_role" "datadog_integration" {
+  name               = "DatadogIntegration-${var.environment}"
+  description        = "Read-only role assumed by Datadog for AWS integration metric collection"
+  assume_role_policy = data.aws_iam_policy_document.datadog_assume_role.json
+
+  tags = {
+    Purpose = "datadog-aws-integration"
+  }
+}
+
+# Attach Datadog's recommended AWS managed policy for metric collection
+resource "aws_iam_role_policy_attachment" "datadog_core" {
+  role       = aws_iam_role.datadog_integration.name
+  policy_arn = "arn:aws:iam::aws:policy/SecurityAudit"
+}
+
+# Additional permissions required by the Datadog AWS integration
+data "aws_iam_policy_document" "datadog_additional" {
+  statement {
+    sid    = "DatadogMetricsCollection"
+    effect = "Allow"
+    actions = [
+      "apigateway:GET",
+      "autoscaling:Describe*",
+      "cloudfront:GetDistributionConfig",
+      "cloudfront:ListDistributions",
+      "cloudtrail:DescribeTrails",
+      "cloudtrail:GetTrailStatus",
+      "cloudwatch:Describe*",
+      "cloudwatch:Get*",
+      "cloudwatch:List*",
+      "codedeploy:List*",
+      "codedeploy:BatchGet*",
+      "directconnect:Describe*",
+      "dynamodb:List*",
+      "dynamodb:Describe*",
+      "ec2:Describe*",
+      "ecs:Describe*",
+      "ecs:List*",
+      "eks:Describe*",
+      "eks:List*",
+      "elasticache:Describe*",
+      "elasticache:List*",
+      "elasticfilesystem:DescribeFileSystems",
+      "elasticloadbalancing:Describe*",
+      "kinesis:List*",
+      "kinesis:Describe*",
+      "lambda:GetPolicy",
+      "lambda:List*",
+      "logs:DeleteSubscriptionFilter",
+      "logs:DescribeLogGroups",
+      "logs:DescribeLogStreams",
+      "logs:DescribeSubscriptionFilters",
+      "logs:FilterLogEvents",
+      "logs:PutSubscriptionFilter",
+      "logs:TestMetricFilter",
+      "rds:Describe*",
+      "rds:List*",
+      "redshift:Describe*",
+      "route53:List*",
+      "s3:GetBucketLogging",
+      "s3:GetBucketNotification",
+      "s3:GetBucketTagging",
+      "s3:ListAllMyBuckets",
+      "s3:PutBucketNotification",
+      "ses:Get*",
+      "sns:List*",
+      "sns:Publish",
+      "sqs:ListQueues",
+      "support:*",
+      "tag:GetResources",
+      "tag:GetTagKeys",
+      "tag:GetTagValues",
+      "xray:BatchGetTraces",
+      "xray:GetTraceSummaries",
+    ]
+    resources = ["*"]
+  }
+}
+
+resource "aws_iam_policy" "datadog_additional" {
+  name        = "DatadogAdditionalPermissions-${var.environment}"
+  description = "Additional permissions required by Datadog AWS integration"
+  policy      = data.aws_iam_policy_document.datadog_additional.json
+}
+
+resource "aws_iam_role_policy_attachment" "datadog_additional" {
+  role       = aws_iam_role.datadog_integration.name
+  policy_arn = aws_iam_policy.datadog_additional.arn
+}
+
+# =============================================================================
+# CLOUDWATCH LOG GROUP + LAMBDA FORWARDER SUBSCRIPTION
+# =============================================================================
+# The Datadog Lambda Forwarder ships CloudWatch logs to Datadog Log Management.
+# Deploy the forwarder via the Datadog CloudFormation stack first, then
+# reference the ARN here.
+# Docs: https://docs.datadoghq.com/logs/guide/forwarder/
+
+resource "aws_cloudwatch_log_group" "finance_app" {
+  name              = "/aws/eks/${var.cluster_name}/application"
+  retention_in_days = var.log_retention_days
+
+  tags = {
+    Application = "finance-app"
+  }
+}
+
+# NOTE: The EKS cluster control-plane log group (/aws/eks/<name>/cluster) is
+# managed by module.eks (create_cloudwatch_log_group = true above).
+# The orphaned log group is cleaned automatically by scripts/aws-pre-apply.sh,
+# which is called by make tf-apply-aws before every apply.
+
+# ── LAMBDA FORWARDER SUBSCRIPTION ────────────────────────────────────────────
+# Uncomment after deploying the Datadog Lambda Forwarder CloudFormation stack.
+# Docs: https://docs.datadoghq.com/logs/guide/forwarder/
+#
+# Replace the ARN below with your deployed forwarder Lambda function ARN.
+# The forwarder is deployed per-region from:
+# https://github.com/DataDog/datadog-serverless-functions/releases
+#
+# variable "datadog_forwarder_lambda_arn" {
+#   description = "ARN of the deployed Datadog Lambda Forwarder"
+#   type        = string
+#   default     = "" # e.g. arn:aws:lambda:eu-west-1:123456789:function:datadog-log-forwarder
+# }
+#
+# resource "aws_cloudwatch_log_subscription_filter" "finance_app_to_datadog" {
+#   name            = "finance-app-to-datadog"
+#   log_group_name  = aws_cloudwatch_log_group.finance_app.name
+#   filter_pattern  = ""   # empty = forward all logs; adjust for cost control
+#   destination_arn = var.datadog_forwarder_lambda_arn
+#
+#   depends_on = [aws_lambda_permission.allow_cloudwatch]
+# }
+#
+# resource "aws_lambda_permission" "allow_cloudwatch" {
+#   statement_id  = "AllowExecutionFromCloudWatch"
+#   action        = "lambda:InvokeFunction"
+#   function_name = var.datadog_forwarder_lambda_arn
+#   principal     = "logs.amazonaws.com"
+#   source_arn    = "${aws_cloudwatch_log_group.finance_app.arn}:*"
+# }
+# ─────────────────────────────────────────────────────────────────────────────
+
+# =============================================================================
+# ── DATADOG INTEGRATION ──
+# =============================================================================
+# All resources in this section require the Datadog Terraform provider and a
+# valid DD_API_KEY. Uncomment only after:
+#   1. The Datadog provider block above is uncommented and configured
+#   2. TF_VAR_datadog_api_key is set in your shell (never in terraform.tfvars)
+#   3. The IAM role above is created (first apply without this section)
+#
+# Docs: https://registry.terraform.io/providers/DataDog/datadog/latest/docs
+# AWS integration guide: https://docs.datadoghq.com/integrations/amazon_web_services/
+
+# resource "datadog_integration_aws" "main" {
+#   account_id = data.aws_caller_identity.current.account_id
+#   role_name  = aws_iam_role.datadog_integration.name
+#
+#   # Filter which EC2/EKS resources to monitor by tag
+#   # Docs: https://docs.datadoghq.com/integrations/amazon_web_services/#resource-collection
+#   filter_tags = [
+#     "env:${var.environment}",
+#     "Project:finance-sample-app",
+#   ]
+#
+#   # Collect host-level tags from EC2 instance metadata
+#   host_tags = [
+#     "env:${var.environment}",
+#     "cluster:${var.cluster_name}",
+#   ]
+#
+#   # Enable specific AWS service integrations
+#   account_specific_namespace_rules = {
+#     api_gateway             = true
+#     auto_scaling            = true
+#     aws_eks                 = true
+#     elastic_load_balancing  = true
+#     lambda                  = true
+#     rds                     = true   # set to true if using RDS instead of containerised Postgres
+#     s3                      = false  # disable if not in use — reduces metric volume
+#   }
+# }
+
+# ── DATADOG MONITOR: High payment error rate ──────────────────────────────────
+# Uncomment to create an alert that fires when payment errors exceed 5% over 5 min.
+# Adjust thresholds per your SLA requirements.
+#
+# resource "datadog_monitor" "payment_error_rate" {
+#   name    = "[${var.environment}] Finance — High payment error rate"
+#   type    = "query alert"
+#   message = <<-EOT
+#     Payment error rate exceeded 5% over the last 5 minutes.
+#     Runbook: https://wiki.example.com/runbooks/payment-errors
+#     @pagerduty-finance-oncall
+#   EOT
+#
+#   query = "sum(last_5m):sum:finance.payment.initiated{env:${var.environment},status:error}.as_rate() / sum:finance.payment.initiated{env:${var.environment}}.as_rate() * 100 > 5"
+#
+#   monitor_thresholds {
+#     critical          = 5
+#     critical_recovery = 2
+#     warning           = 3
+#     warning_recovery  = 1
+#   }
+#
+#   tags = [
+#     "env:${var.environment}",
+#     "service:gateway-api",
+#     "team:finance-platform",
+#   ]
+#
+#   notify_no_data    = false
+#   renotify_interval = 60
+# }
+
+# ── DATADOG DASHBOARD: Finance overview ───────────────────────────────────────
+# Uncomment to provision a starter Finance observability dashboard via Terraform.
+# Extend the widget list with your key metrics and SLIs.
+#
+# resource "datadog_dashboard" "finance_overview" {
+#   title        = "Finance App — Service Overview (${var.environment})"
+#   description  = "Key metrics for the Finance sample app: payments, fraud, ledger, batch jobs"
+#   layout_type  = "ordered"
+#   is_read_only = false
+#
+#   widget {
+#     timeseries_definition {
+#       title = "Payment Initiation Rate"
+#       request {
+#         q            = "sum:finance.payment.initiated{env:${var.environment}}.as_rate()"
+#         display_type = "line"
+#       }
+#     }
+#   }
+#
+#   widget {
+#     timeseries_definition {
+#       title = "Fraud Score Distribution"
+#       request {
+#         q            = "avg:finance.fraud.score{env:${var.environment}} by {fraud_score_bucket}"
+#         display_type = "bars"
+#       }
+#     }
+#   }
+#
+#   widget {
+#     check_status_definition {
+#       title     = "Batch Processor — Last Run Status"
+#       check     = "datadog.agent.up"
+#       grouping  = "cluster"
+#       tags      = ["service:batch-processor", "env:${var.environment}"]
+#     }
+#   }
+# }
+
+# ── DATADOG SLO: Payment API availability ─────────────────────────────────────
+# Uncomment to define an SLO for the Payment API targeting 99.9% availability.
+# Docs: https://docs.datadoghq.com/monitors/service_level_objectives/
+#
+# resource "datadog_service_level_objective" "payment_availability" {
+#   name        = "Payment API Availability (${var.environment})"
+#   type        = "metric"
+#   description = "99.9% of payment requests succeed over a 30-day rolling window"
+#
+#   query {
+#     numerator   = "sum:finance.payment.initiated{env:${var.environment},status:success}.as_count()"
+#     denominator = "sum:finance.payment.initiated{env:${var.environment}}.as_count()"
+#   }
+#
+#   thresholds {
+#     timeframe       = "30d"
+#     target          = 99.9
+#     warning         = 99.95
+#   }
+#
+#   tags = [
+#     "env:${var.environment}",
+#     "service:gateway-api",
+#   ]
+# }
+
+# =============================================================================
+# END DATADOG INTEGRATION
+# =============================================================================
