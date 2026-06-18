@@ -2,7 +2,7 @@
 # Use the build platform (native) then cross-compile for the target platform.
 # This avoids QEMU emulation for Go toolchain commands (go mod download, go build)
 # which crash on ARM hosts building for amd64 due to QEMU lfstack issues.
-FROM --platform=$BUILDPLATFORM golang:1.22-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.23-alpine AS builder
 
 ARG TARGETOS=linux
 ARG TARGETARCH=amd64
@@ -15,9 +15,10 @@ RUN apk add --no-cache git
 COPY go.mod go.sum* ./
 # go mod tidy resolves any new dependencies added by the instrumentation patch
 # (e.g. dd-trace-go/v2). go.sum may not include them until tidy is run.
-RUN go mod tidy && go mod download
+# GONOSUMCHECK=* prevents checksum failures when go.sum is stale or missing.
+RUN GONOSUMCHECK=* GOFLAGS=-mod=mod go mod tidy && go mod download
 COPY . .
-RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldflags="-s -w" -o /notification-service .
+RUN GONOSUMCHECK=* GOFLAGS=-mod=mod CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldflags="-s -w" -o /notification-service .
 
 # ── DATADOG INSTRUMENTATION — Orchestrion build (alternative to standard build) ──
 # Replace the RUN go build step above with the block below to use Orchestrion

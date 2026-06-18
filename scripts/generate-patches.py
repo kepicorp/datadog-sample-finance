@@ -218,22 +218,31 @@ def uncomment_go_block(block):
         if re.match(r"\s*// ── DATADOG", line) or re.match(r"\s*// ─{5,}", line):
             continue
         # Tab-indented code inside functions: \t// <code>
-        m = re.match(r"^(\s*)// (.*)$", line)
+        # Also handle //\t (no space after //) for import paths.
+        # The separator (space or tab between // and code) is captured and prepended
+        # to rest so that tab-indented imports stay tab-indented after uncommenting.
+        m = re.match(r"^(\s*)//([ \t])(.*)$", line)
         if m:
-            indent, rest = m.group(1), m.group(2)
+            indent, sep, rest = m.group(1), m.group(2), m.group(3)
+            # For //\t lines (import paths), restore the tab as part of rest
+            if sep == "\t":
+                rest = "\t" + rest
             # Keep lines that look like Go code
+            stripped = rest.strip()
             if (
                 re.match(
                     r"^(\t|\"go\.|import|tracer\.|profiler\.|if |defer |edgesMap|ctx |_ =|datastreams|options\.|statsd)",
                     rest,
                 )
                 or re.match(
-                    r'^[ \t]*(tracer\.|profiler\.|datastreams\.|options\.|statsd|edgesMap|"go\.)',
+                    r'^[ \t]*(tracer\.|profiler\.|datastreams\.|options\.|statsd|edgesMap|"go\.|\[\]string)',
                     rest,
                 )
-                or rest.strip().startswith('"')
-                or rest.strip().startswith(")")
-                or rest.strip().startswith("}")
+                or stripped.startswith('"')
+                or stripped.startswith(")")
+                or stripped.startswith("}")
+                or stripped.startswith("[]")
+                or stripped.startswith("context.")
             ):
                 result.append(indent + rest)
             # else: drop prose
