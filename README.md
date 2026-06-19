@@ -364,7 +364,7 @@ gets wrong:
 | 5 | Deletes ECR repositories | |
 | 7 | Runs `terraform destroy` | Cleans up VPC, subnets, IAM roles, KMS keys, CloudWatch log groups |
 
-`tf-force-destroy-aws` is an alias for `tf-destroy-aws` — they run the same script.
+There is no separate `tf-force-destroy-aws` target — `tf-destroy-aws` already handles all failure modes.
 
 See `deploy/terraform/aws/README.md` for full details on SSO profiles, outputs reference, remote state, and Datadog integration steps.
 

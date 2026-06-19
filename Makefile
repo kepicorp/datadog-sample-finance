@@ -29,7 +29,7 @@
 #   make deploy-k8s-eks       Deploy the Finance app to EKS
 #   make deploy-k8s-dd        Deploy the Datadog Agent (auto-detects local vs EKS)
 #   make tf-destroy-aws       Destroy all AWS Terraform resources
-#   make tf-force-destroy-aws Force-destroy in dependency order (use when tf-destroy-aws fails)
+
 #   # make tf-plan-gcp        [GCP — not yet available, see deploy/terraform/gcp/]
 #
 # AWS + K8s workflow:
@@ -48,7 +48,7 @@
 #   # make tf-configure-kubectl-gcp
 #   # make deploy-k8s
 
-.PHONY: all build build-ecr up up-dd down down-dd logs health version test test-traffic restart clean-data reset-db deploy-k8s deploy-k8s-eks deploy-k8s-dd undeploy-k8s instrument uninstrument tf-plan-aws tf-apply-aws tf-configure-kubectl frontend-url tf-destroy-aws tf-force-destroy-aws dd-secrets tf-plan-dd tf-apply-dd tf-destroy-dd help
+.PHONY: all build build-ecr up up-dd down down-dd logs health version test test-traffic restart clean-data reset-db deploy-k8s deploy-k8s-eks deploy-k8s-dd undeploy-k8s instrument uninstrument tf-plan-aws tf-apply-aws tf-configure-kubectl frontend-url tf-destroy-aws dd-secrets tf-plan-dd tf-apply-dd tf-destroy-dd help
 
 # Resolve DD_VERSION once so all targets share the same value.
 # Falls back to 'dev' when git is not available (e.g. in a bare CI image).
@@ -418,9 +418,7 @@ frontend-url:
 tf-destroy-aws:
 	bash scripts/aws-force-destroy.sh
 
-## tf-force-destroy-aws: Alias for tf-destroy-aws (kept for compatibility).
-tf-force-destroy-aws:
-	bash scripts/aws-force-destroy.sh
+
 
 ## dd-secrets: Print eval-ready export commands for TF_VAR_datadog_api_key and
 ##             TF_VAR_datadog_app_key, sourced from AWS Secrets Manager.
