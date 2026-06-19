@@ -34,6 +34,8 @@ spec:
       app: batch-processor
   template:
     metadata:
+      annotations:
+        ad.datadoghq.com/batch-processor.logs: '[{"source":"java","service":"batch-processor"}]'
       labels:
         app: batch-processor
         component: service
@@ -79,6 +81,19 @@ spec:
           # batch-processor is a non-web Spring Boot app (no HTTP server).
           # Use a process-existence check instead of an HTTP probe.
           # The JVM process name is 'app.jar' (from the Docker CMD).
+            # ── Datadog Unified Service Tagging ─────────────────────────────
+            - name: DD_ENV
+              value: "staging"
+            - name: DD_SERVICE
+              value: "batch-processor"
+            - name: DD_VERSION
+              value: "latest"
+            # DD_AGENT_HOST uses the node's IP so the pod sends traces/metrics
+            # to the DaemonSet agent running on the same node.
+            - name: DD_AGENT_HOST
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
           livenessProbe:
             exec:
               command: ["sh", "-c", 'pgrep -f "java" > /dev/null']

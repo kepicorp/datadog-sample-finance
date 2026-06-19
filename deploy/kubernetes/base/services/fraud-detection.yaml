@@ -28,6 +28,8 @@ spec:
       app: fraud-detection
   template:
     metadata:
+      annotations:
+        ad.datadoghq.com/fraud-detection.logs: '[{"source":"python","service":"fraud-detection"}]'
       labels:
         app: fraud-detection
         component: service
@@ -77,6 +79,19 @@ spec:
           # Adjust the process name to match your entrypoint if needed.
           # /proc/1 always exists while the main process (PID 1) is alive.
           # pgrep is not available in minimal Python images, so we use /proc directly.
+            # ── Datadog Unified Service Tagging ─────────────────────────────
+            - name: DD_ENV
+              value: "staging"
+            - name: DD_SERVICE
+              value: "fraud-detection"
+            - name: DD_VERSION
+              value: "latest"
+            # DD_AGENT_HOST uses the node's IP so the pod sends traces/metrics
+            # to the DaemonSet agent running on the same node.
+            - name: DD_AGENT_HOST
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
           livenessProbe:
             exec:
               command: ["/bin/sh", "-c", "[ -d /proc/1 ]"]

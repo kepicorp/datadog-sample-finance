@@ -45,6 +45,8 @@ spec:
       app: transaction-service
   template:
     metadata:
+      annotations:
+        ad.datadoghq.com/transaction-service.logs: '[{"source":"nodejs","service":"transaction-service"}]'
       labels:
         app: transaction-service
         component: service
@@ -98,6 +100,19 @@ spec:
                   name: app-config
                   key: REDIS_URL
 
+            # ── Datadog Unified Service Tagging ─────────────────────────────
+            - name: DD_ENV
+              value: "staging"
+            - name: DD_SERVICE
+              value: "transaction-service"
+            - name: DD_VERSION
+              value: "latest"
+            # DD_AGENT_HOST uses the node's IP so the pod sends traces/metrics
+            # to the DaemonSet agent running on the same node.
+            - name: DD_AGENT_HOST
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
           # ── Health checks ──────────────────────────────────────────────────
           livenessProbe:
             httpGet:

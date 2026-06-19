@@ -25,6 +25,8 @@ spec:
       app: notification-service
   template:
     metadata:
+      annotations:
+        ad.datadoghq.com/notification-service.logs: '[{"source":"go","service":"notification-service"}]'
       labels:
         app: notification-service
         component: service
@@ -70,6 +72,19 @@ spec:
 
           # ── Health check ───────────────────────────────────────────────────
           # Verify the main consumer process is alive.
+            # ── Datadog Unified Service Tagging ─────────────────────────────
+            - name: DD_ENV
+              value: "staging"
+            - name: DD_SERVICE
+              value: "notification-service"
+            - name: DD_VERSION
+              value: "latest"
+            # DD_AGENT_HOST uses the node's IP so the pod sends traces/metrics
+            # to the DaemonSet agent running on the same node.
+            - name: DD_AGENT_HOST
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
           livenessProbe:
             exec:
               command:

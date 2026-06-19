@@ -45,6 +45,8 @@ spec:
       app: gateway-api
   template:
     metadata:
+      annotations:
+        ad.datadoghq.com/gateway-api.logs: '[{"source":"python","service":"gateway-api"}]'
       labels:
         app: gateway-api
         component: service
@@ -93,6 +95,19 @@ spec:
                   name: app-secrets
                   key: keycloak-client-secret
 
+            # ── Datadog Unified Service Tagging ─────────────────────────────
+            - name: DD_ENV
+              value: "staging"
+            - name: DD_SERVICE
+              value: "gateway-api"
+            - name: DD_VERSION
+              value: "latest"
+            # DD_AGENT_HOST uses the node's IP so the pod sends traces/metrics
+            # to the DaemonSet agent running on the same node.
+            - name: DD_AGENT_HOST
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
           # ── Health checks ──────────────────────────────────────────────────
           livenessProbe:
             httpGet:

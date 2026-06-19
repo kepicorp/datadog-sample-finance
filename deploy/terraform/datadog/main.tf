@@ -51,8 +51,10 @@ locals {
   env_filter       = "env:${var.environment}"
   namespace_filter = "kube_namespace:finance"
 
-  # Combined filter for all finance app logs
-  finance_log_filter = "${local.cluster_filter} ${local.namespace_filter}"
+  # Combined filter for all finance app logs.
+  # Uses kube_namespace:finance only so the index captures logs from both
+  # local k3s (no kube_cluster_name tag) and EKS (kube_cluster_name:finance-app).
+  finance_log_filter = local.namespace_filter
 
   common_tags = [
     "env:${var.environment}",

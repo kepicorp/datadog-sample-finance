@@ -45,6 +45,8 @@ spec:
       app: account-service
   template:
     metadata:
+      annotations:
+        ad.datadoghq.com/account-service.logs: '[{"source":"java","service":"account-service"}]'
       labels:
         app: account-service
         component: service
@@ -112,6 +114,19 @@ spec:
                   name: app-secrets
                   key: artemis-password
 
+            # ── Datadog Unified Service Tagging ─────────────────────────────
+            - name: DD_ENV
+              value: "staging"
+            - name: DD_SERVICE
+              value: "account-service"
+            - name: DD_VERSION
+              value: "latest"
+            # DD_AGENT_HOST uses the node's IP so the pod sends traces/metrics
+            # to the DaemonSet agent running on the same node.
+            - name: DD_AGENT_HOST
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
           # ── Health checks ──────────────────────────────────────────────
           # Use the custom /health endpoint (not /actuator/health) because Spring
           # Actuator includes the JMS health indicator which would report DOWN

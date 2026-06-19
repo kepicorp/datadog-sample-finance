@@ -261,11 +261,20 @@ deploy-k8s:
 	@echo "Applying config, secrets and infrastructure..."
 	kubectl apply -f deploy/kubernetes/base/01-config.yaml
 	kubectl apply -f deploy/kubernetes/base/02-secrets.yaml
-	kubectl apply -f deploy/kubernetes/base/infrastructure/
+	kubectl apply -f deploy/kubernetes/base/infrastructure/activemq.yaml
+	kubectl apply -f deploy/kubernetes/base/infrastructure/keycloak.yaml
+	kubectl apply -f deploy/kubernetes/base/infrastructure/postgres.yaml
+	kubectl apply -f deploy/kubernetes/base/infrastructure/redis.yaml
 	@echo "Waiting for PostgreSQL to be ready..."
 	kubectl rollout status statefulset/postgres-ledger -n finance --timeout=120s
 	@echo "Applying application services..."
-	kubectl apply -f deploy/kubernetes/base/services/
+	kubectl apply -f deploy/kubernetes/base/services/account-service.yaml
+	kubectl apply -f deploy/kubernetes/base/services/batch-processor.yaml
+	kubectl apply -f deploy/kubernetes/base/services/fraud-detection.yaml
+	kubectl apply -f deploy/kubernetes/base/services/frontend.yaml
+	kubectl apply -f deploy/kubernetes/base/services/gateway-api.yaml
+	kubectl apply -f deploy/kubernetes/base/services/notification-service.yaml
+	kubectl apply -f deploy/kubernetes/base/services/transaction-service.yaml
 	@echo ""
 	@echo "✓  Deployed. Check pod status:"
 	@echo "     kubectl get pods -n finance"
@@ -365,10 +374,13 @@ deploy-k8s-dd:
 			exit 1; \
 		fi; \
 		echo "==> Applying local cluster config..."; \
-		kubectl apply -f deploy/kubernetes/datadog/secrets/; \
-		kubectl apply -f deploy/kubernetes/datadog/agent/; \
+		echo "    NOTE: ensure the datadog-secret exists in the datadog namespace."; \
+		echo "    Create it with: kubectl create secret generic datadog-secret \\"; \
+		echo "      --from-literal api-key=<YOUR_DD_API_KEY> --namespace datadog"; \
+		kubectl apply -f deploy/kubernetes/datadog/agent/datadog-agent.yaml; \
 	fi
-	@kubectl apply -f deploy/kubernetes/datadog/checks/
+	@kubectl apply -f deploy/kubernetes/datadog/checks/activemq-check.yaml
+	@kubectl apply -f deploy/kubernetes/datadog/checks/postgres-check.yaml
 	@echo ""
 	@echo "✓  Datadog Agent deploying. Verify with:"
 	@echo "     kubectl get datadogagent -n datadog"
