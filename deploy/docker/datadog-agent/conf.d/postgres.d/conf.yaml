@@ -24,10 +24,6 @@ instances:
     password: datadog_dbm_dev # dev only — use ENC[] or K8s Secret in staging/prod
     database: ledger
     dbm: true
-    ignore_databases:
-      - postgres
-      - template0
-      - template1
 
     query_metrics:
       enabled: true

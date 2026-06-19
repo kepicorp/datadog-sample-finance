@@ -253,6 +253,7 @@ It requires two one-time setup steps.
 #### 8a. Create the monitoring user (run once)
 
 ```bash
+# Run against the 'ledger' database
 docker exec -i postgres-ledger psql -U finance -d ledger <<'SQL'
 DO $$ BEGIN
   IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'datadog') THEN
@@ -265,6 +266,12 @@ GRANT pg_monitor TO datadog;
 GRANT SELECT ON pg_stat_database TO datadog;
 CREATE EXTENSION IF NOT EXISTS pg_stat_statements SCHEMA public;
 SQL
+
+# Also install the extension in the 'postgres' system database — the Agent
+# probes all databases it can connect to. Without this, the check logs a
+# WARNING about pg_stat_statements not found in dbname=postgres.
+docker exec -i postgres-ledger psql -U finance -d postgres -c \
+  "CREATE EXTENSION IF NOT EXISTS pg_stat_statements SCHEMA public;"
 ```
 
 For EKS, the password is stored in Secrets Manager:
