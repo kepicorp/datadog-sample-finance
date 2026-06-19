@@ -63,21 +63,66 @@ echo "==> Using profile=$PROFILE region=$REGION cluster=$CLUSTER env=$ENV"
 echo ""
 
 # ── 0. Delete Kubernetes LoadBalancer services (releases AWS ELBs) ───────────
-# K8s services of type LoadBalancer provision an AWS ELB outside Terraform's
-# state. If the ELB still exists when Terraform tries to delete the VPC/subnets,
-# AWS returns DependencyViolation and the destroy fails.
-# We delete the K8s namespace first (which triggers ELB deletion), then wait
-# for the ELBs to fully de-register before proceeding.
-echo "==> [0/7] Releasing AWS LoadBalancers via kubectl..."
+# ── 0. Release AWS ELBs and lingering ENIs from the VPC ───────────────────────────────────────────
+# K8s LoadBalancer services create AWS ELBs outside Terraform's state.
+# Terraform cannot delete the VPC/subnets while those ELBs or their lingering
+# ENIs still exist (DependencyViolation). We:
+#   a) Ask K8s to delete the namespace (triggers ELB deletion by the cloud controller)
+#   b) Directly delete any ELBs tagged for this cluster via the AWS CLI
+#   c) Wait for ELB-managed ENIs to fully detach before continuing
+echo "==> [0/7] Releasing AWS ELBs and ENIs..."
+
+# a) Try kubectl first (best-effort — may not be reachable if cluster already gone)
 if kubectl get namespace finance --request-timeout=5s >/dev/null 2>&1; then
-  echo "    Deleting finance namespace (triggers ELB release)..."
+  echo "    Deleting finance namespace via kubectl (triggers ELB release)..."
   kubectl delete namespace finance --ignore-not-found --wait=true --timeout=120s 2>/dev/null || true
   kubectl delete storageclass gp3 --ignore-not-found 2>/dev/null || true
-  echo "    Namespace deleted. Waiting 20s for ELB de-registration..."
-  sleep 20
+  echo "    Namespace deleted."
 else
-  echo "    kubectl not reachable or namespace already gone — skipping."
+  echo "    kubectl not reachable — will clean up ELBs directly via AWS CLI."
 fi
+
+# b) Find and delete Classic ELBs tagged for this cluster
+echo "    Checking for Classic ELBs (kubernetes.io/cluster/$CLUSTER)..."
+CLASSIC_ELBS=$(aws elb describe-load-balancers \
+  --query "LoadBalancerDescriptions[?contains(LoadBalancerName,'$CLUSTER') || contains(LoadBalancerName,'finance')].LoadBalancerName" \
+  --output text 2>/dev/null || true)
+if [ -n "$CLASSIC_ELBS" ]; then
+  for ELB in $CLASSIC_ELBS; do
+    echo "    Deleting Classic ELB: $ELB"
+    aws elb delete-load-balancer --load-balancer-name "$ELB" >/dev/null 2>&1 || true
+  done
+fi
+
+# b2) Find and delete ALBs/NLBs (v2 ELBs) tagged for this cluster
+echo "    Checking for ALB/NLB load balancers..."
+V2_ELBS=$(aws elbv2 describe-load-balancers \
+  --query "LoadBalancers[?contains(LoadBalancerName,'$CLUSTER') || contains(LoadBalancerName,'finance')].LoadBalancerArn" \
+  --output text 2>/dev/null || true)
+if [ -n "$V2_ELBS" ]; then
+  for ARN in $V2_ELBS; do
+    echo "    Deleting ALB/NLB: $ARN"
+    aws elbv2 delete-load-balancer --load-balancer-arn "$ARN" >/dev/null 2>&1 || true
+  done
+fi
+
+# c) Wait for ELB-managed ENIs to fully detach (status goes from 'in-use' to gone)
+# These ENIs have description 'ELB ...' or 'Amazon EKS ...'
+echo "    Waiting for ELB/ENIs to fully release (max 120s)..."
+for i in $(seq 1 24); do
+  ENI_COUNT=$(aws ec2 describe-network-interfaces \
+    --filters \
+      "Name=description,Values=ELB*" \
+      "Name=status,Values=in-use" \
+    --query 'length(NetworkInterfaces)' \
+    --output text 2>/dev/null || echo 0)
+  if [ "$ENI_COUNT" = "0" ] || [ "$ENI_COUNT" = "None" ]; then
+    echo "    ENIs released."
+    break
+  fi
+  echo "    $ENI_COUNT ELB ENI(s) still attached, waiting 5s... ($((i*5))s elapsed)"
+  sleep 5
+done
 echo ""
 
 # ── 1. Delete EKS node groups (must go before the cluster) ───────────────────
