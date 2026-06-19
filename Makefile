@@ -416,7 +416,7 @@ frontend-url:
 ##                      (avoids 'scheduled for deletion' errors on re-apply)
 ##                   4. Runs terraform destroy for remaining resources (VPC, IAM)
 tf-destroy-aws:
-	bash scripts/aws-force-destroy.sh
+	bash scripts/aws-force-destroy.sh --yes
 
 
 

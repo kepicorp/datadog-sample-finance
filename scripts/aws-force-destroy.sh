@@ -16,6 +16,17 @@ set -euo pipefail
 # Suppress AWS CLI pager for all calls in this script.
 export AWS_PAGER=""
 
+# Parse --yes / -y flag (skip confirmation prompt) before positional args.
+AUTO_YES=false
+ARGS=()
+for arg in "$@"; do
+  case "$arg" in
+    --yes|-y) AUTO_YES=true ;;
+    *) ARGS+=("$arg") ;;
+  esac
+done
+set -- "${ARGS[@]+${ARGS[@]}}"
+
 PROFILE="${1:-partner}"
 CLUSTER="${3:-finance-app}"
 ENV="${4:-staging}"
@@ -50,12 +61,15 @@ echo "  │  Region  : $REGION                                             │"
 echo "  │  Cluster : $CLUSTER                                            │"
 echo "  └─────────────────────────────────────────────────────────────────┘"
 echo ""
-# Read directly from /dev/tty so the prompt works even when stdin is piped
-# (e.g. when invoked via 'make tf-destroy-aws').
-read -r -p "  Type 'yes' to confirm: " CONFIRM </dev/tty
-if [ "$CONFIRM" != "yes" ]; then
-  echo "Aborted."
-  exit 1
+if [ "$AUTO_YES" = true ]; then
+  echo "  (auto-confirmed via --yes flag)"
+else
+  # Read directly from /dev/tty so the prompt works even when stdin is piped.
+  read -r -p "  Type 'yes' to confirm: " CONFIRM </dev/tty
+  if [ "$CONFIRM" != "yes" ]; then
+    echo "Aborted."
+    exit 1
+  fi
 fi
 echo ""
 
