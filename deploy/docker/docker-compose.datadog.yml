@@ -337,8 +337,8 @@ services:
       - "8082:8082"
     environment:
       # ── Application config ─────────────────────────────────────────────
-      ACTIVEMQ_URL: tcp://activemq-artemis:61616
-      ACTIVEMQ_STOMP_URL: stomp://activemq-artemis:61613
+      ACTIVEMQ_URL: stomp://${ARTEMIS_USER}:${ARTEMIS_PASSWORD}@activemq-artemis:61613
+      ACTIVEMQ_STOMP_URL: stomp://${ARTEMIS_USER}:${ARTEMIS_PASSWORD}@activemq-artemis:61613
       ACTIVEMQ_USER: ${ARTEMIS_USER}
       ACTIVEMQ_PASSWORD: ${ARTEMIS_PASSWORD}
       ACCOUNT_SERVICE_URL: http://account-service:8081
