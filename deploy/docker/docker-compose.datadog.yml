@@ -495,7 +495,7 @@ services:
   # ── Datadog Agent ─────────────────────────────────────────────────────────
 
   datadog-agent:
-    image: datadog/agent:7
+    image: datadog/agent:7-jmx # -jmx variant includes the bundled JRE for JMX checks (ActiveMQ, JVM)
     container_name: datadog-agent
     restart: unless-stopped
     networks:

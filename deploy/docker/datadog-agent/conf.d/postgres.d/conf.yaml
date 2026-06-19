@@ -5,147 +5,58 @@
 #
 # Learning Progression Step 9 — Database Monitoring (DBM)
 #
-# This file is mounted into the Datadog Agent container at:
-#   /etc/datadog-agent/conf.d/postgres.d/conf.yaml
-#
-# PREREQUISITES — run these SQL statements as a PostgreSQL superuser BEFORE
-# uncommenting the instances block below:
-#
-#   -- 1. Create read-only monitoring user (never use superuser for DBM)
-#   CREATE USER datadog WITH PASSWORD '<DATADOG_DBM_PASSWORD from .env>';
-#   GRANT pg_monitor TO datadog;         -- PostgreSQL 10+
+# PREREQUISITES (already done for local dev):
+#   CREATE USER datadog WITH PASSWORD '<DATADOG_DBM_PASSWORD>';
+#   GRANT pg_monitor TO datadog;
 #   GRANT SELECT ON pg_stat_database TO datadog;
-#
-#   -- 2. Confirm pg_stat_statements extension is loaded
-#   --    (enabled by postgres-ledger command: in docker-compose.yml)
 #   CREATE EXTENSION IF NOT EXISTS pg_stat_statements SCHEMA public;
-#
-#   -- 3. (Optional) Enable auto_explain for slow query plans
-#   --    Restart PostgreSQL after setting shared_preload_libraries.
-#   -- LOAD 'auto_explain';
-#   -- ALTER SYSTEM SET auto_explain.log_min_duration = '100ms';
-#   -- ALTER SYSTEM SET auto_explain.log_analyze = on;
-#   -- SELECT pg_reload_conf();
 #
 # Docs: https://docs.datadoghq.com/database_monitoring/setup_postgres/selfhosted/
 # DBM + APM correlation: https://docs.datadoghq.com/database_monitoring/connect_dbm_and_apm/
 # ══════════════════════════════════════════════════════════════════════════════
 
-# init_config: {}
+init_config: {}
 
-# instances:
-#   - host: postgres-ledger          # Matches the Docker Compose service name
-#     port: 5432
-#     username: datadog
-#
-#     # ── SECURITY: Never hardcode passwords ───────────────────────────────
-#     # Reference a K8s Secret or use the ENC[] syntax for Agent secret backend.
-#     # In Docker Compose, pass via environment variable on the Agent container:
-#     #   DD_DATADOG_DBM_PASSWORD=<secret>
-#     # then reference it here as:
-#     password: "ENC[k8s_secret,datadog-dbm-password]"
-#     # ─────────────────────────────────────────────────────────────────────
-#
-#     database: ledger
-#
-#     # ── Core DBM features ─────────────────────────────────────────────────
-#     # dbm: true enables query metrics, live query samples, and explain plans.
-#     # This is the primary toggle for Database Monitoring.
-#     dbm: true
-#
-#     # ── Query metrics (powered by pg_stat_statements) ─────────────────────
-#     # Surfaces top queries by total time, average latency, and error rate
-#     # in Datadog UI: Databases > Query Metrics.
-#     query_metrics:
-#       enabled: true
-#       run_sync: false               # Async collection reduces Agent overhead
-#
-#     # ── Query samples (live session snapshots) ────────────────────────────
-#     # Captures in-flight queries with wait events, lock chains, and
-#     # execution plans. Surfaces in Datadog UI: Databases > Query Samples.
-#     # Click any sample to view the explain plan without adding EXPLAIN to code.
-#     query_samples:
-#       enabled: true
-#       collections_per_second: 1     # Safe for OLTP; increase to max 10 if needed
-#       explain_parameterized_queries: true   # Capture plans for prepared statements
-#
-#     # ── Schema monitoring ─────────────────────────────────────────────────
-#     # Tracks table sizes, index usage ratios, and bloat estimates.
-#     # Useful for detecting missing indexes on high-traffic Finance tables
-#     # (e.g., transactions, ledger_entries).
-#     schema_monitoring:
-#       enabled: true
-#
-#     # ── Custom Finance-specific query metrics ─────────────────────────────
-#     # These emit custom Datadog metrics from SQL queries run by the Agent.
-#     # Use for business-level database health signals.
-#     #
-#     # HIGH CARDINALITY WARNING: Never tag with raw transaction IDs, user IDs,
-#     # or unbounded string values. Use only bounded categorical values.
-#     # Docs: https://docs.datadoghq.com/tagging/assigning_tags/#defining-tags
-#     custom_queries:
-#
-#       # Alert on transactions stuck in 'pending' for more than 5 minutes.
-#       # A sustained non-zero value here indicates a processing bottleneck or
-#       # a failed downstream service (e.g., fraud-detection backlog).
-#       - metric_prefix: finance.db.ledger
-#         query: >
-#           SELECT count(*) AS pending_count
-#           FROM transactions
-#           WHERE status = 'pending'
-#             AND created_at < NOW() - INTERVAL '5 minutes'
-#         columns:
-#           - name: pending_count
-#             type: gauge
-#         tags:
-#           - "table:transactions"
-#           - "check:stuck_pending"
-#
-#       # Track daily settled transaction volume by currency.
-#       # Use to detect unexpected drops in settlement throughput.
-#       - metric_prefix: finance.db.ledger
-#         query: >
-#           SELECT currency, count(*) AS settled_today
-#           FROM transactions
-#           WHERE status = 'settled'
-#             AND created_at >= CURRENT_DATE
-#           GROUP BY currency
-#         columns:
-#           - name: currency
-#             type: tag
-#           - name: settled_today
-#             type: gauge
-#         tags:
-#           - "table:transactions"
-#           - "check:daily_settlement"
-#
-#       # Monitor ledger entry write latency via pg_stat_user_tables.
-#       # n_live_tup spikes may indicate bloat on the transactions table.
-#       - metric_prefix: finance.db.ledger
-#         query: >
-#           SELECT n_live_tup AS live_row_count,
-#                  n_dead_tup AS dead_row_count,
-#                  last_autovacuum
-#           FROM pg_stat_user_tables
-#           WHERE relname = 'transactions'
-#         columns:
-#           - name: live_row_count
-#             type: gauge
-#           - name: dead_row_count
-#             type: gauge
-#           - name: last_autovacuum
-#             type: tag
-#         tags:
-#           - "table:transactions"
-#           - "check:table_bloat"
-#
-#     # ── Tagging ───────────────────────────────────────────────────────────
-#     # These tags appear on all query metrics and samples for this instance.
-#     # They must match the db.instance tag emitted by dd-trace-java's JDBC
-#     # instrumentation for the DBM <-> APM correlation link to work.
-#     # Docs: https://docs.datadoghq.com/database_monitoring/connect_dbm_and_apm/
-#     tags:
-#       - "db:ledger"
-#       - "db.instance:postgres-ledger"
-#       - "env:staging"
-#       - "service:postgres-ledger"
+instances:
+  - host: postgres-ledger
+    port: 5432
+    username: datadog
+    password: datadog_dbm_dev # dev only — use ENC[] or K8s Secret in staging/prod
+    database: ledger
+    dbm: true
+    ignore_databases:
+      - postgres
+      - template0
+      - template1
+
+    query_metrics:
+      enabled: true
+      run_sync: false
+
+    query_samples:
+      enabled: true
+      collections_per_second: 1
+      explain_parameterized_queries: true
+
+    schema_monitoring:
+      enabled: true
+
+    custom_queries:
+      - metric_prefix: finance.db.ledger
+        query: >
+          SELECT count(*) AS pending_count
+          FROM transactions
+          WHERE status = 'pending'
+            AND created_at < NOW() - INTERVAL '5 minutes'
+        columns:
+          - name: pending_count
+            type: gauge
+        tags:
+          - "table:transactions"
+          - "check:stuck_pending"
+
+    tags:
+      - "db:ledger"
+      - "db.instance:postgres-ledger"
+      - "env:staging"
+      - "service:postgres-ledger"
