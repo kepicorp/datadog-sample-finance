@@ -13,14 +13,23 @@ import (
 	"github.com/go-stomp/stomp/v3"
 )
 
+// ── DATADOG INSTRUMENTATION — ALL IMPORTS (APM + PROFILER + STATSD) ─────────
+// Uncomment the import block below together with the instrumentation blocks
+// further in the file. Requires go.mod to include github.com/DataDog/dd-trace-go/v2.
 //
+// Option A (recommended for production): Use Orchestrion for zero-code APM.
+//   go install github.com/DataDog/orchestrion@latest && orchestrion go build ./...
+//   Docs: https://docs.datadoghq.com/tracing/trace_collection/automatic_instrumentation/dd_libraries/go/
 //
+// Option B: Manual instrumentation (blocks below).
+// Docs: https://docs.datadoghq.com/tracing/trace_collection/dd_libraries/go/
 //
-import (
-	"github.com/DataDog/datadog-go/v5/statsd"
-	"github.com/DataDog/dd-trace-go/v2/ddtrace/tracer"
-	"github.com/DataDog/dd-trace-go/v2/profiler"
-)
+// import (
+//	"github.com/DataDog/datadog-go/v5/statsd"
+//	"github.com/DataDog/dd-trace-go/v2/ddtrace/tracer"
+//	"github.com/DataDog/dd-trace-go/v2/profiler"
+// )
+// ─────────────────────────────────────────────────────────────────────────────
 
 const (
 	alertQueue       = "/queue/alert.queue"
@@ -48,30 +57,41 @@ func main() {
 	}))
 	slog.SetDefault(logger)
 
+	// ── DATADOG INSTRUMENTATION — APM tracer start ───────────────────────────
+	// Uncomment the block below to start the APM tracer.
+	// Requires: DD_API_KEY, DD_ENV, DD_SERVICE=notification-service, DD_VERSION,
+	//           DD_AGENT_HOST=datadog-agent (or localhost for local dev)
+	// Docs: https://docs.datadoghq.com/tracing/trace_collection/dd_libraries/go/
 	//
-	tracer.Start(
-		tracer.WithService(getEnv("DD_SERVICE", "notification-service")),
-		tracer.WithEnv(getEnv("DD_ENV", "local")),
-		tracer.WithServiceVersion(getEnv("DD_VERSION", "dev")),
-		tracer.WithAgentAddr(getEnv("DD_AGENT_HOST", "datadog-agent") + ":8126"),
-		tracer.WithRuntimeMetrics(),
-	)
-	defer tracer.Stop()
+	// tracer.Start(
+	//	tracer.WithService(getEnv("DD_SERVICE", "notification-service")),
+	//	tracer.WithEnv(getEnv("DD_ENV", "local")),
+	//	tracer.WithServiceVersion(getEnv("DD_VERSION", "dev")),
+	//	tracer.WithAgentAddr(getEnv("DD_AGENT_HOST", "datadog-agent") + ":8126"),
+	//	tracer.WithRuntimeMetrics(),
+	// )
+	// defer tracer.Stop()
+	// ─────────────────────────────────────────────────────────────────────────
 
+	// ── DATADOG INSTRUMENTATION — CONTINUOUS PROFILER start ──────────────────
+	// Uncomment to start the Continuous Profiler. Run AFTER tracer.Start().
+	// Correlates CPU flame graphs with slow notification-processing traces.
+	// Docs: https://docs.datadoghq.com/profiler/enabling/go/
 	//
-	if err := profiler.Start(
-		profiler.WithService(getEnv("DD_SERVICE", "notification-service")),
-		profiler.WithEnv(getEnv("DD_ENV", "local")),
-		profiler.WithVersion(getEnv("DD_VERSION", "dev")),
-		profiler.WithProfileTypes(
-			profiler.CPUProfile,
-			profiler.HeapProfile,
-			profiler.GoroutineProfile,
-		),
-	); err != nil {
-		slog.Error("profiler failed to start", "error", err)
-	}
-	defer profiler.Stop()
+	// if err := profiler.Start(
+	//	profiler.WithService(getEnv("DD_SERVICE", "notification-service")),
+	//	profiler.WithEnv(getEnv("DD_ENV", "local")),
+	//	profiler.WithVersion(getEnv("DD_VERSION", "dev")),
+	//	profiler.WithProfileTypes(
+	//		profiler.CPUProfile,
+	//		profiler.HeapProfile,
+	//		profiler.GoroutineProfile,
+	//	),
+	// ); err != nil {
+	//	slog.Error("profiler failed to start", "error", err)
+	// }
+	// defer profiler.Stop()
+	// ─────────────────────────────────────────────────────────────────────────
 
 	brokerURL := getEnv("ACTIVEMQ_URL", defaultBrokerURL)
 
@@ -156,16 +176,22 @@ func processMessage(conn *stomp.Conn, msg *stomp.Message) {
 // sendNotification stubs the email / SMS dispatch logic.
 // In production this would call an SMTP relay or SMS gateway API.
 func sendNotification(alert AlertMessage) {
+	// ── DATADOG INSTRUMENTATION — custom span: alert.send ──────────────────
+	// Uncomment to create a manual APM span for the notification dispatch.
+	// This span will appear as a child of the JMS consumer span created by the
+	// auto-instrumented STOMP/JMS integration.
+	// Docs: https://docs.datadoghq.com/tracing/trace_collection/custom_instrumentation/go/
 	//
-	tracer.StartSpanFromContext(
-		context.Background(), "alert.send",
-		tracer.ResourceName(alert.EventType),
-		tracer.Tag("notification.channel", alert.Channel),
-		tracer.Tag("notification.event_type", alert.EventType),
-		tracer.Tag("account.id", alert.AccountID),
-		tracer.Tag("jms.correlation_id", alert.CorrelationID),
-		tracer.Tag("messaging.destination", "alert.queue"),
-	)
+	// tracer.StartSpanFromContext(
+	//	context.Background(), "alert.send",
+	//	tracer.ResourceName(alert.EventType),
+	//	tracer.Tag("notification.channel", alert.Channel),
+	//	tracer.Tag("notification.event_type", alert.EventType),
+	//	tracer.Tag("account.id", alert.AccountID),
+	//	tracer.Tag("jms.correlation_id", alert.CorrelationID),
+	//	tracer.Tag("messaging.destination", "alert.queue"),
+	// )
+	// ─────────────────────────────────────────────────────────────────────────────
 
 	start := time.Now()
 
@@ -203,12 +229,18 @@ func sendNotification(alert AlertMessage) {
 		"correlation_id", alert.CorrelationID,
 	)
 
+	// ── DATADOG INSTRUMENTATION — DogStatsD custom metric ───────────────────
+	// Uncomment to emit histograms/counters for notification dispatch.
+	// In production, initialise statsdClient once in main() and pass it down.
+	// Requires: go get github.com/DataDog/datadog-go/v5/statsd
+	// Docs: https://docs.datadoghq.com/developers/dogstatsd/
 	//
-	statsdClient, _ := statsd.New(getEnv("DD_AGENT_HOST", "datadog-agent") + ":8125")
-	statsdClient.Histogram("finance.notification.dispatch_time", float64(duration),
-		[]string{"channel:" + alert.Channel, "event_type:" + alert.EventType, "env:" + getEnv("DD_ENV", "local")}, 1.0)
-	statsdClient.Incr("finance.notification.sent",
-		[]string{"channel:" + alert.Channel, "event_type:" + alert.EventType}, 1.0)
+	// statsdClient, _ := statsd.New(getEnv("DD_AGENT_HOST", "datadog-agent") + ":8125")
+	// statsdClient.Histogram("finance.notification.dispatch_time", float64(duration),
+	//	[]string{"channel:" + alert.Channel, "event_type:" + alert.EventType, "env:" + getEnv("DD_ENV", "local")}, 1.0)
+	// statsdClient.Incr("finance.notification.sent",
+	//	[]string{"channel:" + alert.Channel, "event_type:" + alert.EventType}, 1.0)
+	// ─────────────────────────────────────────────────────────────────────────────
 }
 
 // connectSTOMP establishes a STOMP connection to the ActiveMQ Artemis broker.

@@ -7,13 +7,15 @@ import org.springframework.batch.core.JobExecutionListener;
 import org.springframework.batch.core.StepExecution;
 import org.springframework.stereotype.Component;
 
+// ── DATADOG INSTRUMENTATION — APM imports ───────────────────────────────────────────
+// Uncomment when enabling manual span tagging in DatadogJobListener.
+// Requires: compileOnly 'io.opentracing:opentracing-api:0.33.0'
+//           compileOnly 'io.opentracing:opentracing-util:0.33.0'  (see build.gradle)
 //
-//
-//
-//
-import io.opentracing.Span;
-import io.opentracing.Tracer;
-import io.opentracing.util.GlobalTracer;
+// import io.opentracing.Span;
+// import io.opentracing.Tracer;
+// import io.opentracing.util.GlobalTracer;
+// ─────────────────────────────────────────────────────────────────────────────
 
 /**
  * Spring Batch {@link JobExecutionListener} that:
