@@ -167,8 +167,23 @@ def uncomment_python_block(block):
         if m:
             indent, rest = m.group(1), m.group(2)
             # Keep if it looks like code (starts with python keyword, symbol, or indent)
-            if re.match(
-                r"^(import |from |with |if |    |patch|tracer|statsd|initia)", rest
+            stripped = rest.strip()
+            if (
+                re.match(
+                    r"^(import |from |with |if |patch_|patch_all|tracer\.|statsd\.|initialize|ddtrace)",
+                    rest,
+                )
+                or stripped.startswith(")")
+                or stripped.startswith("}")
+                or stripped.startswith('"')
+                or stripped.startswith("f'")
+                or stripped.startswith('f"')
+                or stripped.startswith("],")
+                or stripped == "]"
+                or (
+                    rest.startswith("    ")
+                    and re.match(r"^    [a-z_]+[\.\(=,\s]", rest)
+                )
             ):
                 result.append(indent + rest)
             # else: drop prose
@@ -195,7 +210,18 @@ def uncomment_js_block(block):
         m = re.match(r"^(\s*)// (.*)$", line)
         if m:
             indent, rest = m.group(1), m.group(2)
-            if re.match(r"^(const |'use |require|  [a-zA-Z]|\}|logI|runt|prof)", rest):
+            stripped_js = rest.strip()
+            if (
+                re.match(
+                    r"^(const |'use strict'|require\(|tracer\.|logger\.|logInjection|runtimeMetrics|profiling)",
+                    rest,
+                )
+                or stripped_js.startswith("}")
+                or stripped_js.startswith(")")
+                or stripped_js == "});"
+                or stripped_js == ");"
+                or (rest.startswith("  ") and re.match(r"^  [a-z]+[A-Z:]", rest))
+            ):
                 result.append(indent + rest)
         elif line.strip() == "":
             result.append(line)
@@ -396,11 +422,12 @@ def patch_batch_processor():
 
 
 def patch_gateway_api_deps():
-    """Uncomment ddtrace==2.9.0 in gateway-api/requirements.txt."""
+    """Uncomment ddtrace and datadog packages in gateway-api/requirements.txt."""
     orig = "gateway-api/requirements.txt"
     original_content = read(orig)
+    # Uncomment all DD-related packages in the instrumentation block
     patched_content = re.sub(
-        r"^# (ddtrace==\S+)",
+        r"^# ((?:ddtrace|datadog)==\S+)",
         r"\1",
         original_content,
         flags=re.MULTILINE,

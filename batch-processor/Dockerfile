@@ -23,8 +23,8 @@ COPY --from=builder /app/build/libs/*.jar app.jar
 # Uncomment when enabling APM (Step 3), Data Jobs Monitoring (Step 11),
 # or Continuous Profiler (Step 7).
 #
-# ADD https://dtdg.co/latest-java-tracer /dd-java-agent.jar
-# RUN chmod 444 /dd-java-agent.jar
+ADD https://dtdg.co/latest-java-tracer /dd-java-agent.jar
+RUN chmod 444 /dd-java-agent.jar
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ── JAVA_TOOL_OPTIONS ─────────────────────────────────────────────────────────

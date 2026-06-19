@@ -1,34 +1,14 @@
-// ── DATADOG INSTRUMENTATION ──────────────────────────────────────────
-// Step 3 — APM initialisation. dd-trace MUST be required before any
-// other module — including express, pino, or your own files.
-// Requiring it later will miss auto-instrumentation of already-loaded
-// modules (e.g. http, net) and produce incomplete traces.
 //
-// Prerequisites:
-//   npm install dd-trace --save
-//   Set DD_ENV, DD_SERVICE, DD_VERSION, DD_AGENT_HOST in your environment.
 //
-// const tracer = require('dd-trace').init({
-//   service:  process.env.DD_SERVICE  || 'transaction-service',
-//   env:      process.env.DD_ENV      || 'development',
-//   version:  process.env.DD_VERSION  || '0.0.0',
-//   hostname: process.env.DD_AGENT_HOST || 'datadog-agent',
+const tracer = require('dd-trace').init({
+  service:  process.env.DD_SERVICE  || 'transaction-service',
+  env:      process.env.DD_ENV      || 'development',
+  version:  process.env.DD_VERSION  || '0.0.0',
+  hostname: process.env.DD_AGENT_HOST || 'datadog-agent',
 //
-//   // ── Log injection ────────────────────────────────────────────────
-//   // Injects dd.trace_id and dd.span_id into every pino log record.
-//   // Step 4 — verify trace_id appears in Datadog Log Management.
-//   // logInjection: true,
 //
-//   // ── Runtime metrics ──────────────────────────────────────────────
-//   // Step 6 — emit Node.js V8/GC/event-loop metrics to DogStatsD.
-//   // runtimeMetrics: true,
 //
-//   // ── Profiler ─────────────────────────────────────────────────────
-//   // Step 7 — continuous CPU + heap profiling. Correlate flame graphs
-//   // with slow payment traces in APM > Profiling.
-//   // profiling: true,
-// });
-// ─────────────────────────────────────────────────────────────────────
+});
 
 'use strict';
 

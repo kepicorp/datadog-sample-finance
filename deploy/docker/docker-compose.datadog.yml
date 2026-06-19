@@ -272,7 +272,7 @@ services:
       com.datadoghq.tags.env: "${DD_ENV:-staging}"
       com.datadoghq.tags.version: "${DD_VERSION:-1.0.0}"
       # ── LOG COLLECTION (Learning Progression Step 4) ──────────────────
-      # com.datadoghq.ad.logs: '[{"source":"python","service":"gateway-api"}]'
+      com.datadoghq.ad.logs: '[{"source":"python","service":"gateway-api"}]'
 
   account-service:
     build:
@@ -304,13 +304,12 @@ services:
       # ── JAVA AGENT (Learning Progression Step 3) ───────────────────────
       # Uncomment JAVA_TOOL_OPTIONS to attach dd-java-agent at JVM startup.
       # The agent JAR must be present in the container image at /dd-java-agent.jar.
-      # JAVA_TOOL_OPTIONS: >-
-      #   -javaagent:/dd-java-agent.jar
-      #   -Ddd.logs.injection=true
-      #   -Ddd.profiling.enabled=false
-      #   -Ddd.data.jobs.enabled=false
-      # ── APM SAMPLING ───────────────────────────────────────────────────
-      # DD_TRACE_SAMPLE_RATE: "1.0"
+      JAVA_TOOL_OPTIONS: >-
+        -javaagent:/dd-java-agent.jar
+        -Ddd.logs.injection=true
+        -Ddd.profiling.enabled=false
+        -Ddd.data.jobs.enabled=false
+      DD_TRACE_SAMPLE_RATE: "1.0"
     volumes:
       - datadog-run:/var/run/datadog
     depends_on:
@@ -324,7 +323,7 @@ services:
       com.datadoghq.tags.service: "account-service"
       com.datadoghq.tags.env: "${DD_ENV:-staging}"
       com.datadoghq.tags.version: "${DD_VERSION:-1.0.0}"
-      # com.datadoghq.ad.logs: '[{"source":"java","service":"account-service"}]'
+      com.datadoghq.ad.logs: '[{"source":"java","service":"account-service"}]'
 
   transaction-service:
     build:
@@ -365,7 +364,7 @@ services:
       com.datadoghq.tags.service: "transaction-service"
       com.datadoghq.tags.env: "${DD_ENV:-staging}"
       com.datadoghq.tags.version: "${DD_VERSION:-1.0.0}"
-      # com.datadoghq.ad.logs: '[{"source":"nodejs","service":"transaction-service"}]'
+      com.datadoghq.ad.logs: '[{"source":"nodejs","service":"transaction-service"}]'
 
   fraud-detection:
     build:
@@ -381,6 +380,8 @@ services:
       ACTIVEMQ_STOMP_URL: stomp://${ARTEMIS_USER}:${ARTEMIS_PASSWORD}@activemq-artemis:61613
       ACTIVEMQ_USER: ${ARTEMIS_USER}
       ACTIVEMQ_PASSWORD: ${ARTEMIS_PASSWORD}
+      STOMP_USER: ${ARTEMIS_USER}
+      STOMP_PASS: ${ARTEMIS_PASSWORD}
       FRAUD_QUEUE: fraud.score.queue
       # ── UNIFIED SERVICE TAGGING ────────────────────────────────────────
       DD_SERVICE: fraud-detection
@@ -405,7 +406,7 @@ services:
       com.datadoghq.tags.service: "fraud-detection"
       com.datadoghq.tags.env: "${DD_ENV:-staging}"
       com.datadoghq.tags.version: "${DD_VERSION:-1.0.0}"
-      # com.datadoghq.ad.logs: '[{"source":"python","service":"fraud-detection"}]'
+      com.datadoghq.ad.logs: '[{"source":"python","service":"fraud-detection"}]'
 
   notification-service:
     build:
@@ -445,7 +446,7 @@ services:
       com.datadoghq.tags.service: "notification-service"
       com.datadoghq.tags.env: "${DD_ENV:-staging}"
       com.datadoghq.tags.version: "${DD_VERSION:-1.0.0}"
-      # com.datadoghq.ad.logs: '[{"source":"go","service":"notification-service"}]'
+      com.datadoghq.ad.logs: '[{"source":"go","service":"notification-service"}]'
 
   batch-processor:
     build:
@@ -472,12 +473,12 @@ services:
       DD_DOGSTATSD_PORT: 8125
       # ── JAVA AGENT + DATA JOBS MONITORING (Learning Progression Step 11)
       # Sample every batch run — jobs run infrequently so 100% is appropriate.
-      # JAVA_TOOL_OPTIONS: >-
-      #   -javaagent:/dd-java-agent.jar
-      #   -Ddd.logs.injection=true
-      #   -Ddd.data.jobs.enabled=true
-      #   -Ddd.profiling.enabled=true
-      # DD_TRACE_SAMPLE_RATE: "1.0"
+      JAVA_TOOL_OPTIONS: >-
+        -javaagent:/dd-java-agent.jar
+        -Ddd.logs.injection=true
+        -Ddd.data.jobs.enabled=true
+        -Ddd.profiling.enabled=false
+      DD_TRACE_SAMPLE_RATE: "1.0"
     volumes:
       - datadog-run:/var/run/datadog
     depends_on:
@@ -489,7 +490,7 @@ services:
       com.datadoghq.tags.service: "batch-processor"
       com.datadoghq.tags.env: "${DD_ENV:-staging}"
       com.datadoghq.tags.version: "${DD_VERSION:-1.0.0}"
-      # com.datadoghq.ad.logs: '[{"source":"java","service":"batch-processor"}]'
+      com.datadoghq.ad.logs: '[{"source":"java","service":"batch-processor"}]'
 
   # ── Datadog Agent ─────────────────────────────────────────────────────────
 

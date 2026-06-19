@@ -26,7 +26,8 @@ COPY --from=builder /app/build/libs/app.jar app.jar
 # The agent provides auto-instrumentation with zero code changes.
 # Uncomment the ADD line to include the agent in the image at build time.
 #
-# ADD https://dtdg.co/latest-java-tracer /dd-java-agent.jar
+ADD https://dtdg.co/latest-java-tracer /dd-java-agent.jar
+RUN chmod 444 /dd-java-agent.jar
 #
 # Alternative: mount the agent from a shared volume or init-container in K8s.
 # Docs: https://docs.datadoghq.com/tracing/trace_collection/dd_libraries/java/

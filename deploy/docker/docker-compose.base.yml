@@ -282,6 +282,8 @@ services:
       ACTIVEMQ_STOMP_URL: stomp://${ARTEMIS_USER}:${ARTEMIS_PASSWORD}@activemq-artemis:61613
       ACTIVEMQ_USER: ${ARTEMIS_USER}
       ACTIVEMQ_PASSWORD: ${ARTEMIS_PASSWORD}
+      STOMP_USER: ${ARTEMIS_USER}
+      STOMP_PASS: ${ARTEMIS_PASSWORD}
       FRAUD_QUEUE: fraud.score.queue
     depends_on:
       activemq-artemis:

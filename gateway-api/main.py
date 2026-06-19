@@ -23,41 +23,22 @@ from jose import JWTError, jwt
 from pydantic import BaseModel, Field
 from pythonjsonlogger import jsonlogger
 
-# ── DATADOG INSTRUMENTATION ──────────────────────────────────────────
-# Step 7 — Continuous Profiler: captures CPU/wall-clock flamegraphs so you
-#           can correlate slow payment traces with hot code paths.
-# Import BEFORE any other ddtrace import; profiler must start at module load.
-# Docs: https://docs.datadoghq.com/profiler/
 #
-# import ddtrace.profiling.auto  # noqa: F401  — side-effect import, starts profiler
-# ─────────────────────────────────────────────────────────────────────
+import ddtrace.profiling.auto  # noqa: F401  — side-effect import, starts profiler
 
-# ── DATADOG INSTRUMENTATION ──────────────────────────────────────────
-# Step 3 — APM / Distributed Tracing: auto-instruments FastAPI, httpx,
-#           logging, and all popular libraries in one call.
-#           Enables traces in APM > Services and propagates context to
-#           downstream services (account-service, transaction-service).
-# Docs: https://docs.datadoghq.com/tracing/trace_collection/dd_libraries/python/
 #
-# from ddtrace import patch_all, tracer
-# from ddtrace.contrib.logging import patch as patch_logging
-# patch_all()        # must be called before importing instrumented libraries
-# patch_logging()    # injects dd.trace_id / dd.span_id into every log record
-# ─────────────────────────────────────────────────────────────────────
+from ddtrace import patch_all, tracer
+from ddtrace.contrib.logging import patch as patch_logging
+patch_all()        # must be called before importing instrumented libraries
+patch_logging()    # injects dd.trace_id / dd.span_id into every log record
 
-# ── DATADOG INSTRUMENTATION ──────────────────────────────────────────
-# Step 6 — DogStatsD custom metrics: emits Finance-domain counters and
-#           histograms so you can alert on payment volume and latency
-#           independently of APM traces.
-# Docs: https://docs.datadoghq.com/developers/dogstatsd/
 #
-# from datadog import initialize, statsd
+from datadog import initialize, statsd
 #
-# initialize(
-#     statsd_host=os.getenv("DD_AGENT_HOST", "datadog-agent"),
-#     statsd_port=int(os.getenv("DD_DOGSTATSD_PORT", "8125")),
-# )
-# ─────────────────────────────────────────────────────────────────────
+initialize(
+    statsd_host=os.getenv("DD_AGENT_HOST", "datadog-agent"),
+    statsd_port=int(os.getenv("DD_DOGSTATSD_PORT", "8125")),
+)
 
 
 # ---------------------------------------------------------------------------
@@ -597,26 +578,13 @@ async def initiate_payment(
         },
     )
 
-    # ── DATADOG INSTRUMENTATION ──────────────────────────────────────────
-    # Step 5 — Custom span: wraps the payment.authorize business operation so
-    #           it appears as a named span in the APM flame graph, separate
-    #           from the auto-instrumented FastAPI route span. Adds Finance
-    #           domain tags for slicing error rates by currency and account tier.
-    # Docs: https://docs.datadoghq.com/tracing/trace_collection/custom_instrumentation/python/
-    #
-    # with tracer.trace("payment.authorize", service="gateway-api", resource=payload.account_id) as span:
-    #     span.set_tag("transaction.type", "payment")
-    #     span.set_tag("payment.currency", payload.currency)
-    #     span.set_tag("account.id", payload.account_id)   # bounded — safe as tag
-    #     span.set_tag("user.id", user_sub)                 # UUID from Keycloak — safe, not PII
-    #     span.set_tag("user.roles", ",".join(user_roles))  # e.g. "finance-trader"
-    #     # ── PII WARNING: use user.id (sub), NOT user.email, as a span tag ───────
-    #     # Docs: https://docs.datadoghq.com/tracing/configure_data_security/
-    #     # ── HIGH-CARDINALITY WARNING ────────────────────────────────────────
-    #     # payment_id is unique per request — do NOT set as a span tag.
-    #     # Store it in the log record (above) for correlation instead.
-    #     # Docs: https://docs.datadoghq.com/tagging/assigning_tags/#defining-tags
-    # ─────────────────────────────────────────────────────────────────────
+        #
+    with tracer.trace("payment.authorize", service="gateway-api", resource=payload.account_id) as span:
+        span.set_tag("transaction.type", "payment")
+        span.set_tag("payment.currency", payload.currency)
+        span.set_tag("account.id", payload.account_id)   # bounded — safe as tag
+        span.set_tag("user.id", user_sub)                 # UUID from Keycloak — safe, not PII
+        span.set_tag("user.roles", ",".join(user_roles))  # e.g. "finance-trader"
 
     # --- Stub: call transaction-service ---
     # In a real deployment this POST reaches the Node.js transaction-service.
@@ -654,30 +622,24 @@ async def initiate_payment(
         },
     )
 
-    # ── DATADOG INSTRUMENTATION ──────────────────────────────────────────
-    # Step 6 — DogStatsD metrics: records payment volume (counter) and
-    #           end-to-end latency (histogram) so you can alert on SLA
-    #           breaches and throughput drops from any Finance dashboard.
-    # Docs: https://docs.datadoghq.com/developers/dogstatsd/
-    #
-    # statsd.increment(
-    #     "finance.payment.initiated",
-    #     tags=[
-    #         f"transaction.type:payment",
-    #         f"payment.currency:{payload.currency}",
-    #         f"status:{tx_status}",
-    #         f"env:{os.getenv('DD_ENV', 'local')}",
-    #     ],
-    # )
-    # statsd.histogram(
-    #     "finance.payment.processing_time",
-    #     elapsed_ms,
-    #     tags=[
-    #         f"payment.currency:{payload.currency}",
-    #         f"env:{os.getenv('DD_ENV', 'local')}",
-    #     ],
-    # )
-    # ─────────────────────────────────────────────────────────────────────
+        #
+    statsd.increment(
+        "finance.payment.initiated",
+        tags=[
+            f"transaction.type:payment",
+            f"payment.currency:{payload.currency}",
+            f"status:{tx_status}",
+            f"env:{os.getenv('DD_ENV', 'local')}",
+        ],
+    )
+    statsd.histogram(
+        "finance.payment.processing_time",
+        elapsed_ms,
+        tags=[
+            f"payment.currency:{payload.currency}",
+            f"env:{os.getenv('DD_ENV', 'local')}",
+        ],
+    )
 
     return PaymentResponse(
         payment_id=payment_id,
@@ -707,18 +669,10 @@ async def get_account_balance(
         extra={"account_id": account_id, "user.id": user_sub, "user.roles": user_roles},
     )
 
-    # ── DATADOG INSTRUMENTATION ──────────────────────────────────────────
-    # Step 5 — Custom span: wraps account.balance_check so latency to
-    #           account-service is tracked as a named operation in APM,
-    #           enabling SLA alerting per account tier.
-    # Docs: https://docs.datadoghq.com/tracing/trace_collection/custom_instrumentation/python/
-    #
-    # with tracer.trace("account.balance_check", service="gateway-api", resource=account_id) as span:
-    #     span.set_tag("account.id", account_id)
-    #     # account.tier must come from account-service response — set it below
-    #     # span.set_tag("account.tier", balance_data.get("tier", "unknown"))
-    #     span.set_tag("http.route", "/v1/accounts/{account_id}/balance")
-    # ─────────────────────────────────────────────────────────────────────
+        #
+    with tracer.trace("account.balance_check", service="gateway-api", resource=account_id) as span:
+        span.set_tag("account.id", account_id)
+        span.set_tag("http.route", "/v1/accounts/{account_id}/balance")
 
     # --- Stub: call account-service ---
     try:

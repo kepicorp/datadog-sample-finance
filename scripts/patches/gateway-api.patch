@@ -1,6 +1,6 @@
 --- a/gateway-api/main.py
 +++ b/gateway-api/main.py
-@@ -23,41 +23,27 @@
+@@ -23,41 +23,22 @@
  from pydantic import BaseModel, Field
  from pythonjsonlogger import jsonlogger
  
@@ -9,7 +9,6 @@
 -#           can correlate slow payment traces with hot code paths.
 -# Import BEFORE any other ddtrace import; profiler must start at module load.
 -# Docs: https://docs.datadoghq.com/profiler/
-+          can correlate slow payment traces with hot code paths.
  #
 -# import ddtrace.profiling.auto  # noqa: F401  — side-effect import, starts profiler
 -# ─────────────────────────────────────────────────────────────────────
@@ -21,9 +20,6 @@
 -#           Enables traces in APM > Services and propagates context to
 -#           downstream services (account-service, transaction-service).
 -# Docs: https://docs.datadoghq.com/tracing/trace_collection/dd_libraries/python/
-+          logging, and all popular libraries in one call.
-+          Enables traces in APM > Services and propagates context to
-+          downstream services (account-service, transaction-service).
  #
 -# from ddtrace import patch_all, tracer
 -# from ddtrace.contrib.logging import patch as patch_logging
@@ -40,8 +36,6 @@
 -#           histograms so you can alert on payment volume and latency
 -#           independently of APM traces.
 -# Docs: https://docs.datadoghq.com/developers/dogstatsd/
-+          histograms so you can alert on payment volume and latency
-+          independently of APM traces.
  #
 -# from datadog import initialize, statsd
 +from datadog import initialize, statsd
@@ -54,10 +48,11 @@
 +initialize(
 +    statsd_host=os.getenv("DD_AGENT_HOST", "datadog-agent"),
 +    statsd_port=int(os.getenv("DD_DOGSTATSD_PORT", "8125")),
++)
  
  
  # ---------------------------------------------------------------------------
-@@ -597,26 +583,22 @@
+@@ -597,26 +578,13 @@
          },
      )
  
@@ -67,10 +62,7 @@
 -    #           from the auto-instrumented FastAPI route span. Adds Finance
 -    #           domain tags for slicing error rates by currency and account tier.
 -    # Docs: https://docs.datadoghq.com/tracing/trace_collection/custom_instrumentation/python/
-+                  it appears as a named span in the APM flame graph, separate
-+              from the auto-instrumented FastAPI route span. Adds Finance
-+              domain tags for slicing error rates by currency and account tier.
-     #
+-    #
 -    # with tracer.trace("payment.authorize", service="gateway-api", resource=payload.account_id) as span:
 -    #     span.set_tag("transaction.type", "payment")
 -    #     span.set_tag("payment.currency", payload.currency)
@@ -84,22 +76,17 @@
 -    #     # Store it in the log record (above) for correlation instead.
 -    #     # Docs: https://docs.datadoghq.com/tagging/assigning_tags/#defining-tags
 -    # ─────────────────────────────────────────────────────────────────────
++        #
 +    with tracer.trace("payment.authorize", service="gateway-api", resource=payload.account_id) as span:
 +        span.set_tag("transaction.type", "payment")
 +        span.set_tag("payment.currency", payload.currency)
 +        span.set_tag("account.id", payload.account_id)   # bounded — safe as tag
 +        span.set_tag("user.id", user_sub)                 # UUID from Keycloak — safe, not PII
 +        span.set_tag("user.roles", ",".join(user_roles))  # e.g. "finance-trader"
-+        # ── PII WARNING: use user.id (sub), NOT user.email, as a span tag ───────
-+        # Docs: https://docs.datadoghq.com/tracing/configure_data_security/
-+        # ── HIGH-CARDINALITY WARNING ────────────────────────────────────────
-+        # payment_id is unique per request — do NOT set as a span tag.
-+        # Store it in the log record (above) for correlation instead.
-+        # Docs: https://docs.datadoghq.com/tagging/assigning_tags/#defining-tags
  
      # --- Stub: call transaction-service ---
      # In a real deployment this POST reaches the Node.js transaction-service.
-@@ -654,30 +636,24 @@
+@@ -654,30 +622,24 @@
          },
      )
  
@@ -108,9 +95,7 @@
 -    #           end-to-end latency (histogram) so you can alert on SLA
 -    #           breaches and throughput drops from any Finance dashboard.
 -    # Docs: https://docs.datadoghq.com/developers/dogstatsd/
-+                  end-to-end latency (histogram) so you can alert on SLA
-+              breaches and throughput drops from any Finance dashboard.
-     #
+-    #
 -    # statsd.increment(
 -    #     "finance.payment.initiated",
 -    #     tags=[
@@ -129,6 +114,7 @@
 -    #     ],
 -    # )
 -    # ─────────────────────────────────────────────────────────────────────
++        #
 +    statsd.increment(
 +        "finance.payment.initiated",
 +        tags=[
@@ -137,6 +123,7 @@
 +            f"status:{tx_status}",
 +            f"env:{os.getenv('DD_ENV', 'local')}",
 +        ],
++    )
 +    statsd.histogram(
 +        "finance.payment.processing_time",
 +        elapsed_ms,
@@ -144,10 +131,11 @@
 +            f"payment.currency:{payload.currency}",
 +            f"env:{os.getenv('DD_ENV', 'local')}",
 +        ],
++    )
  
      return PaymentResponse(
          payment_id=payment_id,
-@@ -707,18 +683,14 @@
+@@ -707,18 +669,10 @@
          extra={"account_id": account_id, "user.id": user_sub, "user.roles": user_roles},
      )
  
@@ -156,31 +144,30 @@
 -    #           account-service is tracked as a named operation in APM,
 -    #           enabling SLA alerting per account tier.
 -    # Docs: https://docs.datadoghq.com/tracing/trace_collection/custom_instrumentation/python/
-+                  account-service is tracked as a named operation in APM,
-+              enabling SLA alerting per account tier.
-     #
+-    #
 -    # with tracer.trace("account.balance_check", service="gateway-api", resource=account_id) as span:
 -    #     span.set_tag("account.id", account_id)
 -    #     # account.tier must come from account-service response — set it below
 -    #     # span.set_tag("account.tier", balance_data.get("tier", "unknown"))
 -    #     span.set_tag("http.route", "/v1/accounts/{account_id}/balance")
 -    # ─────────────────────────────────────────────────────────────────────
++        #
 +    with tracer.trace("account.balance_check", service="gateway-api", resource=account_id) as span:
 +        span.set_tag("account.id", account_id)
-+        # account.tier must come from account-service response — set it below
-+        # span.set_tag("account.tier", balance_data.get("tier", "unknown"))
 +        span.set_tag("http.route", "/v1/accounts/{account_id}/balance")
  
      # --- Stub: call account-service ---
      try:
 --- a/gateway-api/requirements.txt
 +++ b/gateway-api/requirements.txt
-@@ -14,7 +14,7 @@
+@@ -14,8 +14,8 @@
  # Uncomment when enabling any Datadog observability layer.
  # Docs: https://docs.datadoghq.com/tracing/trace_collection/dd_libraries/python/
  #
 -# ddtrace==2.9.0
+-# datadog==0.49.1
 +ddtrace==2.9.0
- # datadog==0.49.1
++datadog==0.49.1
  # ─────────────────────────────────────────────────────────────────────
  
+ python-jose[cryptography]==3.3.0  # JWT validation against Keycloak JWKS (RS256)
