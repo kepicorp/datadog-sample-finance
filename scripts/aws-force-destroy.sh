@@ -39,6 +39,24 @@ export AWS_DEFAULT_REGION="$REGION"
 echo "==> Using profile=$PROFILE region=$REGION cluster=$CLUSTER env=$ENV"
 echo ""
 
+# ── 0. Delete Kubernetes LoadBalancer services (releases AWS ELBs) ───────────
+# K8s services of type LoadBalancer provision an AWS ELB outside Terraform's
+# state. If the ELB still exists when Terraform tries to delete the VPC/subnets,
+# AWS returns DependencyViolation and the destroy fails.
+# We delete the K8s namespace first (which triggers ELB deletion), then wait
+# for the ELBs to fully de-register before proceeding.
+echo "==> [0/7] Releasing AWS LoadBalancers via kubectl..."
+if kubectl get namespace finance --request-timeout=5s >/dev/null 2>&1; then
+  echo "    Deleting finance namespace (triggers ELB release)..."
+  kubectl delete namespace finance --ignore-not-found --wait=true --timeout=120s 2>/dev/null || true
+  kubectl delete storageclass gp3 --ignore-not-found 2>/dev/null || true
+  echo "    Namespace deleted. Waiting 20s for ELB de-registration..."
+  sleep 20
+else
+  echo "    kubectl not reachable or namespace already gone — skipping."
+fi
+echo ""
+
 # ── 1. Delete EKS node groups (must go before the cluster) ───────────────────
 echo "==> [1/7] Deleting EKS node groups..."
 NODEGROUPS=$(aws eks list-nodegroups --cluster-name "$CLUSTER" \
@@ -109,9 +127,10 @@ for REPO in \
 done
 
 # ── 6. CloudWatch log groups ──────────────────────────────────────────────────
+# The /aws/eks/<cluster>/cluster log group is managed by Terraform and will be
+# deleted in step 7 (terraform destroy). No manual action needed here.
 echo ""
-echo "==> [6/7] CloudWatch log groups are managed by Terraform — handled in step 7."
-echo "    The EKS cluster log group orphan case is handled by scripts/aws-pre-apply.sh."
+echo "==> [6/7] CloudWatch log group: handled by terraform destroy in step 7."
 
 # ── 7. Run terraform destroy for remaining resources (VPC, IAM, KMS, SGs) ────
 echo ""

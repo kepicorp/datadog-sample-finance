@@ -405,23 +405,20 @@ frontend-url:
 		-o jsonpath='http://{.status.loadBalancer.ingress[0].hostname}{"\n"}' 2>/dev/null \
 		|| echo "No LoadBalancer yet — run 'make deploy-k8s-eks' first."
 
-## tf-destroy-aws: Destroy all AWS resources created by Terraform.
-##                 WARNING: this deletes the EKS cluster and all data.
-##                 Use this for normal teardown when Terraform state is consistent.
-##                 If it fails with ResourceInUseException or secrets stuck in
-##                 deletion queue, use tf-force-destroy-aws instead.
+## tf-destroy-aws: Safely destroy all AWS resources created by Terraform.
+##                 Automatically handles the dependency ordering that plain
+##                 'terraform destroy' gets wrong:
+##                   1. Deletes K8s LoadBalancer services (releases the AWS ELB
+##                      so the VPC can be deleted — skipped if kubectl unreachable)
+##                   2. Deletes EKS node groups + add-ons via AWS CLI before the
+##                      cluster (avoids ResourceInUseException)
+##                   3. Force-deletes Secrets Manager secrets immediately
+##                      (avoids 'scheduled for deletion' errors on re-apply)
+##                   4. Runs terraform destroy for remaining resources (VPC, IAM)
 tf-destroy-aws:
-	cd deploy/terraform/aws && terraform destroy $(TF_AWS_VARS)
+	bash scripts/aws-force-destroy.sh
 
-## tf-force-destroy-aws: Force-destroy in dependency order when tf-destroy-aws fails.
-##                        Deletes EKS node groups + add-ons via AWS CLI first (required
-##                        before the cluster can be deleted), force-deletes Secrets Manager
-##                        secrets bypassing the 7-day recovery window, then runs
-##                        terraform destroy for the remaining resources (VPC, IAM, KMS).
-##                        Use when:
-##                          - EKS returns ResourceInUseException: Cluster has nodegroups attached
-##                          - Secrets Manager returns: secret is scheduled for deletion
-##                          - Terraform state is partially applied after a failed run
+## tf-force-destroy-aws: Alias for tf-destroy-aws (kept for compatibility).
 tf-force-destroy-aws:
 	bash scripts/aws-force-destroy.sh
 

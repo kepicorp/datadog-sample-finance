@@ -306,8 +306,9 @@ make build-ecr
 make deploy-k8s-eks
 
 # 11. Tear down when done
-make undeploy-k8s      # removes K8s resources first (incl. cluster-scoped gp3 StorageClass)
-make tf-destroy-aws    # destroys AWS infrastructure
+#     tf-destroy-aws handles K8s cleanup (ELB release) automatically before
+#     deleting the EKS cluster and VPC. No need to run undeploy-k8s first.
+make tf-destroy-aws
 ```
 
 #### Datadog Terraform credentials
@@ -344,33 +345,26 @@ aws secretsmanager put-secret-value \
 
 ---
 
-#### Teardown and troubleshooting
+#### Teardown
 
-Two targets handle teardown, serving different scenarios:
+```bash
+make tf-destroy-aws
+```
 
-| Target | When to use |
-|---|---|
-| `make tf-destroy-aws` | Normal teardown — Terraform handles dependency ordering automatically |
-| `make tf-force-destroy-aws` | When `tf-destroy-aws` fails — see failure modes below |
+`tf-destroy-aws` handles all dependency ordering that plain `terraform destroy`
+gets wrong:
 
-**`make tf-destroy-aws` can fail in two situations:**
+| Step | What it does | Why |
+|---|---|---|
+| 0 | Deletes the `finance` K8s namespace | Releases the AWS ELB provisioned by the `LoadBalancer` service — without this, VPC deletion fails with `DependencyViolation` |
+| 1 | Deletes EKS node groups via AWS CLI | Avoids `ResourceInUseException: Cluster has nodegroups attached` |
+| 2 | Deletes EKS add-ons via AWS CLI | Required before the cluster itself can be deleted |
+| 3 | Deletes the EKS cluster | |
+| 4 | Force-deletes Secrets Manager secrets | Avoids `secret is scheduled for deletion` on re-apply |
+| 5 | Deletes ECR repositories | |
+| 7 | Runs `terraform destroy` | Cleans up VPC, subnets, IAM roles, KMS keys, CloudWatch log groups |
 
-**1. `ResourceInUseException: Cluster has nodegroups attached`**
-EKS requires node groups to be deleted before the cluster. This happens when
-Terraform state is partially applied and the dependency graph is broken.
-`tf-force-destroy-aws` deletes node groups and add-ons via the AWS CLI first,
-then hands off to `terraform destroy` for the remaining resources.
-
-**2. `InvalidRequestException: secret is scheduled for deletion`**
-AWS Secrets Manager soft-deletes secrets for 7 days by default. If you destroy
-and re-apply within that window, Terraform cannot recreate secrets with the same
-name. `tf-force-destroy-aws` calls `delete-secret --force-delete-without-recovery`
-which bypasses the recovery window immediately.
-
-> **Note:** `recovery_window_in_days = 0` is set in `main.tf` so Terraform always
-> force-deletes secrets immediately on `destroy`. The `tf-force-destroy-aws` path
-> for secrets is only needed if a secret was left in the soft-delete queue by a
-> previous run that predates this setting.
+`tf-force-destroy-aws` is an alias for `tf-destroy-aws` — they run the same script.
 
 See `deploy/terraform/aws/README.md` for full details on SSO profiles, outputs reference, remote state, and Datadog integration steps.
 
