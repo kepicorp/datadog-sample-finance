@@ -45,12 +45,14 @@ echo "  ┌───────────────────────
 echo "  │  WARNING: This will permanently delete all finance-app AWS      │"
 echo "  │  resources: EKS cluster, VPC, ECR repos, IAM roles, secrets.   │"
 echo "  │                                                                 │"
-echo "  │  Profile : $PROFILE"
-echo "  │  Region  : $REGION"
-echo "  │  Cluster : $CLUSTER"
+echo "  │  Profile : $PROFILE                                            │"
+echo "  │  Region  : $REGION                                             │"
+echo "  │  Cluster : $CLUSTER                                            │"
 echo "  └─────────────────────────────────────────────────────────────────┘"
 echo ""
-read -r -p "  Type 'yes' to confirm: " CONFIRM
+# Read directly from /dev/tty so the prompt works even when stdin is piped
+# (e.g. when invoked via 'make tf-destroy-aws').
+read -r -p "  Type 'yes' to confirm: " CONFIRM </dev/tty
 if [ "$CONFIRM" != "yes" ]; then
   echo "Aborted."
   exit 1
@@ -87,7 +89,7 @@ if [ -n "$NODEGROUPS" ]; then
   for NG in $NODEGROUPS; do
     echo "    Deleting node group: $NG"
     aws eks delete-nodegroup --cluster-name "$CLUSTER" --nodegroup-name "$NG" \
-      --query 'nodegroup.nodegroupName' --output text 2>/dev/null || true
+      --output text --query 'nodegroup.status' >/dev/null 2>&1 || true
   done
   echo "    Waiting for node groups to finish deleting (this takes ~3-5 min)..."
   for NG in $NODEGROUPS; do
@@ -108,7 +110,7 @@ if [ -n "$ADDONS" ]; then
   for ADDON in $ADDONS; do
     echo "    Deleting add-on: $ADDON"
     aws eks delete-addon --cluster-name "$CLUSTER" --addon-name "$ADDON" \
-      --query 'addon.addonName' --output text 2>/dev/null || true
+      --output text --query 'addon.status' >/dev/null 2>&1 || true
   done
 else
   echo "    No add-ons found."
@@ -117,7 +119,7 @@ fi
 # ── 3. Delete the EKS cluster ────────────────────────────────────────────────
 echo ""
 echo "==> [3/7] Deleting EKS cluster: $CLUSTER..."
-if aws eks delete-cluster --name "$CLUSTER" --query 'cluster.name' --output text 2>/dev/null; then
+if aws eks delete-cluster --name "$CLUSTER" --output text --query 'cluster.status' >/dev/null 2>&1; then
   echo "    Waiting for cluster deletion..."
   aws eks wait cluster-deleted --name "$CLUSTER" 2>/dev/null && echo "    Cluster deleted." || true
 else
@@ -135,7 +137,7 @@ for SECRET in \
   aws secretsmanager delete-secret \
     --secret-id "$SECRET" \
     --force-delete-without-recovery \
-    --query 'Name' --output text 2>/dev/null && echo "    Deleted." || echo "    Not found or already deleted."
+    --output text --query 'Name' >/dev/null 2>&1 && echo "    Deleted." || echo "    Not found or already deleted."
 done
 
 # ── 5. Delete ECR repositories ───────────────────────────────────────────────
@@ -146,7 +148,7 @@ for REPO in \
   finance-app/fraud-detection finance-app/notification-service finance-app/batch-processor; do
   echo "    Deleting ECR repo: $REPO"
   aws ecr delete-repository --repository-name "$REPO" --force \
-    --query 'repository.repositoryName' --output text 2>/dev/null && \
+    --output text --query 'repository.repositoryName' >/dev/null 2>&1 && \
     echo "    Deleted." || echo "    Not found or already deleted."
 done
 
