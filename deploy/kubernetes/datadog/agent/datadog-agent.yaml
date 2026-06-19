@@ -116,7 +116,8 @@ spec:
     # Docs: https://docs.datadoghq.com/containers/cluster_agent/admission_controller/
     admissionController:
       enabled: true
-      mutateUnlabelled: false # Only inject into annotated pods
+      mutateUnlabelled: false # false = only inject into pods with admission.datadoghq.com/enabled:true label
+      # Set to true to inject into ALL pods in non-excluded namespaces (simpler, but broader)
 
   # Cluster Agent replicas via override (Operator v2alpha1 >= 1.0)
   override:

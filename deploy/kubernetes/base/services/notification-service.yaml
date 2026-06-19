@@ -26,10 +26,13 @@ spec:
   template:
     metadata:
       annotations:
+        # Datadog single-step instrumentation — inject go tracer at pod startup
+        admission.datadoghq.com/go-lib.version: latest
         ad.datadoghq.com/notification-service.logs: '[{"source":"go","service":"notification-service"}]'
       labels:
         app: notification-service
         component: service
+        admission.datadoghq.com/enabled: "true"
     spec:
       # notification-service exits after max retries if ActiveMQ is not reachable.
       # The init container ensures it only starts once the STOMP port is open.

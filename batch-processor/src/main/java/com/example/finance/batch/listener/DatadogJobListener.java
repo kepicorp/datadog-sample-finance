@@ -47,25 +47,22 @@ public class DatadogJobListener implements JobExecutionListener {
                 jobId,
                 jobExecution.getJobParameters());
 
+        // ── DATADOG INSTRUMENTATION — APM span tags (beforeJob) ──────────────────────────
+        // Uncomment to tag the active span with job identity at start.
+        // Requires opentracing imports (see import block above).
         //
-        //
-        //
-        Tracer tracer = GlobalTracer.get();
-        Span span = tracer.activeSpan();
-        if (span != null) {
-            span.setTag("job.name", jobName);
-            span.setTag("job.id", jobId != null ? jobId.toString() : "unknown");
-            span.setTag("job.env", System.getenv().getOrDefault("DD_ENV", "local"));
-            // Finance-specific: tag with the run date parameter when present
-            String runDate = jobExecution.getJobParameters().getString("run.date");
-            if (runDate != null) {
-                span.setTag("job.run_date", runDate);
-            }
-            String statementPeriod = jobExecution.getJobParameters().getString("statement.period");
-            if (statementPeriod != null) {
-                span.setTag("job.statement_period", statementPeriod);
-            }
-        }
+        // Tracer tracer = GlobalTracer.get();
+        // Span span = tracer.activeSpan();
+        // if (span != null) {
+        //     span.setTag("job.name", jobName);
+        //     span.setTag("job.id", jobId != null ? jobId.toString() : "unknown");
+        //     span.setTag("job.env", System.getenv().getOrDefault("DD_ENV", "local"));
+        //     String runDate = jobExecution.getJobParameters().getString("run.date");
+        //     if (runDate != null) { span.setTag("job.run_date", runDate); }
+        //     String statementPeriod = jobExecution.getJobParameters().getString("statement.period");
+        //     if (statementPeriod != null) { span.setTag("job.statement_period", statementPeriod); }
+        // }
+        // ─────────────────────────────────────────────────────────────────────────────
     }
 
     // ── AFTER JOB ─────────────────────────────────────────────────────────────

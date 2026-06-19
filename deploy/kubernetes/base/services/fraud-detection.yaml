@@ -29,10 +29,13 @@ spec:
   template:
     metadata:
       annotations:
+        # Datadog single-step instrumentation — inject python tracer at pod startup
+        admission.datadoghq.com/python-lib.version: latest
         ad.datadoghq.com/fraud-detection.logs: '[{"source":"python","service":"fraud-detection"}]'
       labels:
         app: fraud-detection
         component: service
+        admission.datadoghq.com/enabled: "true"
     spec:
       # fraud-detection exits after connection failures if ActiveMQ is not reachable.
       # The init container ensures it only starts once the STOMP port is open.

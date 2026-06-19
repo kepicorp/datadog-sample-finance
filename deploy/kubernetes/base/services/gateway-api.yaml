@@ -46,10 +46,13 @@ spec:
   template:
     metadata:
       annotations:
+        # Datadog single-step instrumentation — inject python tracer at pod startup
+        admission.datadoghq.com/python-lib.version: latest
         ad.datadoghq.com/gateway-api.logs: '[{"source":"python","service":"gateway-api"}]'
       labels:
         app: gateway-api
         component: service
+        admission.datadoghq.com/enabled: "true"
     spec:
       containers:
         - name: gateway-api

@@ -46,10 +46,13 @@ spec:
   template:
     metadata:
       annotations:
+        # Datadog single-step instrumentation — inject java tracer at pod startup
+        admission.datadoghq.com/java-lib.version: latest
         ad.datadoghq.com/account-service.logs: '[{"source":"java","service":"account-service"}]'
       labels:
         app: account-service
         component: service
+        admission.datadoghq.com/enabled: "true"
     spec:
       # Wait for both PostgreSQL and ActiveMQ before starting.
       # account-service's Spring Actuator health check includes JMS, so

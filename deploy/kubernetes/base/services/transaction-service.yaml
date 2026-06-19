@@ -46,10 +46,13 @@ spec:
   template:
     metadata:
       annotations:
+        # Datadog single-step instrumentation — inject js tracer at pod startup
+        admission.datadoghq.com/js-lib.version: latest
         ad.datadoghq.com/transaction-service.logs: '[{"source":"nodejs","service":"transaction-service"}]'
       labels:
         app: transaction-service
         component: service
+        admission.datadoghq.com/enabled: "true"
     spec:
       # transaction-service uses ActiveMQ STOMP to publish fraud-scoring events.
       # The init container prevents startup failures while the broker is initialising.
