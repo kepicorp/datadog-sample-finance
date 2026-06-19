@@ -73,7 +73,7 @@ locals {
 # Docs: https://docs.datadoghq.com/logs/log_configuration/indexes/
 
 resource "datadog_logs_index" "finance_app" {
-  name           = "finance-sample"
+  name           = "finance-logs"
   retention_days = var.log_retention_days
 
   # Only index logs from the finance namespace on the finance-app cluster.
@@ -617,7 +617,7 @@ resource "datadog_dashboard" "finance_overview" {
 
           request {
             log_query {
-              index        = "finance-sample"
+              index        = "finance-logs"
               search_query = local.finance_log_filter
               compute_query {
                 aggregation = "count"
@@ -645,7 +645,7 @@ resource "datadog_dashboard" "finance_overview" {
 
           request {
             log_query {
-              index        = "finance-sample"
+              index        = "finance-logs"
               search_query = "${local.finance_log_filter} status:error"
               compute_query {
                 aggregation = "count"

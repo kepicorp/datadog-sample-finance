@@ -459,9 +459,9 @@ tf-apply-dd:
 	cd deploy/terraform/datadog && terraform init && terraform apply -auto-approve $(TF_DD_VARS)
 
 ## tf-destroy-dd: Destroy all Datadog resources created by this Terraform module.
-##                WARNING: deletes the log index (and all indexed logs), monitors, and dashboard.
+##                WARNING: deletes the log index (and all indexed logs), monitors, dashboard, SLOs.
 tf-destroy-dd:
-	cd deploy/terraform/datadog && terraform destroy $(TF_DD_VARS)
+	cd deploy/terraform/datadog && terraform init && terraform destroy -auto-approve $(TF_DD_VARS)
 
 # ── GCP targets (scaffolded but not yet tested — coming soon) ──────────────────
 # Uncomment when GCP support is ready:
