@@ -96,28 +96,41 @@ else
   echo "    kubectl not reachable — will clean up ELBs directly via AWS CLI."
 fi
 
-# b) Find and delete Classic ELBs tagged for this cluster
-echo "    Checking for Classic ELBs (kubernetes.io/cluster/$CLUSTER)..."
-CLASSIC_ELBS=$(aws elb describe-load-balancers \
-  --query "LoadBalancerDescriptions[?contains(LoadBalancerName,'$CLUSTER') || contains(LoadBalancerName,'finance')].LoadBalancerName" \
-  --output text 2>/dev/null || true)
-if [ -n "$CLASSIC_ELBS" ]; then
-  for ELB in $CLASSIC_ELBS; do
-    echo "    Deleting Classic ELB: $ELB"
-    aws elb delete-load-balancer --load-balancer-name "$ELB" >/dev/null 2>&1 || true
-  done
-fi
+# b) Find and delete Classic ELBs in this VPC (K8s names them with a hash, not
+#    the cluster name, so we must query by VPC rather than by name).
+echo "    Checking for Classic ELBs in VPC..."
+VPC_ID=$(aws ec2 describe-vpcs \
+  --filters "Name=tag:kubernetes.io/cluster/$CLUSTER,Values=owned" \
+  --query 'Vpcs[0].VpcId' --output text 2>/dev/null || true)
+if [ -n "$VPC_ID" ] && [ "$VPC_ID" != "None" ]; then
+  echo "    Found VPC: $VPC_ID"
+  CLASSIC_ELBS=$(aws elb describe-load-balancers \
+    --query "LoadBalancerDescriptions[?VPCId=='$VPC_ID'].LoadBalancerName" \
+    --output text 2>/dev/null || true)
+  if [ -n "$CLASSIC_ELBS" ]; then
+    for ELB in $CLASSIC_ELBS; do
+      echo "    Deleting Classic ELB: $ELB"
+      aws elb delete-load-balancer --load-balancer-name "$ELB" >/dev/null 2>&1 || true
+    done
+  else
+    echo "    No Classic ELBs found in VPC."
+  fi
 
-# b2) Find and delete ALBs/NLBs (v2 ELBs) tagged for this cluster
-echo "    Checking for ALB/NLB load balancers..."
-V2_ELBS=$(aws elbv2 describe-load-balancers \
-  --query "LoadBalancers[?contains(LoadBalancerName,'$CLUSTER') || contains(LoadBalancerName,'finance')].LoadBalancerArn" \
-  --output text 2>/dev/null || true)
-if [ -n "$V2_ELBS" ]; then
-  for ARN in $V2_ELBS; do
-    echo "    Deleting ALB/NLB: $ARN"
-    aws elbv2 delete-load-balancer --load-balancer-arn "$ARN" >/dev/null 2>&1 || true
-  done
+  # b2) ALBs/NLBs in this VPC
+  echo "    Checking for ALB/NLB load balancers in VPC..."
+  V2_ELBS=$(aws elbv2 describe-load-balancers \
+    --query "LoadBalancers[?VpcId=='$VPC_ID'].LoadBalancerArn" \
+    --output text 2>/dev/null || true)
+  if [ -n "$V2_ELBS" ]; then
+    for ARN in $V2_ELBS; do
+      echo "    Deleting ALB/NLB: $ARN"
+      aws elbv2 delete-load-balancer --load-balancer-arn "$ARN" >/dev/null 2>&1 || true
+    done
+  else
+    echo "    No ALB/NLB found in VPC."
+  fi
+else
+  echo "    VPC not found or already deleted — skipping ELB lookup."
 fi
 
 # c) Wait for ELB-managed ENIs to fully detach (status goes from 'in-use' to gone)
