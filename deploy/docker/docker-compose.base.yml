@@ -159,8 +159,8 @@ services:
     ports:
       - "61616:61616" # OpenWire (JMS) + STOMP multiplexed
       - "61613:61613" # STOMP (used by Python stomp.py clients)
-      - "8161:8161"   # ActiveMQ management web UI (admin/admin by default)
-      - "1099:1099"   # JMX port
+      - "8161:8161" # ActiveMQ management web UI (admin/admin by default)
+      - "1099:1099" # JMX port
     volumes:
       - artemis-data:/var/lib/artemis-instance
     healthcheck:
@@ -279,7 +279,7 @@ services:
     environment:
       # ── Application config ─────────────────────────────────────────────
       # fraud-detection listens on fraud.score.queue via STOMP
-      ACTIVEMQ_STOMP_URL: stomp://activemq-artemis:61613
+      ACTIVEMQ_STOMP_URL: stomp://${ARTEMIS_USER}:${ARTEMIS_PASSWORD}@activemq-artemis:61613
       ACTIVEMQ_USER: ${ARTEMIS_USER}
       ACTIVEMQ_PASSWORD: ${ARTEMIS_PASSWORD}
       FRAUD_QUEUE: fraud.score.queue
@@ -297,8 +297,8 @@ services:
       - finance-net
     environment:
       # ── Application config ─────────────────────────────────────────────
-      # notification-service listens on alert.queue via STOMP
-      ACTIVEMQ_STOMP_URL: stomp://activemq-artemis:61613
+      # notification-service reads ACTIVEMQ_URL and parses credentials from it
+      ACTIVEMQ_URL: stomp://${ARTEMIS_USER}:${ARTEMIS_PASSWORD}@activemq-artemis:61613
       ACTIVEMQ_USER: ${ARTEMIS_USER}
       ACTIVEMQ_PASSWORD: ${ARTEMIS_PASSWORD}
       ALERT_QUEUE: alert.queue

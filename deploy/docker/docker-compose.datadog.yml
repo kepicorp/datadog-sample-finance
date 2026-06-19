@@ -378,7 +378,7 @@ services:
     environment:
       # ── Application config ─────────────────────────────────────────────
       # fraud-detection listens on fraud.score.queue via STOMP
-      ACTIVEMQ_STOMP_URL: stomp://activemq-artemis:61613
+      ACTIVEMQ_STOMP_URL: stomp://${ARTEMIS_USER}:${ARTEMIS_PASSWORD}@activemq-artemis:61613
       ACTIVEMQ_USER: ${ARTEMIS_USER}
       ACTIVEMQ_PASSWORD: ${ARTEMIS_PASSWORD}
       FRAUD_QUEUE: fraud.score.queue
@@ -417,8 +417,8 @@ services:
       - finance-net
     environment:
       # ── Application config ─────────────────────────────────────────────
-      # notification-service listens on alert.queue via STOMP
-      ACTIVEMQ_STOMP_URL: stomp://activemq-artemis:61613
+      # notification-service reads ACTIVEMQ_URL and parses credentials from it
+      ACTIVEMQ_URL: stomp://${ARTEMIS_USER}:${ARTEMIS_PASSWORD}@activemq-artemis:61613
       ACTIVEMQ_USER: ${ARTEMIS_USER}
       ACTIVEMQ_PASSWORD: ${ARTEMIS_PASSWORD}
       ALERT_QUEUE: alert.queue
@@ -513,7 +513,7 @@ services:
       # │  The line below is intentionally commented out — you must opt in.   │
       # │  Uncomment it as part of Learning Progression Step 1.               │
       # └─────────────────────────────────────────────────────────────────────┘
-      # DD_API_KEY: ${DD_API_KEY}
+      DD_API_KEY: ${DD_API_KEY}
 
       DD_SITE: ${DD_SITE:-datadoghq.com}
 
