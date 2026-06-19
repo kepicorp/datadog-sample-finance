@@ -133,8 +133,23 @@ else
   echo "    VPC not found or already deleted — skipping ELB lookup."
 fi
 
-# c) Wait for ELB-managed ENIs to fully detach (status goes from 'in-use' to gone)
-# These ENIs have description 'ELB ...' or 'Amazon EKS ...'
+# c) Delete K8s-created security groups (k8s-elb-*) that block VPC deletion
+echo "    Cleaning up K8s-managed security groups..."
+if [ -n "$VPC_ID" ] && [ "$VPC_ID" != "None" ]; then
+  K8S_SGS=$(aws ec2 describe-security-groups \
+    --filters "Name=vpc-id,Values=$VPC_ID" "Name=group-name,Values=k8s-elb-*" \
+    --query 'SecurityGroups[].GroupId' --output text 2>/dev/null || true)
+  if [ -n "$K8S_SGS" ]; then
+    for SG in $K8S_SGS; do
+      echo "    Deleting security group: $SG"
+      aws ec2 delete-security-group --group-id "$SG" >/dev/null 2>&1 || true
+    done
+  else
+    echo "    No K8s security groups found."
+  fi
+fi
+
+# d) Wait for ELB-managed ENIs to fully detach (status goes from 'in-use' to gone)
 echo "    Waiting for ELB/ENIs to fully release (max 120s)..."
 for i in $(seq 1 24); do
   ENI_COUNT=$(aws ec2 describe-network-interfaces \
