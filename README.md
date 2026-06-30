@@ -4,6 +4,67 @@ A hands-on instrumentation learning tool for Datadog observability. The applicat
 
 ---
 
+## Prerequisites
+
+The app runs on Kubernetes. You need either a **local K8s cluster** or an **AWS account** for EKS.
+
+### Option A — Local Kubernetes (recommended for getting started)
+
+Any of the following work out of the box:
+
+| Tool | Install | Notes |
+|---|---|---|
+| **Colima** (macOS) | `brew install colima && colima start --kubernetes` | Lightweight, runs k3s inside Lima VM. Recommended on Apple Silicon. |
+| **k3d** (macOS/Linux) | `brew install k3d && k3d cluster create finance` | Runs k3s in Docker containers. Fast startup. |
+| **minikube** | `brew install minikube && minikube start` | Good Docker Desktop alternative. |
+| **Docker Desktop** | Enable Kubernetes in Docker Desktop settings | Simplest if already using Docker Desktop. |
+| **kind** | `brew install kind && kind create cluster` | Kubernetes-in-Docker, popular for CI. |
+
+**Colima example (Apple Silicon):**
+```bash
+brew install colima kubectl helm
+colima start --kubernetes --cpu 4 --memory 8 --arch aarch64
+kubectl get nodes   # should show 1 node Ready
+```
+
+> **Loading images into local k3s (Colima):** local Docker images are not
+> automatically available inside the cluster. Load them after `make build`:
+> ```bash
+> for svc in gateway-api account-service transaction-service \
+>            fraud-detection notification-service batch-processor; do
+>   docker save finance-sample-app-$svc:latest \
+>     | colima ssh -- sudo ctr image import -
+> done
+> ```
+> For k3d use `k3d image import`, for minikube use `minikube image load`,
+> for kind use `kind load docker-image`.
+
+### Option B — AWS EKS
+
+Requires:
+- AWS CLI ≥ 2.x with an SSO profile configured (`aws configure sso`)
+- Terraform ≥ 1.5
+- An AWS account with permissions to create EKS, VPC, ECR, IAM, and Secrets Manager resources
+
+See the [AWS EKS section](#aws--eks-via-terraform) for the full provisioning workflow.
+
+### Common tools (both options)
+
+```bash
+# macOS
+brew install kubectl helm
+
+# Verify
+kubectl version --client
+helm version
+```
+
+You also need a **Datadog account** with an API key and an App key:
+- API key: https://app.datadoghq.com/organization-settings/api-keys
+- App key: https://app.datadoghq.com/organization-settings/application-keys
+
+---
+
 ## Architecture
 
 ```
