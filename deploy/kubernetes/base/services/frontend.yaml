@@ -52,7 +52,11 @@ data:
             proxy_read_timeout 30s;
         }
 
-        # ── Keycloak — OIDC login and token endpoints ──────────────────────────
+        # ── Keycloak — all Keycloak traffic ────────────────────────────────────
+        # /auth/    → Keycloak OIDC login, token, account console, admin console
+        # /resources/ → Keycloak static assets (JS, CSS, fonts) used by the
+        #               account and admin console UIs — must be proxied from the
+        #               same origin or the browser receives 404 for all assets.
         location /auth/ {
             proxy_pass         http://keycloak:8080/;
             proxy_http_version 1.1;
@@ -60,7 +64,24 @@ data:
             proxy_set_header   X-Real-IP         $remote_addr;
             proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
             proxy_set_header   X-Forwarded-Proto $scheme;
-            # Keycloak needs the original host for redirect_uri construction.
+            proxy_set_header   X-Forwarded-Host  $host;
+            proxy_read_timeout 60s;
+        }
+
+        location /resources/ {
+            proxy_pass         http://keycloak:8080/resources/;
+            proxy_http_version 1.1;
+            proxy_set_header   Host $host;
+            proxy_read_timeout 30s;
+        }
+
+        location /realms/ {
+            proxy_pass         http://keycloak:8080/realms/;
+            proxy_http_version 1.1;
+            proxy_set_header   Host              $host;
+            proxy_set_header   X-Real-IP         $remote_addr;
+            proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+            proxy_set_header   X-Forwarded-Proto $scheme;
             proxy_set_header   X-Forwarded-Host  $host;
             proxy_read_timeout 60s;
         }
@@ -110,7 +131,7 @@ data:
       <ul>
         <li><a href="/health">Gateway API — health check</a></li>
         <li><a href="/internal/accounts">Account Service — accounts list</a></li>
-        <li><a href="/auth/realms/finance/account/">Keycloak — finance realm account</a></li>
+        <li><a href="/realms/finance/account/">Keycloak — finance realm account</a></li>
         <li><a href="/auth/admin/master/console/#/finance">Keycloak — admin console (finance realm)</a></li>
       </ul>
       <p>
