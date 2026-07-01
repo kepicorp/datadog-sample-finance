@@ -44,8 +44,8 @@ data:
 
   # ── Keycloak public URL ────────────────────────────────────────────────
   # The URL browsers use to reach Keycloak.
-  # Local: Keycloak NodePort 30089 — http://localhost:30089
-  # EKS:   patched by the Kustomize overlay to the NLB/frontend hostname.
+  # Local: https://localhost:30443 (nginx HTTPS NodePort — self-signed cert)
+  # EKS:   patched by the Kustomize overlay to the HTTPS NLB/frontend hostname.
   # Used by KC_HOSTNAME_URL on the Keycloak pod and KEYCLOAK_BASE in the
   # frontend dashboard ConfigMap (injected at deploy time by make deploy-k8s).
-  KEYCLOAK_PUBLIC_URL: "http://localhost:30089"
+  KEYCLOAK_PUBLIC_URL: "https://localhost:30443"

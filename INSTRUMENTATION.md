@@ -158,13 +158,17 @@ Pre-imported into the `finance` realm. Use these to log in to the dashboard at `
 
 ### Keycloak admin console
 
-| URL | `http://localhost:30089/admin/master/console/#/finance` |
+| URL | `https://localhost:30443/admin/master/console/#/finance` |
 |---|---|
 | Username | `admin` |
 | Password | `Finance@Admin2025!` |
-| Version | Keycloak 24.0 |
+| Version | Keycloak 26.0 |
 
-The admin console opens directly on the `finance` realm. Keycloak runs on **NodePort 30089** — it is accessed directly by the browser, not through the nginx frontend at `:30080`. The public URL is controlled by `KEYCLOAK_PUBLIC_URL` in `deploy/kubernetes/base/01-config.yaml` (`http://localhost:30089` locally; patch to the NLB hostname on EKS).
+The admin console opens on the `finance` realm via the nginx HTTPS proxy. Keycloak itself is `ClusterIP`-only — the browser reaches it through **nginx on port 30443 (HTTPS, self-signed cert)**.
+
+> **First visit:** accept the self-signed certificate warning in your browser once — click **Advanced → Accept** (Firefox) or **Advanced → Proceed** (Chrome).
+
+`KEYCLOAK_PUBLIC_URL` in `deploy/kubernetes/base/01-config.yaml` controls Keycloak's public URL (`https://localhost:30443` locally; patch to the HTTPS NLB hostname on EKS).
 
 ### Datadog credentials (`.env`)
 
@@ -799,8 +803,8 @@ Last validated: Docker Desktop with Kubernetes enabled (single-node, Apple Silic
 | Log collection | Agent | ✅ `kube_namespace:finance` logs in Datadog |
 | Log–trace correlation | Layer 1 | ✅ `dd.trace_id` in every log line |
 | Traffic generator | In-cluster | ✅ continuous load, no laptop required |
-| Keycloak 24.0 | NodePort 30089 (direct, not via nginx) | ✅ admin console + finance realm users |
-| `KEYCLOAK_PUBLIC_URL` | `01-config.yaml` | ✅ `http://localhost:30089` (local) — patch to NLB hostname on EKS |
+| Keycloak 26.0 | ClusterIP proxied via nginx HTTPS (:30443, self-signed cert) | ✅ admin console + finance realm users |
+| `KEYCLOAK_PUBLIC_URL` | `01-config.yaml` | ✅ `https://localhost:30443` (local) — patch to NLB hostname on EKS |
 | Service Catalog | API registration | ✅ 6 services registered (v3 schema) |
 | DBM — PostgreSQL | Agent check | ✅ query metrics + samples |
 | ActiveMQ JMX | Agent check | ✅ broker + queue metrics |

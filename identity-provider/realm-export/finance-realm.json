@@ -203,12 +203,12 @@
       "secret": "FuX1ZIddFs02LzJT-s5MZufplT7SzGmflb42_6P8VcI",
       "redirectUris": [
         "http://localhost:30080/*",
-        "http://localhost:30089/*",
+        "https://localhost:30443/*",
         "http://gateway-api:8080/*"
       ],
       "webOrigins": [
         "http://localhost:30080",
-        "http://localhost:30089",
+        "https://localhost:30443",
         "http://gateway-api:8080"
       ],
       "defaultClientScopes": [

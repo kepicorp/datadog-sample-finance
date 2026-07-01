@@ -221,6 +221,23 @@ deploy-k8s:
 	kubectl create configmap keycloak-realm-import \
 		--from-file=identity-provider/realm-export/ \
 		-n finance --dry-run=client -o yaml | kubectl apply -f -
+	@echo "Creating TLS secret for nginx Keycloak HTTPS proxy..."
+	@if ! kubectl get secret keycloak-tls -n finance >/dev/null 2>&1; then \
+		openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
+			-keyout /tmp/keycloak-tls.key \
+			-out /tmp/keycloak-tls.crt \
+			-subj "/CN=localhost/O=finance-sample-app" \
+			-addext "subjectAltName=DNS:localhost,DNS:keycloak,IP:127.0.0.1" \
+			2>/dev/null; \
+		kubectl create secret tls keycloak-tls \
+			--cert=/tmp/keycloak-tls.crt \
+			--key=/tmp/keycloak-tls.key \
+			-n finance; \
+		rm -f /tmp/keycloak-tls.crt /tmp/keycloak-tls.key; \
+		echo "  ✓ keycloak-tls Secret created"; \
+	else \
+		echo "  keycloak-tls Secret already exists — skipping"; \
+	fi
 	@echo "Applying config, secrets and infrastructure..."
 	kubectl apply -f deploy/kubernetes/base/01-config.yaml
 	kubectl apply -f deploy/kubernetes/base/02-secrets.yaml
@@ -236,7 +253,7 @@ deploy-k8s:
 		-n finance --dry-run=client -o yaml | kubectl apply -f -
 	@echo "Creating frontend dashboard ConfigMap (injecting KEYCLOAK_PUBLIC_URL)..."
 	@KEYCLOAK_URL=$$(grep 'KEYCLOAK_PUBLIC_URL' deploy/kubernetes/base/01-config.yaml | sed 's/.*: *"\(.*\)"/\1/'); \
-	sed "s|http://localhost:30089|$$KEYCLOAK_URL|g" frontend-stub/index.html > /tmp/finance-index.html; \
+	sed "s|https://localhost:30443|$$KEYCLOAK_URL|g" frontend-stub/index.html > /tmp/finance-index.html; \
 	kubectl create configmap frontend-dashboard \
 		--from-file=index.html=/tmp/finance-index.html \
 		-n finance --dry-run=client -o yaml | kubectl apply -f -; \

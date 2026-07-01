@@ -1,16 +1,24 @@
 # =============================================================================
 # Finance Sample App — frontend (nginx)
 # =============================================================================
-# Nginx reverse proxy that sits in front of all backend services.
-# Routing rules:
-#   /v1/           →  gateway-api:8080        (all authenticated API traffic)
-#   /internal/accounts → account-service:8081  (internal dashboard, rewrites to /v1/accounts)
-#   /auth/         →  keycloak:8080/           (Keycloak login / OIDC flows)
-#   /              →  serves static placeholder index.html
+# Two listeners:
+#   :80   (NodePort 30080) — Finance dashboard + API proxy
+#   :8443 (NodePort 30443) — HTTPS reverse proxy for Keycloak
 #
-# Access the dashboard at http://localhost:30080 after port-forwarding or via NodePort:
-#   kubectl port-forward svc/frontend 30080:80 -n finance
-#   OR — if your cluster supports NodePort — just open http://<node-ip>:30080
+# Routing on :80:
+#   /v1/              →  gateway-api:8080  (JWT required)
+#   /internal/accounts →  account-service:8081
+#   /health           →  gateway-api:8080/health
+#   /                 →  static finance dashboard
+#
+# Routing on :8443 (TLS, self-signed cert in 'keycloak-tls' Secret):
+#   all paths         →  keycloak:8080
+#   Keycloak runs KC_PROXY=edge so it trusts X-Forwarded-Proto: https
+#   from nginx and sets Secure session cookies correctly.
+#
+# ⚠  Self-signed certificate: browsers will show a security warning on
+#    first visit to https://localhost:30443. Click "Advanced → Accept" once.
+#    The certificate is valid for 10 years and covers localhost.
 # =============================================================================
 
 # ── nginx config ConfigMap ─────────────────────────────────────────────────────
@@ -24,11 +32,12 @@ metadata:
     component: service
 data:
   default.conf: |
+    # ── HTTP server (:80) — Finance dashboard + API proxy ───────────────────
     server {
         listen 80;
         server_name _;
 
-        # ── API gateway — all /v1/ traffic goes to gateway-api ────────────────
+        # ── API gateway — all /v1/ traffic goes to gateway-api ───────────────
         location /v1/ {
             proxy_pass         http://gateway-api:8080;
             proxy_http_version 1.1;
@@ -39,8 +48,7 @@ data:
             proxy_read_timeout 30s;
         }
 
-        # ── Internal accounts dashboard — rewrites URI before proxying ─────────
-        # /internal/accounts  →  account-service:8081/v1/accounts
+        # ── Internal accounts ─────────────────────────────────────────────
         location /internal/accounts {
             rewrite ^/internal/accounts(.*)$ /v1/accounts$1 break;
             proxy_pass         http://account-service:8081;
@@ -52,23 +60,58 @@ data:
             proxy_read_timeout 30s;
         }
 
-
-
-        # ── Gateway-API health ───────────────────────────────────────────────────
+        # ── Gateway-API health ──────────────────────────────────────────
         location = /health {
             proxy_pass         http://gateway-api:8080/health;
             proxy_http_version 1.1;
             proxy_set_header   Host $host;
         }
 
-        # ── Static frontend ────────────────────────────────────────────────────
+        # ── Static finance dashboard ────────────────────────────────────────
         location / {
             root  /usr/share/nginx/html;
             index index.html;
             try_files $uri $uri/ /index.html;
         }
 
-        # ── nginx health endpoint (used by liveness/readiness probes) ──────────
+        location /nginx-health {
+            access_log off;
+            return 200 "healthy\n";
+            add_header Content-Type text/plain;
+        }
+    }
+
+    # ── HTTPS server (:8443) — Keycloak reverse proxy ─────────────────────
+    # nginx terminates TLS with the self-signed cert from the keycloak-tls
+    # Secret and forwards plain HTTP to keycloak:8080.
+    # KC_PROXY=edge on Keycloak trusts X-Forwarded-Proto: https so it:
+    #   - Issues Secure session cookies (required by browsers)
+    #   - Builds redirect_uri as https://localhost:30443/...
+    #   - Advertises issuer as https://localhost:30443/realms/finance
+    # ⚠  Self-signed cert: accept the browser security warning once.
+    server {
+        listen 8443 ssl;
+        server_name _;
+
+        ssl_certificate     /etc/nginx/certs/tls.crt;
+        ssl_certificate_key /etc/nginx/certs/tls.key;
+        ssl_protocols       TLSv1.2 TLSv1.3;
+        ssl_ciphers         HIGH:!aNULL:!MD5;
+
+        # Proxy everything to Keycloak
+        location / {
+            proxy_pass             http://keycloak:8080;
+            proxy_http_version     1.1;
+            proxy_set_header       Host               $http_host;
+            proxy_set_header       X-Real-IP          $remote_addr;
+            proxy_set_header       X-Forwarded-For    $proxy_add_x_forwarded_for;
+            proxy_set_header       X-Forwarded-Proto  https;
+            proxy_set_header       X-Forwarded-Host   $http_host;
+            proxy_read_timeout     60s;
+            proxy_buffer_size      8k;
+            proxy_buffers          8 8k;
+        }
+
         location /nginx-health {
             access_log off;
             return 200 "healthy\n";
@@ -81,9 +124,9 @@ data:
   # The nginx ConfigMap only holds the site configuration.
 
 ---
-# ── Service (NodePort) ─────────────────────────────────────────────────────────
-# Access the dashboard at http://localhost:30080 after port-forwarding or via NodePort.
-# NodePort 30080 is accessible from outside the cluster on any node IP.
+# ── Service (NodePort) ──────────────────────────────────────────────────
+# 30080 — Finance dashboard (HTTP)
+# 30443 — Keycloak HTTPS proxy (self-signed cert, accept once in browser)
 apiVersion: v1
 kind: Service
 metadata:
@@ -101,6 +144,10 @@ spec:
       port: 80
       targetPort: 80
       nodePort: 30080
+    - name: https-keycloak
+      port: 8443
+      targetPort: 8443
+      nodePort: 30443
 
 ---
 # ── Deployment ────────────────────────────────────────────────────────────────
@@ -131,6 +178,8 @@ spec:
           ports:
             - name: http
               containerPort: 80
+            - name: https-keycloak
+              containerPort: 8443
 
           # ── Health checks ──────────────────────────────────────────────────
           livenessProbe:
@@ -160,16 +209,18 @@ spec:
               memory: "128Mi"
 
           volumeMounts:
-            # nginx site config
             - name: nginx-config
               mountPath: /etc/nginx/conf.d/default.conf
               subPath: default.conf
               readOnly: true
-            # Finance dashboard UI (from frontend-stub/index.html)
-            # Created by 'make deploy-k8s' as the frontend-dashboard ConfigMap.
             - name: frontend-dashboard
               mountPath: /usr/share/nginx/html/index.html
               subPath: index.html
+              readOnly: true
+            # TLS cert+key for the HTTPS Keycloak proxy listener (:8443)
+            # Created by 'make deploy-k8s' as the 'keycloak-tls' Secret.
+            - name: keycloak-tls
+              mountPath: /etc/nginx/certs
               readOnly: true
 
       volumes:
@@ -179,3 +230,6 @@ spec:
         - name: frontend-dashboard
           configMap:
             name: frontend-dashboard
+        - name: keycloak-tls
+          secret:
+            secretName: keycloak-tls

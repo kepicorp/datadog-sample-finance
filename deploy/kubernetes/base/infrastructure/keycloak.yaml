@@ -29,20 +29,18 @@ metadata:
     app: keycloak
     component: infrastructure
 spec:
-  # NodePort 30089 exposes Keycloak directly on the host so the browser
-  # talks to Keycloak without going through nginx.
-  # This avoids cookie Secure/SameSite issues that arise when proxying
-  # Keycloak's admin and account consoles through a plain-HTTP nginx.
-  # The finance dashboard (port 30080) still talks to Keycloak internally
-  # via ClusterIP DNS — only the browser uses 30089.
-  type: NodePort
+  # ClusterIP — Keycloak is only reachable within the cluster.
+  # The browser accesses Keycloak through the nginx HTTPS reverse proxy
+  # at https://localhost:30443, which terminates TLS and forwards to
+  # keycloak:8080 internally. This makes KC_PROXY=edge work correctly
+  # (Secure cookies are sent over HTTPS from the browser).
+  type: ClusterIP
   selector:
     app: keycloak
   ports:
     - name: http
       port: 8080
       targetPort: 8080
-      nodePort: 30089
 
 ---
 # ── Deployment ────────────────────────────────────────────────────────────────
@@ -67,7 +65,7 @@ spec:
     spec:
       containers:
         - name: keycloak
-          image: quay.io/keycloak/keycloak:24.0
+          image: quay.io/keycloak/keycloak:26.0
           imagePullPolicy: IfNotPresent
 
           # In Kubernetes, `args` appends to the Keycloak ENTRYPOINT (/opt/keycloak/bin/kc.sh).
@@ -90,7 +88,6 @@ spec:
                 secretKeyRef:
                   name: app-secrets
                   key: keycloak-admin-password
-            # Disable TLS and strict hostname checks for dev/local use.
             - name: KC_HTTP_ENABLED
               value: "true"
             - name: KC_HOSTNAME_STRICT
@@ -99,16 +96,17 @@ spec:
               value: "false"
             - name: KC_LOG_LEVEL
               value: "INFO"
-            # Set the public-facing URL explicitly so Keycloak builds correct
-            # issuer URLs and redirect URIs for both the finance dashboard
-            # and the admin console.
-            # KC_HOSTNAME_URL overrides all URL construction in Keycloak 26.
-            # For EKS, patch this to the NLB hostname via the Kustomize overlay.
-            # KC_HOSTNAME_URL tells Keycloak its public-facing URL so it
-            # builds correct issuer URLs and redirect URIs.
-            # Value comes from KEYCLOAK_PUBLIC_URL in app-config:
-            #   Local: http://localhost:30089 (NodePort direct)
-            #   EKS:   patched by Kustomize overlay to the NLB hostname
+            # KC_PROXY=edge: nginx terminates TLS and forwards HTTP to Keycloak.
+            # Keycloak trusts X-Forwarded-* headers from nginx and builds
+            # correct issuer URLs. Secure cookies work because the browser
+            # communicates with nginx over HTTPS (port 30443).
+            - name: KC_PROXY
+              value: "edge"
+            - name: KC_PROXY_HEADERS
+              value: "xforwarded"
+            # Public URL read from app-config ConfigMap:
+            #   Local: https://localhost:30443 (nginx HTTPS NodePort)
+            #   EKS:   patched to the HTTPS NLB/frontend hostname
             - name: KC_HOSTNAME_URL
               valueFrom:
                 configMapKeyRef:

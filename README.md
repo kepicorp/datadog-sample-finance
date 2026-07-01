@@ -68,7 +68,7 @@ Supporting infrastructure:
 | PostgreSQL 15 | `postgres:15` | Primary ledger database |
 | Redis 7 | `redis:7` | Session store and cache |
 | ActiveMQ Artemis | `apache/activemq-artemis` | JMS 2.0 broker (mirrors IBM MQ / TIBCO patterns) |
-| Keycloak 24 | `quay.io/keycloak/keycloak:24.0` | OIDC for gateway-api · SAML SSO for Datadog |
+| | `quay.io/keycloak/keycloak:26.0` | OIDC for gateway-api · SAML SSO for Datadog |
 | NGINX | `nginx:1.25` | Reverse proxy · frontend dashboard |
 
 ---
@@ -147,13 +147,13 @@ All credentials for local development are pre-set in `.env` and `deploy/kubernet
 | What | URL | Notes |
 |---|---|---|
 | **Finance dashboard** | `http://localhost:30080` | Login with any finance realm user below |
-| **Keycloak admin console** | `http://localhost:30089/admin/master/console/#/finance` | Login as `admin` / `Finance@Admin2025!` |
-| **Keycloak finance realm account** | `http://localhost:30089/realms/finance/account/` | Self-service account page for realm users |
+| **Keycloak admin console** | `https://localhost:30443/admin/master/console/#/finance` | Login as `admin` / `Finance@Admin2025!` |
+| **Keycloak finance realm account** | `https://localhost:30443/realms/finance/account/` | Self-service account page for realm users |
 | **ActiveMQ management console** | `kubectl port-forward svc/activemq-artemis 8161:8161 -n finance` then `http://localhost:8161` | Broker metrics and queue management (not proxied through nginx) |
 
 ### Finance realm users and roles
 
-Pre-imported into the `finance` Keycloak realm. Log in via the Finance dashboard at `http://localhost:30080` — it redirects to Keycloak (port 30089) automatically.
+Pre-imported into the `finance` Keycloak realm. Log in via the Finance dashboard at `http://localhost:30080` — it redirects to Keycloak at `https://localhost:30443` automatically.
 
 All users share the password **`Finance@2025!`**.
 
@@ -220,7 +220,7 @@ kubectl logs -n finance deploy/traffic-generator -f
 
 **Finance dashboard:** `http://localhost:30080` — log in with any finance realm user (e.g. `carol.admin` / `Finance@2025!`).
 
-**Keycloak admin console:** `http://localhost:30089/admin/master/console/#/finance` — log in as `admin` / `Finance@Admin2025!`.
+**Keycloak admin console:** `https://localhost:30443/admin/master/console/#/finance` — log in as `admin` / `Finance@Admin2025!`.
 
 See [Credentials](#credentials) for all users, roles, and URLs.
 
@@ -433,19 +433,21 @@ make build && make deploy-k8s && make deploy-k8s-dd
 
 ## Identity Provider
 
-Keycloak 24.0 provides:
+Keycloak **26.0** provides:
 - **OIDC for gateway-api** — JWT Bearer token validation per request
 - **SAML 2.0 SSO for Datadog** — mirrors enterprise IdPs (Okta, Azure AD, PingFederate)
 - **Finance roles** — `finance-analyst`, `finance-trader`, `finance-admin`, `finance-auditor`, `finance-compliance`
 
-Keycloak is exposed **directly** on NodePort **30089** — it is not proxied through the nginx frontend at `:30080`. The nginx frontend (`:30080`) only proxies `/v1/` (gateway-api), `/internal/accounts` (account-service), `/health`, and static files.
+Keycloak is proxied through **nginx over HTTPS** on port **30443** — nginx terminates TLS with a self-signed certificate and forwards plain HTTP to `keycloak:8080` internally. This allows Keycloak 26 to set `Secure` session cookies correctly (required by browsers).
+
+> **First visit:** browsers will show a security warning for the self-signed certificate at `https://localhost:30443`. Click **Advanced → Accept the Risk** (Firefox) or **Advanced → Proceed** (Chrome) once — you won't be asked again.
 
 `KEYCLOAK_PUBLIC_URL` in `deploy/kubernetes/base/01-config.yaml` is the single source of truth for Keycloak's public URL. It is used by `KC_HOSTNAME_URL` on the Keycloak pod and injected into the finance dashboard at deploy time. On EKS, patch it to the NLB hostname after deploy (see AWS EKS workflow above).
 
 | URL | Credentials |
 |---|---|
-| **Admin console:** `http://localhost:30089/admin/master/console/#/finance` | `admin` / `Finance@Admin2025!` |
-| **Realm account page:** `http://localhost:30089/realms/finance/account/` | any finance realm user |
+| **Admin console:** `https://localhost:30443/admin/master/console/#/finance` | `admin` / `Finance@Admin2025!` |
+| **Realm account page:** `https://localhost:30443/realms/finance/account/` | any finance realm user |
 
 Full guide: `identity-provider/README.md`
 

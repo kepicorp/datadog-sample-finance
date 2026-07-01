@@ -917,7 +917,7 @@
             //   /auth/             → keycloak:8080          (avoids browser CORS error)
             //   /v1/               → gateway-api:8080        (JWT required)
             //   /internal/accounts → account-service:8081    (no auth)
-            const KEYCLOAK_BASE = "http://localhost:30089";
+            const KEYCLOAK_BASE = "https://localhost:30443";
             const KEYCLOAK_REALM = "finance";
             const CLIENT_ID = "finance-gateway";
             const CLIENT_SECRET = "FuX1ZIddFs02LzJT-s5MZufplT7SzGmflb42_6P8VcI";
