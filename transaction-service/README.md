@@ -28,24 +28,20 @@ the Learning Progression below to enable each layer one at a time.
 
 Start the Datadog Agent alongside this service.
 
-**Docker Compose:** See `deploy/docker/docker-compose.yml`. The Agent
-container is already defined; set `DD_API_KEY` in your shell and run:
+Apply the `DatadogAgent` CRD from `deploy/kubernetes/datadog/agent/datadog-agent.yaml`.
+The Admission Controller will inject the Agent sidecar automatically.
 
 ```bash
-export DD_API_KEY=<your-api-key>
-docker compose up
+make deploy-k8s-dd
 ```
-
-**Kubernetes:** Apply the `DatadogAgent` CRD from `deploy/kubernetes/`.
-The Admission Controller will inject the Agent sidecar automatically.
 
 Verify the Agent is running and can reach Datadog:
 
 ```bash
-docker exec -it datadog-agent agent status
+kubectl get pods -n finance
 ```
 
-Reference: https://docs.datadoghq.com/containers/docker/
+Reference: https://docs.datadoghq.com/containers/kubernetes/
 
 ---
 
@@ -218,11 +214,11 @@ Reference: https://docs.datadoghq.com/real_user_monitoring/browser/
 DBM is an Agent-side feature — this service requires no code changes.
 
 1. Run the PostgreSQL prerequisites in
-   `deploy/docker/datadog-agent/conf.d/postgres.d/setup.sql`
+   `deploy/kubernetes/datadog/checks/postgres-check.yaml`
    (creates the `datadog` monitoring user, enables `pg_stat_statements`).
 
-2. Mount the Agent config from
-   `deploy/docker/datadog-agent/conf.d/postgres.d/conf.yaml`.
+2. The Agent config is mounted from
+   `deploy/kubernetes/datadog/checks/postgres-check.yaml`.
 
 3. In any `ledger.commit` span, click **View in DBM** to see the query
    plan and wait events for that exact request.

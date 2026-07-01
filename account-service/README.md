@@ -36,23 +36,17 @@ Work through these steps in order. Each step builds on the previous one.
 
 ### Step 1 — Enable the Datadog Agent
 
-Run the Datadog Agent as a sidecar (Docker Compose) or DaemonSet (Kubernetes) alongside this service.
+Run the Datadog Agent as a DaemonSet (Kubernetes) alongside this service.
 
-```yaml
-# docker-compose snippet
-datadog-agent:
-  image: datadog/agent:7
-  environment:
-    - DD_API_KEY=${DD_API_KEY}   # Never hardcode — inject from secrets
-    - DD_APM_ENABLED=true
-    - DD_LOGS_ENABLED=true
-    - DD_PROCESS_AGENT_ENABLED=true
-  volumes:
-    - /var/run/docker.sock:/var/run/docker.sock
-    - /var/run/datadog/:/var/run/datadog/
+```bash
+# Deploy with Datadog Agent
+make deploy-k8s-dd
+
+# Verify pods are running
+kubectl get pods -n finance
 ```
 
-Docs: https://docs.datadoghq.com/containers/docker/
+Docs: https://docs.datadoghq.com/containers/kubernetes/
 
 ### Step 2 — Set Unified Service Tags
 
@@ -72,7 +66,7 @@ Docs: https://docs.datadoghq.com/getting_started/tagging/unified_service_tagging
 Add the `-javaagent` flag to `JAVA_TOOL_OPTIONS`. No code changes required.
 
 1. Download the agent: `curl -Lo /dd-java-agent.jar https://dtdg.co/latest-java-tracer`
-2. Set the env var (in `docker-compose.yml` or the K8s Deployment):
+2. Set the env var (in the K8s Deployment — `deploy/kubernetes/base/services/account-service.yaml`):
 
 ```bash
 JAVA_TOOL_OPTIONS="-javaagent:/dd-java-agent.jar -Ddd.service=account-service -Ddd.env=${DD_ENV} -Ddd.version=${DD_VERSION}"
@@ -147,11 +141,11 @@ Docs: https://docs.datadoghq.com/real_user_monitoring/browser/
 
 DBM is configured entirely on the Agent side — no application code changes.
 
-1. Run the PostgreSQL prerequisites SQL (see `deploy/docker/postgres-dbm-setup.sql`):
+1. Run the PostgreSQL prerequisites SQL (see `deploy/kubernetes/datadog/checks/postgres-check.yaml`):
    - Create a read-only `datadog` monitoring user
    - Enable `pg_stat_statements`
 
-2. Add `conf.d/postgres.d/conf.yaml` to the Agent (see `deploy/docker/` for the template).
+2. Add `conf.d/postgres.d/conf.yaml` to the Agent (see `deploy/kubernetes/datadog/checks/` for the template).
 
 3. Set `dbm: true` in the Agent config.
 
@@ -217,8 +211,8 @@ Docs: https://docs.datadoghq.com/tagging/assigning_tags/#defining-tags
 ## Local Development
 
 ```bash
-# Start dependencies
-docker compose -f deploy/docker/docker-compose.yml up postgres activemq-artemis
+# Check dependencies are running
+kubectl get pods -n finance
 
 # Run the service (no Datadog)
 ./gradlew bootRun
@@ -231,8 +225,8 @@ docker build -t account-service:local .
 
 # Run with Datadog agent (Step 3 onwards)
 cp .env.example .env
-# Edit .env: set DD_API_KEY on the Agent container, uncomment DD_* vars
-docker compose -f deploy/docker/docker-compose.yml up
+# Edit .env: set DD_API_KEY, uncomment DD_* vars
+make deploy-k8s-dd
 ```
 
 ## Project Structure

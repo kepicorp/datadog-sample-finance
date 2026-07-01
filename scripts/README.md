@@ -19,8 +19,8 @@ A single-file Python script (standard library only — no `pip install` required
 | Requirement | Detail |
 |---|---|
 | Python | 3.8+ (standard library only) |
-| Running stack | `make up` from the project root |
-| Keycloak | Healthy at `http://localhost:8089` — started with `make up` |
+| Running stack | `make deploy-k8s` from the project root |
+| Keycloak | Healthy at `http://localhost:8089` (via `kubectl port-forward svc/keycloak 8089:8080 -n finance`) |
 
 ---
 
@@ -119,7 +119,7 @@ Data Streams Monitoring (DSM) paths when Step 10 of the Learning Progression is 
 | Keycloak admin | http://localhost:8089 | Active sessions per realm user |
 
 Default ActiveMQ credentials: `admin` / `admin`.
-Default Keycloak admin credentials: set in `deploy/docker/.env` (`KEYCLOAK_ADMIN_PASSWORD`).
+Default Keycloak admin credentials: set in `.env` at the project root (`KEYCLOAK_ADMIN_PASSWORD`).
 
 ### Logs (Docker)
 
@@ -136,7 +136,7 @@ docker logs -f fraud-detection
 ### PostgreSQL
 
 ```bash
-# Connect directly (password from deploy/docker/.env)
+# Connect directly (password from .env)
 psql -h localhost -U $POSTGRES_USER -d ledger
 
 # See accounts seeded by the script

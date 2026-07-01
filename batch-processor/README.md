@@ -20,7 +20,7 @@ cp .env.example .env
 # Build
 ./gradlew build
 
-# Run (requires a PostgreSQL instance — see deploy/docker/docker-compose.yml)
+# Run (requires a PostgreSQL instance — see kubectl get pods -n finance # postgres-ledger runs in the finance namespace)
 java -jar build/libs/batch-processor-*.jar
 
 # Trigger reconciliation job manually via Actuator (when spring.batch.job.enabled=false)
@@ -43,12 +43,12 @@ Work through these steps in order. Each step builds on the previous one.
 
 ---
 
-#### Step 1 — Enable the Datadog Agent sidecar
+#### Step 1 — Enable the Datadog Agent
 
-Start the `datadog-agent` container from `deploy/docker/docker-compose.yml`.
-Verify connectivity: `curl http://localhost:8126/info` should return agent metadata.
+Deploy the Datadog Agent DaemonSet with `make deploy-k8s-dd`.
+Verify connectivity: `kubectl get pods -n finance` should show the Agent pods running.
 
-The Agent receives traces, logs, and metrics from all services on this host.
+The Agent receives traces, logs, and metrics from all services in the cluster.
 
 ---
 

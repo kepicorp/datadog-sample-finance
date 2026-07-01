@@ -53,6 +53,9 @@ spec:
         app: transaction-service
         component: service
         admission.datadoghq.com/enabled: "true"
+        tags.datadoghq.com/env: "staging"
+        tags.datadoghq.com/service: "transaction-service"
+        tags.datadoghq.com/version: "latest"
     spec:
       # transaction-service uses ActiveMQ STOMP to publish fraud-scoring events.
       # The init container prevents startup failures while the broker is initialising.
@@ -116,6 +119,13 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: status.hostIP
+            # ── APPLICATION SECURITY MANAGEMENT (ASM) ───────────────────────
+            # Enables AppSec threat detection in the tracer. Works alongside
+            # the Agent-side asm.threats feature in datadog-agent.yaml.
+            # Detects SQLi, XSS, SSRF and business-logic attacks at runtime.
+            # Docs: https://docs.datadoghq.com/security/application_security/
+            - name: DD_APPSEC_ENABLED
+              value: "true"
           # ── Health checks ──────────────────────────────────────────────────
           livenessProbe:
             httpGet:

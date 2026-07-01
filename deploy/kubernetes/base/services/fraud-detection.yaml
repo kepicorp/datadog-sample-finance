@@ -36,6 +36,9 @@ spec:
         app: fraud-detection
         component: service
         admission.datadoghq.com/enabled: "true"
+        tags.datadoghq.com/env: "staging"
+        tags.datadoghq.com/service: "fraud-detection"
+        tags.datadoghq.com/version: "latest"
     spec:
       # fraud-detection exits after connection failures if ActiveMQ is not reachable.
       # The init container ensures it only starts once the STOMP port is open.
@@ -77,11 +80,11 @@ spec:
             - name: FRAUD_QUEUE
               value: "fraud.score.queue"
 
-          # ── Health check ───────────────────────────────────────────────────
-          # Verify the main consumer process is alive.
-          # Adjust the process name to match your entrypoint if needed.
-          # /proc/1 always exists while the main process (PID 1) is alive.
-          # pgrep is not available in minimal Python images, so we use /proc directly.
+            # ── Health check ───────────────────────────────────────────────────
+            # Verify the main consumer process is alive.
+            # Adjust the process name to match your entrypoint if needed.
+            # /proc/1 always exists while the main process (PID 1) is alive.
+            # pgrep is not available in minimal Python images, so we use /proc directly.
             # ── Datadog Unified Service Tagging ─────────────────────────────
             - name: DD_ENV
               value: "staging"
@@ -95,6 +98,13 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: status.hostIP
+            # ── APPLICATION SECURITY MANAGEMENT (ASM) ───────────────────────
+            # Enables AppSec threat detection in the tracer. Works alongside
+            # the Agent-side asm.threats feature in datadog-agent.yaml.
+            # Detects SQLi, XSS, SSRF and business-logic attacks at runtime.
+            # Docs: https://docs.datadoghq.com/security/application_security/
+            - name: DD_APPSEC_ENABLED
+              value: "true"
           livenessProbe:
             exec:
               command: ["/bin/sh", "-c", "[ -d /proc/1 ]"]

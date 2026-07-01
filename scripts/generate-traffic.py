@@ -2,7 +2,7 @@
 """
 Finance Sample App — Traffic Generator
 ========================================
-Generates realistic mixed traffic against the local Docker Compose stack.
+Generates realistic mixed traffic against the Finance sample app running on K8s.
 Uses only Python stdlib — no pip install required.
 
 Usage:
@@ -11,11 +11,12 @@ Usage:
   python3 scripts/generate-traffic.py --duration 120 # stop after 120 s
   python3 scripts/generate-traffic.py --once         # single pass, then exit
 
-Services targeted:
-  gateway-api       http://localhost:8080  (Bearer JWT required)
-  account-service   http://localhost:8081  (no auth — internal service)
-  transaction-svc   http://localhost:8082  (no auth — internal service)
-  keycloak          http://localhost:8089  (token issuer)
+In-cluster (default when deployed as traffic-generator Deployment):
+  Services are reached via ClusterIP DNS — no NodePort or port-forward needed.
+
+From laptop (optional):
+  Requires kubectl port-forward or NodePort access. Override URLs via env vars:
+    GATEWAY_URL=http://localhost:8080 python3 scripts/generate-traffic.py
 
 Keycloak users (finance realm):
   alice.analyst  — finance-analyst  — read-only
@@ -26,6 +27,15 @@ Keycloak users (finance realm):
 
 import argparse
 import json
+
+# ── Configuration ─────────────────────────────────────────────────────────────
+# ── Service URLs ─────────────────────────────────────────────────────────────
+# When running as the in-cluster traffic-generator Deployment, these env vars
+# are set by the pod spec to the ClusterIP service DNS names (gateway-api:8080 etc).
+#
+# When running from a laptop, override via env vars:
+#   GATEWAY_URL=http://localhost:8080 python3 scripts/generate-traffic.py
+import os
 import random
 import sys
 import time
@@ -34,12 +44,10 @@ import urllib.parse
 import urllib.request
 from datetime import datetime
 
-# ── Configuration ─────────────────────────────────────────────────────────────
-
-GATEWAY = "http://localhost:8080"
-ACCOUNTS = "http://localhost:8081"
-TXNS = "http://localhost:8082"
-KEYCLOAK = "http://localhost:8089"
+GATEWAY  = os.environ.get("GATEWAY_URL",  "http://gateway-api:8080")
+ACCOUNTS = os.environ.get("ACCOUNTS_URL", "http://account-service:8081")
+TXNS     = os.environ.get("TXNS_URL",     "http://transaction-service:8082")
+KEYCLOAK = os.environ.get("KEYCLOAK_URL", "http://keycloak:8080")
 REALM = "finance"
 CLIENT_ID = "finance-gateway"
 CLIENT_SECRET = "REPLACE_WITH_SECRET"

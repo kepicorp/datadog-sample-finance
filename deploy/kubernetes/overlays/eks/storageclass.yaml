@@ -20,7 +20,7 @@
 #
 # EKS ONLY — this StorageClass uses the ebs.csi.aws.com provisioner which is
 # only present on EKS clusters with the EBS CSI driver addon installed.
-# Do NOT apply this on local clusters (Colima, kind, minikube) — it will break
+# Do NOT apply this on local clusters (Docker Desktop, kind, minikube) — it will break
 # the default StorageClass and cause PVCs to remain stuck in Pending state.
 # Use 'make deploy-k8s-eks' instead of 'make deploy-k8s' when targeting EKS.
 # =============================================================================

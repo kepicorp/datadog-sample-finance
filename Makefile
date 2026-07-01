@@ -7,19 +7,13 @@
 # Docs: https://docs.datadoghq.com/tracing/deployment_tracking/
 #
 # Two Docker Compose files are provided:
-#   docker-compose.base.yml    — no Datadog: use this first to verify the app works
-#   docker-compose.datadog.yml — adds the Datadog Agent and DD_* env vars to every
-#                                service; follow the 12-step Learning Progression
-#
 # Usage:
-#   make build          Build all service images (sets DD_VERSION automatically)
-#   make up             Start the stack WITHOUT Datadog (docker-compose.base.yml)
-#   make up-dd          Start the stack WITH the Datadog Agent (docker-compose.datadog.yml)
-#   make down           Stop and remove containers (base stack)
-#   make down-dd        Stop and remove containers (Datadog stack)
-#   make logs           Tail logs from all services
-#   make health         Check gateway-api /health endpoint
-#   make test           Run the end-to-end test suite
+#   make build               Build all service images (sets DD_VERSION automatically)
+#   make deploy-k8s          Deploy the Finance app to local k3s
+#   make create-dd-secret    Create the Datadog K8s secret from .env
+#   make deploy-k8s-dd       Deploy the Datadog Agent (Operator + DaemonSet)
+#   make test                Run the end-to-end test suite (services exposed via NodePort)
+#   make test-traffic        Generate realistic traffic against the running stack
 #   make version        Print the current DD_VERSION value
 #   make deploy-k8s          Apply Kubernetes manifests (no Datadog)
 #   make deploy-k8s-dd        Apply Datadog Agent on top of the K8s deployment
@@ -48,21 +42,13 @@
 #   # make tf-configure-kubectl-gcp
 #   # make deploy-k8s
 
-.PHONY: all build build-ecr up up-dd down down-dd logs health version test test-traffic restart clean-data reset-db deploy-k8s deploy-k8s-eks deploy-k8s-dd undeploy-k8s instrument uninstrument tf-plan-aws tf-apply-aws tf-configure-kubectl frontend-url tf-destroy-aws dd-secrets tf-plan-dd tf-apply-dd tf-destroy-dd help
+.PHONY: all build build-ecr version test test-traffic deploy-k8s deploy-k8s-eks deploy-k8s-dd undeploy-k8s teardown instrument uninstrument create-dd-secret tf-plan-aws tf-apply-aws tf-configure-kubectl frontend-url tf-destroy-aws dd-secrets tf-plan-dd tf-apply-dd tf-destroy-dd help
 
 # Resolve DD_VERSION once so all targets share the same value.
 # Falls back to 'dev' when git is not available (e.g. in a bare CI image).
 DD_VERSION ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo 'dev')
 
-# Detect whether Docker Compose V2 plugin ("docker compose") or the
-# standalone V1 binary ("docker-compose") is available on this machine.
-# V2 is the default on Docker Desktop >= 3.4 and Docker Engine >= 20.10.
-DOCKER_COMPOSE := $(shell docker compose version >/dev/null 2>&1 && echo "docker compose" || echo "docker-compose")
 
-# Base stack (no Datadog) — used by make up / make test / make restart etc.
-COMPOSE_FILE    := deploy/docker/docker-compose.base.yml
-# Datadog stack — used by make up-dd / make down-dd
-COMPOSE_FILE_DD := deploy/docker/docker-compose.datadog.yml
 
 all: build
 
@@ -91,9 +77,8 @@ version:
 ##             See INSTRUMENTATION.md for what each patch enables.
 ##
 ##             After patching, redeploy:
-##               Local:  make build && make down && make up-dd
-##               EKS:    make build-ecr && make deploy-k8s-eks
-##                       kubectl rollout restart deployment -n finance
+##               Local:  make build && load images into k3s && kubectl rollout restart deployment -n finance
+##               EKS:    make build-ecr && make deploy-k8s-eks && kubectl rollout restart deployment -n finance
 instrument:
 	@echo "Applying instrumentation patches..."
 	@for p in scripts/patches/*.patch; do \
@@ -103,15 +88,15 @@ instrument:
 	done
 	@echo ""
 	@echo "✓ Instrumentation enabled. Redeploy to activate:"
-	@echo "   Local: make build && make down && make up-dd"
-	@echo "   EKS:   make build-ecr && make deploy-k8s-eks"
+	@echo "   Local: make build && load images into k3s && kubectl rollout restart deployment -n finance"
+	@echo "   EKS:   make build-ecr && make deploy-k8s-eks && kubectl rollout restart deployment -n finance"
 
 ## uninstrument: Re-comment all Datadog instrumentation blocks (reverse of make instrument).
 ##               Restores every file to its original commented-out state.
 ##
 ##               After patching, redeploy:
-##                 Local:  make build && make down && make up-dd
-##                 EKS:    make build-ecr && make deploy-k8s-eks
+##                 Local:  make build && load images into k3s && kubectl rollout restart deployment -n finance
+##                 EKS:    make build-ecr && make deploy-k8s-eks && kubectl rollout restart deployment -n finance
 uninstrument:
 	@echo "Reversing instrumentation patches..."
 	@for p in scripts/patches/*.patch; do \
@@ -121,12 +106,34 @@ uninstrument:
 	done
 	@echo ""
 	@echo "✓ Instrumentation disabled. Redeploy to deactivate:"
-	@echo "   Local: make build && make down && make up-dd"
-	@echo "   EKS:   make build-ecr && make deploy-k8s-eks"
+	@echo "   Local: make build && load images into k3s && kubectl rollout restart deployment -n finance"
+	@echo "   EKS:   make build-ecr && make deploy-k8s-eks && kubectl rollout restart deployment -n finance"
 
-## build: Build all service images for the LOCAL platform (use for Docker Compose / Colima).
+## build: Build all service images for the local platform.
+##        Images are tagged finance-sample-app-<service>:latest and :<DD_VERSION> (git short SHA).
+##        Docker Desktop / Rancher Desktop: images are available in the cluster immediately.
+##        Other tools — load after building:
+##          kind:     kind load docker-image finance-sample-app-<svc>:latest
+##          k3d:      k3d image import finance-sample-app-<svc>:latest
+##          minikube: minikube image load finance-sample-app-<svc>:latest
+##        Then rolling-restart to pick up new images:
+##          kubectl rollout restart deployment -n finance
 build:
-	DD_VERSION=$(DD_VERSION) $(DOCKER_COMPOSE) -f $(COMPOSE_FILE) build
+	@echo "Building all service images (DD_VERSION=$(DD_VERSION))..."
+	@for svc in gateway-api account-service transaction-service fraud-detection notification-service batch-processor; do \
+		echo "  → $$svc"; \
+		docker build -t finance-sample-app-$$svc:latest \
+		             -t finance-sample-app-$$svc:$(DD_VERSION) \
+		             --build-arg DD_VERSION=$(DD_VERSION) \
+		             ./$$svc; \
+	done
+	@echo ""
+	@echo "✓ All images built. To deploy to local k3s:"
+	@echo "  # Docker Desktop/Rancher Desktop: images available immediately — no load step needed."
+	@echo "  # kind:     kind load docker-image finance-sample-app-<svc>:latest"
+	@echo "  # k3d:      k3d image import finance-sample-app-<svc>:latest"
+	@echo "  # minikube: minikube image load finance-sample-app-<svc>:latest"
+	@echo "  kubectl rollout restart deployment -n finance"
 
 ## build-ecr: Build all service images for linux/amd64 and push directly to ECR.
 ##            Use this when deploying to EKS from an Apple Silicon (ARM) Mac.
@@ -154,103 +161,31 @@ build-ecr:
 			./$$SVC; \
 	done
 
-## up: Start the stack WITHOUT Datadog (docker-compose.base.yml).
-##     This is the recommended starting point before adding instrumentation.
-up:
-	DD_VERSION=$(DD_VERSION) $(DOCKER_COMPOSE) -f $(COMPOSE_FILE) up -d
-
-## up-dd: Start the stack WITH the Datadog Agent (docker-compose.datadog.yml).
-##        Requires DD_API_KEY to be set in deploy/docker/.env to actually ship
-##        telemetry. The app runs cleanly with the agent present but no API key
-##        (the agent container will restart but services are unaffected).
-##        Follow the 12-step Learning Progression in each service README.
-up-dd:
-	DD_VERSION=$(DD_VERSION) $(DOCKER_COMPOSE) -f $(COMPOSE_FILE_DD) up -d
-
-## down: Stop and remove all containers for the base stack.
-down:
-	$(DOCKER_COMPOSE) -f $(COMPOSE_FILE) down
-
-## down-dd: Stop and remove all containers for the Datadog stack.
-down-dd:
-	$(DOCKER_COMPOSE) -f $(COMPOSE_FILE_DD) down
-
-## logs: Tail combined logs from all running services (Ctrl-C to exit).
-logs:
-	$(DOCKER_COMPOSE) -f $(COMPOSE_FILE) logs -f
-
-## health: Hit the gateway-api /health endpoint and pretty-print the JSON response.
-health:
-	curl -s http://localhost:8080/health | python3 -m json.tool
-
-## test: Run the end-to-end test suite against the running stack.
-##       Prerequisites: make up (stack must be running and healthy).
-##       Uses Python stdlib only — no pip install required.
+## test: Run the e2e test suite against the running stack.
+##       Prerequisites: make deploy-k8s (uses Python stdlib only — no pip install required).
+##       Note: requires kubectl port-forward or NodePort access to the services.
+##       For a no-setup check, watch the in-cluster traffic generator instead:
+##         kubectl logs -n finance deploy/traffic-generator -f
 test:
 	python3 scripts/test-e2e.py
 
-## test-traffic: Generate realistic mixed traffic for 60 s at 2 req/s.
-##               Useful for populating APM traces and metrics before a demo.
+## test-traffic: Run the traffic generator locally for a fixed duration.
+##               The in-cluster traffic-generator Deployment already runs continuously.
+##               Use this to temporarily boost traffic or test from your laptop.
+##               Note: requires services reachable on localhost (kubectl port-forward).
 test-traffic:
 	python3 scripts/generate-traffic.py --rate 2 --duration 60
 
-## restart: Force-recreate the application containers to flush stale inter-service DNS.
-##           Use this when you see 502 errors after individual container restarts.
-restart:
-	$(DOCKER_COMPOSE) -f $(COMPOSE_FILE) up -d --force-recreate \
-		gateway-api account-service transaction-service frontend
 
-## clean-data: Soft reset — clears all in-memory application state.
-##             Recreates account-service (Java ConcurrentHashMap) and
-##             transaction-service (Node.js Map). The seed account acc-001
-##             (EUR 12 500, premium) reappears automatically on restart.
-##             PostgreSQL, Redis, and ActiveMQ are untouched.
-clean-data:
-	@echo "Clearing in-memory state (accounts + payments)..."
-	$(DOCKER_COMPOSE) -f $(COMPOSE_FILE) up -d --force-recreate \
-		account-service transaction-service
-	@echo "\u2713  Done. Accounts and payments reset to seed state (acc-001 restored)."
-	@echo "     Run 'make test' to verify the clean state."
-
-## reset-db: Hard reset — drops the PostgreSQL ledger database, flushes Redis,
-##           and clears all in-memory service state.
-##           The postgres-data Docker volume is removed and recreated from
-##           scratch (pg_stat_statements enabled, Spring Batch tables auto-created).
-##           Use this when you want a completely clean environment.
-##           WARNING: All persisted data is permanently deleted.
-reset-db:
-	@echo "WARNING: This permanently deletes all database data."
-	@echo "Stopping services that depend on PostgreSQL..."
-	$(DOCKER_COMPOSE) -f $(COMPOSE_FILE) stop batch-processor account-service
-	@echo "Stopping PostgreSQL..."
-	$(DOCKER_COMPOSE) -f $(COMPOSE_FILE) stop postgres-ledger
-	@echo "Removing postgres-data volume..."
-	docker volume rm finance-sample-app_postgres-data 2>/dev/null || true
-	@echo "Flushing Redis cache..."
-	docker exec redis redis-cli FLUSHALL
-	@echo "Restarting PostgreSQL (re-initialises from scratch)..."
-	$(DOCKER_COMPOSE) -f $(COMPOSE_FILE) up -d postgres-ledger
-	@echo "Waiting for PostgreSQL to be ready (up to 60 s)..."
-	@for i in 1 2 3 4 5 6; do \
-		sleep 10; \
-		docker exec postgres-ledger pg_isready -q 2>/dev/null && echo "  PostgreSQL is ready." && break; \
-		echo "  still initialising (attempt $$i/6)..."; \
-	done
-	@echo "Restarting application services (force-recreate flushes stale DNS)..."
-	$(DOCKER_COMPOSE) -f $(COMPOSE_FILE) up -d --force-recreate \
-		account-service batch-processor transaction-service gateway-api frontend
-	@echo "Allowing services 10 s to complete startup..."
-	@sleep 10
-	@echo "\u2713  Reset complete."
-	@echo "     Run 'make test' to verify the fresh state."
 
 ## deploy-k8s: Deploy the Finance app to Kubernetes without Datadog.
 ##             Creates the 'finance' namespace and all infrastructure + application services.
 ##             Prerequisites:
 ##               1. make build        — build all service images
 ##               2. kubectl configured — pointing at your target cluster
-##             On local clusters (Colima with Docker runtime), images built by
+##             On Docker Desktop / Rancher Desktop, images built by
 ##             'make build' are immediately available (imagePullPolicy: IfNotPresent).
+##             On kind/k3d/minikube, load images after building (see 'make build' help).
 deploy-k8s:
 	@echo "Creating finance namespace (idempotent)..."
 	kubectl apply -f deploy/kubernetes/base/00-namespace.yaml
@@ -267,6 +202,10 @@ deploy-k8s:
 	kubectl apply -f deploy/kubernetes/base/infrastructure/redis.yaml
 	@echo "Waiting for PostgreSQL to be ready..."
 	kubectl rollout status statefulset/postgres-ledger -n finance --timeout=120s
+	@echo "Creating traffic-generator script ConfigMap..."
+	kubectl create configmap traffic-generator-script \
+		--from-file=generate-traffic.py=scripts/generate-traffic.py \
+		-n finance --dry-run=client -o yaml | kubectl apply -f -
 	@echo "Applying application services..."
 	kubectl apply -f deploy/kubernetes/base/services/account-service.yaml
 	kubectl apply -f deploy/kubernetes/base/services/batch-processor.yaml
@@ -275,6 +214,7 @@ deploy-k8s:
 	kubectl apply -f deploy/kubernetes/base/services/gateway-api.yaml
 	kubectl apply -f deploy/kubernetes/base/services/notification-service.yaml
 	kubectl apply -f deploy/kubernetes/base/services/transaction-service.yaml
+	kubectl apply -f deploy/kubernetes/base/services/traffic-generator.yaml
 	@echo ""
 	@echo "✓  Deployed. Check pod status:"
 	@echo "     kubectl get pods -n finance"
@@ -304,7 +244,7 @@ deploy-k8s-eks:
 	@echo "✓  Deployed. Check pod status:"
 	@echo "     kubectl get pods -n finance"
 
-## deploy-k8s-dd: Deploy the Datadog Agent. Auto-detects local (Colima/k3s) vs EKS.
+## deploy-k8s-dd: Deploy the Datadog Agent. Auto-detects local vs EKS.
 ##               Run AFTER 'make deploy-k8s' (local) or 'make deploy-k8s-eks' (EKS).
 ##
 ##               LOCAL: installs Operator (if absent), creates the datadog-secret from
@@ -351,11 +291,7 @@ deploy-k8s-dd:
 			echo "       Then re-run: make deploy-k8s-dd"; \
 			exit 1; \
 		fi; \
-		kubectl create namespace datadog --dry-run=client -o yaml | kubectl apply -f -; \
-		kubectl create secret generic datadog-secret \
-			--from-literal api-key="$$DD_API_KEY" \
-			--namespace datadog \
-			--dry-run=client -o yaml | kubectl apply -f -; \
+		$(MAKE) create-dd-secret; \
 		LOG_PATH=$$([ $$IS_BOTTLEROCKET -gt 0 ] && echo '/var/log/containers' || echo '/var/lib/docker/containers'); \
 		echo "==> Applying EKS agent config (log path: $$LOG_PATH)..."; \
 		sed "s|containerLogsPath:.*|containerLogsPath: $$LOG_PATH|" \
@@ -373,10 +309,9 @@ deploy-k8s-dd:
 			echo "           --set watchNamespaces='{datadog,finance}'"; \
 			exit 1; \
 		fi; \
+		echo "==> Creating datadog-secret from .env..."; \
+		$(MAKE) create-dd-secret; \
 		echo "==> Applying local cluster config..."; \
-		echo "    NOTE: ensure the datadog-secret exists in the datadog namespace."; \
-		echo "    Create it with: kubectl create secret generic datadog-secret \\"; \
-		echo "      --from-literal api-key=<YOUR_DD_API_KEY> --namespace datadog"; \
 		kubectl apply -f deploy/kubernetes/datadog/agent/datadog-agent.yaml; \
 	fi
 	@kubectl apply -f deploy/kubernetes/datadog/checks/activemq-check.yaml
@@ -387,11 +322,45 @@ deploy-k8s-dd:
 	@echo "     kubectl get daemonset datadog -n datadog"
 	@echo "     kubectl get deployment datadog-cluster-agent -n datadog"
 
-## undeploy-k8s: Remove all Finance app resources from Kubernetes.
+## undeploy-k8s: Remove all Finance app resources from Kubernetes (namespaces only).
+##               Does NOT delete persistent data — use 'make teardown' for a full reset.
 undeploy-k8s:
 	kubectl delete namespace finance --ignore-not-found
+	kubectl delete namespace datadog --ignore-not-found
 	# gp3 is cluster-scoped (not namespaced) — must be deleted separately
 	kubectl delete storageclass gp3 --ignore-not-found
+
+## teardown: Full reset — removes all K8s resources AND cleans up persistent data.
+##           Deletes:
+##             - finance namespace (all app pods, services, configmaps)
+##             - datadog namespace (Agent, Operator, Cluster Agent)
+##             - Datadog Operator Helm release
+##             - Any leftover Docker volumes (postgres, redis, artemis, keycloak)
+##             - Port-forward processes
+##           Safe to run even if some resources are already gone.
+##
+##           After teardown, start fresh with:
+##             make build && make deploy-k8s && make create-dd-secret && make deploy-k8s-dd
+teardown:
+	@echo "==> Killing any stray kubectl port-forward processes..."
+	@pkill -f 'kubectl port-forward' 2>/dev/null || true
+	@echo "==> Removing Datadog Agent CRD instance..."
+	@kubectl delete datadogagent datadog -n datadog --ignore-not-found 2>&1 || true
+	@echo "==> Deleting finance namespace (app pods, PVCs, services)..."
+	@kubectl delete namespace finance --ignore-not-found 2>&1
+	@echo "==> Deleting datadog namespace (Agent DaemonSet, Cluster Agent)..."
+	@kubectl delete namespace datadog --ignore-not-found 2>&1
+	@echo "==> Uninstalling Datadog Operator Helm release..."
+	@helm uninstall datadog-operator -n datadog 2>/dev/null || true
+	@echo "==> Removing leftover Docker volumes..."
+	@for vol in postgres-data redis-data artemis-data keycloak-data datadog-run; do \
+		docker volume rm finance-sample-app_$$vol 2>/dev/null && echo "  removed finance-sample-app_$$vol" || true; \
+	done
+	@# gp3 is cluster-scoped (EKS only) — safe to ignore if not present
+	@kubectl delete storageclass gp3 --ignore-not-found 2>/dev/null || true
+	@echo ""
+	@echo "✓  Teardown complete. Cluster and data are clean."
+	@echo "   Start fresh: make build && make deploy-k8s && make create-dd-secret && make deploy-k8s-dd"
 
 ## tf-plan-aws: Initialise and plan the Terraform AWS (EKS) target.
 ##              Uses the AWS_PROFILE env var. Override vars: TF_AWS_VARS="-var-file=staging.tfvars -var aws_profile=<name>"
@@ -436,6 +405,73 @@ tf-destroy-aws:
 ##             TF_VAR_datadog_app_key, sourced from AWS Secrets Manager.
 ##             Usage: eval "$(make dd-secrets)"
 ##             Requires: valid AWS SSO session (aws sso login --profile <profile>)
+## create-dd-secret: Create (or update) the datadog-secret K8s Secret in the datadog namespace.
+##                   AUTO-DETECTS the environment:
+##                     Local (Docker Desktop / kind / k3d / minikube): reads DD_API_KEY and DD_APP_KEY from .env
+##                     EKS:               fetches both keys from AWS Secrets Manager
+##                   Safe to re-run — uses --dry-run=client | kubectl apply (idempotent).
+##                   Run this BEFORE make deploy-k8s-dd.
+create-dd-secret:
+	@echo "==> Detecting cluster environment..."
+	@IS_EKS=$$(kubectl get nodes -o jsonpath='{.items[0].spec.providerID}' 2>/dev/null | grep -c 'aws:///'); \
+	kubectl create namespace datadog --dry-run=client -o yaml | kubectl apply -f - 2>/dev/null; \
+	if [ "$$IS_EKS" -gt 0 ]; then \
+		echo "    Detected: EKS — fetching keys from AWS Secrets Manager..."; \
+		AWS_REGION=$$(grep '^aws_region' deploy/terraform/aws/staging.tfvars 2>/dev/null | sed 's/.*=[ ]*//' | tr -d '"' | tr -d ' '); \
+		if [ -z "$$AWS_REGION" ]; then AWS_REGION=eu-west-1; fi; \
+		AWS_PROF=$$(grep '^aws_profile' deploy/terraform/aws/staging.tfvars 2>/dev/null | sed 's/.*=[ ]*//' | tr -d '"' | tr -d ' '); \
+		PROFILE_FLAG=$$([ -n "$$AWS_PROF" ] && echo "--profile $$AWS_PROF" || echo ''); \
+		DD_API_KEY=$$(aws secretsmanager get-secret-value \
+			--secret-id finance-app/staging/dd-api-key \
+			--query SecretString --output text \
+			--region $$AWS_REGION $$PROFILE_FLAG 2>/dev/null); \
+		DD_APP_KEY=$$(aws secretsmanager get-secret-value \
+			--secret-id finance-app/staging/dd-app-key \
+			--query SecretString --output text \
+			--region $$AWS_REGION $$PROFILE_FLAG 2>/dev/null); \
+		DBM_PASSWORD=$$(aws secretsmanager get-secret-value \
+			--secret-id finance-app/staging/dbm-password \
+			--query SecretString --output text \
+			--region $$AWS_REGION $$PROFILE_FLAG 2>/dev/null || echo ''); \
+		if [ -z "$$DD_API_KEY" ] || [ "$$DD_API_KEY" = "REPLACE_ME" ]; then \
+			echo "ERROR: DD_API_KEY not found in Secrets Manager (finance-app/staging/dd-api-key)."; \
+			echo "       aws sso login --profile $$AWS_PROF  then re-run."; \
+			exit 1; \
+		fi; \
+		if [ -z "$$DD_APP_KEY" ] || [ "$$DD_APP_KEY" = "REPLACE_ME" ]; then \
+			echo "ERROR: DD_APP_KEY not found in Secrets Manager (finance-app/staging/dd-app-key)."; \
+			exit 1; \
+		fi; \
+	else \
+		echo "    Detected: local cluster — reading keys from .env..."; \
+		ENV_FILE=.env; \
+		if [ ! -f "$$ENV_FILE" ]; then \
+			echo "ERROR: $$ENV_FILE not found."; \
+			echo "       Copy .env.example to .env and fill in DD_API_KEY and DD_APP_KEY."; \
+			exit 1; \
+		fi; \
+		DD_API_KEY=$$(grep '^DD_API_KEY' $$ENV_FILE | cut -d= -f2 | tr -d '"' | tr -d "'"); \
+		DD_APP_KEY=$$(grep '^DD_APP_KEY' $$ENV_FILE | cut -d= -f2 | tr -d '"' | tr -d "'"); \
+		DBM_PASSWORD=$$(grep '^DATADOG_DBM_PASSWORD' $$ENV_FILE | cut -d= -f2 | tr -d '"' | tr -d "'" || echo ''); \
+		if [ -z "$$DD_API_KEY" ]; then \
+			echo "ERROR: DD_API_KEY not set in $$ENV_FILE."; exit 1; \
+		fi; \
+		if [ -z "$$DD_APP_KEY" ]; then \
+			echo "ERROR: DD_APP_KEY not set in $$ENV_FILE."; exit 1; \
+		fi; \
+	fi; \
+	DBM_FLAG=$$([ -n "$$DBM_PASSWORD" ] && echo "--from-literal dbm-password=$$DBM_PASSWORD" || echo ''); \
+	kubectl create secret generic datadog-secret \
+		--from-literal api-key="$$DD_API_KEY" \
+		--from-literal app-key="$$DD_APP_KEY" \
+		$$DBM_FLAG \
+		--namespace datadog \
+		--dry-run=client -o yaml | kubectl apply -f -; \
+	echo ""; \
+	echo "✓  datadog-secret created/updated in namespace datadog"; \
+	echo "   Keys stored: api-key, app-key$$([ -n "$$DBM_PASSWORD" ] && echo ', dbm-password' || echo ' (dbm-password not set)')"; \
+	echo "   Verify: kubectl get secret datadog-secret -n datadog -o jsonpath='{.data}' | python3 -m json.tool"
+
 .PHONY: dd-secrets
 dd-secrets:
 	@AWS_REGION=$$(grep '^aws_region' deploy/terraform/aws/staging.tfvars 2>/dev/null | sed 's/.*=[ ]*//' | tr -d '"' | tr -d ' '); \

@@ -33,6 +33,9 @@ spec:
         app: notification-service
         component: service
         admission.datadoghq.com/enabled: "true"
+        tags.datadoghq.com/env: "staging"
+        tags.datadoghq.com/service: "notification-service"
+        tags.datadoghq.com/version: "latest"
     spec:
       # notification-service exits after max retries if ActiveMQ is not reachable.
       # The init container ensures it only starts once the STOMP port is open.
@@ -73,8 +76,8 @@ spec:
             - name: ALERT_QUEUE
               value: "alert.queue"
 
-          # ── Health check ───────────────────────────────────────────────────
-          # Verify the main consumer process is alive.
+            # ── Health check ───────────────────────────────────────────────────
+            # Verify the main consumer process is alive.
             # ── Datadog Unified Service Tagging ─────────────────────────────
             - name: DD_ENV
               value: "staging"
@@ -88,6 +91,13 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: status.hostIP
+            # ── APPLICATION SECURITY MANAGEMENT (ASM) ───────────────────────
+            # Enables AppSec threat detection in the tracer. Works alongside
+            # the Agent-side asm.threats feature in datadog-agent.yaml.
+            # Detects SQLi, XSS, SSRF and business-logic attacks at runtime.
+            # Docs: https://docs.datadoghq.com/security/application_security/
+            - name: DD_APPSEC_ENABLED
+              value: "true"
           livenessProbe:
             exec:
               command:

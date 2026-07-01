@@ -42,6 +42,9 @@ spec:
         app: batch-processor
         component: service
         admission.datadoghq.com/enabled: "true"
+        tags.datadoghq.com/env: "staging"
+        tags.datadoghq.com/service: "batch-processor"
+        tags.datadoghq.com/version: "latest"
     spec:
       # Wait for PostgreSQL before starting Spring Batch — it creates
       # its metadata tables on first run (initialize-schema: always).
@@ -80,10 +83,10 @@ spec:
                   name: app-secrets
                   key: postgres-password
 
-          # ── Health check ──────────────────────────────────────────────
-          # batch-processor is a non-web Spring Boot app (no HTTP server).
-          # Use a process-existence check instead of an HTTP probe.
-          # The JVM process name is 'app.jar' (from the Docker CMD).
+            # ── Health check ──────────────────────────────────────────────
+            # batch-processor is a non-web Spring Boot app (no HTTP server).
+            # Use a process-existence check instead of an HTTP probe.
+            # The JVM process name is 'app.jar' (from the Docker CMD).
             # ── Datadog Unified Service Tagging ─────────────────────────────
             - name: DD_ENV
               value: "staging"
@@ -97,6 +100,13 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: status.hostIP
+            # ── APPLICATION SECURITY MANAGEMENT (ASM) ───────────────────────
+            # Enables AppSec threat detection in the tracer. Works alongside
+            # the Agent-side asm.threats feature in datadog-agent.yaml.
+            # Detects SQLi, XSS, SSRF and business-logic attacks at runtime.
+            # Docs: https://docs.datadoghq.com/security/application_security/
+            - name: DD_APPSEC_ENABLED
+              value: "true"
           livenessProbe:
             exec:
               command: ["sh", "-c", 'pgrep -f "java" > /dev/null']

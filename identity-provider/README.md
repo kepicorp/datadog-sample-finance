@@ -12,10 +12,10 @@ This service adds:
 
 ## Quick Start
 
-Keycloak starts automatically when you run the full Docker Compose stack:
+Keycloak starts automatically when you deploy the full stack:
 
 ```bash
-make up
+make deploy-k8s
 ```
 
 | Endpoint | URL | Credentials |

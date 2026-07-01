@@ -7,7 +7,7 @@ No external dependencies — Python stdlib only.
 
 Prerequisites:
   The full Docker Compose stack must be running:
-    make up
+    make deploy-k8s
     # wait ~90 s for Keycloak to become healthy on first start
 
 Run:
@@ -16,18 +16,25 @@ Run:
 """
 
 import json as _json
+
+# ── Configuration ──────────────────────────────────────────────────────────────
+# ── Service URLs ─────────────────────────────────────────────────────────────
+# test-e2e.py is designed to run from a laptop with kubectl port-forward active.
+# For always-on traffic, the in-cluster traffic-generator Deployment is preferred.
+# Override URLs via env vars if needed:
+#   GATEWAY_URL=http://... ACCOUNTS_URL=http://... python3 scripts/test-e2e.py
+import os
 import sys
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 
-# ── Configuration ──────────────────────────────────────────────────────────────
-BASE = "http://localhost:3000"  # nginx frontend proxy
-GATEWAY = "http://localhost:8080"  # gateway-api direct (health only)
-ACCOUNTS = "http://localhost:8081"  # account-service direct
-TXNS = "http://localhost:8082"  # transaction-service direct
-KEYCLOAK = "http://localhost:8089"  # Keycloak admin / realm
+BASE     = os.environ.get("FRONTEND_URL", "http://localhost:3000")   # nginx frontend proxy (port-forward)
+GATEWAY  = os.environ.get("GATEWAY_URL",  "http://localhost:8080")   # gateway-api (port-forward)
+ACCOUNTS = os.environ.get("ACCOUNTS_URL", "http://localhost:8081")   # account-service (port-forward)
+TXNS     = os.environ.get("TXNS_URL",     "http://localhost:8082")   # transaction-service (port-forward)
+KEYCLOAK = os.environ.get("KEYCLOAK_URL", "http://localhost:8089")   # Keycloak (port-forward)
 REALM = "finance"
 CLIENT_ID = "finance-gateway"
 CLIENT_SECRET = "REPLACE_WITH_SECRET"
@@ -146,7 +153,7 @@ def preflight():
     section("Pre-flight: service health")
 
     # Each service gets up to 3 attempts with a 5 s pause between them,
-    # so 'make test' can be run immediately after 'make reset-db' or 'make up'.
+    # so 'make test' can be run immediately after restarting pods.
     services = [
         ("gateway-api  :8080", f"{GATEWAY}/health"),
         ("account-svc  :8081", f"{ACCOUNTS}/health"),
@@ -576,7 +583,7 @@ def main():
     # ── Pre-flight ──────────────────────────────────────────────────────
     if not preflight():
         print(
-            "\n\033[91m✗ Pre-flight failed. Run 'make up' and wait for services to be healthy.\033[0m\n"
+            "\n\033[91m✗ Pre-flight failed. Run 'make deploy-k8s' and start kubectl port-forward (or check the in-cluster traffic-generator: kubectl logs -n finance deploy/traffic-generator -f).\033[0m\n"
         )
         sys.exit(1)
 

@@ -84,9 +84,9 @@ Docker Compose `env_file`, a Kubernetes Secret, or a secrets manager.
 Work through these steps in order. Each step builds on the previous one.
 
 1. **Enable the Datadog Agent sidecar / DaemonSet**
-   Deploy the `datadog/agent:7` container (see `deploy/docker/docker-compose.yml`).
-   Verify the Agent is healthy: `docker exec dd-agent agent status`.
-   Docs: https://docs.datadoghq.com/containers/docker/
+   Deploy the Datadog Agent (see `deploy/kubernetes/datadog/agent/datadog-agent.yaml`).
+   Verify the Agent is healthy: `kubectl get pods -n finance`.
+   Docs: https://docs.datadoghq.com/containers/kubernetes/
 
 2. **Set Unified Service Tags**
    Copy `.env.example` to `.env`. Set `DD_ENV`, `DD_SERVICE`, and `DD_VERSION`.
@@ -148,8 +148,8 @@ Work through these steps in order. Each step builds on the previous one.
 
 9. **Configure Database Monitoring for PostgreSQL (DBM)**
    DBM is Agent-side — no code changes needed in gateway-api.
-   Follow the SQL prerequisites in `deploy/docker/postgres-init/dbm-setup.sql`
-   and the Agent config at `deploy/docker/agent-conf/postgres.d/conf.yaml`.
+   Follow the SQL prerequisites in `deploy/kubernetes/datadog/checks/postgres-check.yaml`
+   and the Agent config at `deploy/kubernetes/datadog/checks/postgres-check.yaml`.
    Once enabled, APM `db.query` spans in gateway-api traces will show a
    "View in DBM" button linking to the exact query plan.
    Docs: https://docs.datadoghq.com/database_monitoring/setup_postgres/selfhosted/

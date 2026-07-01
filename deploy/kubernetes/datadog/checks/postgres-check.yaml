@@ -15,7 +15,7 @@
 #         subPath: conf.yaml
 #
 # Requires the DBM prerequisites to be applied first — see
-# deploy/docker/init-scripts/postgres-dbm-setup.sql for the SQL setup.
+# See INSTRUMENTATION.md Step 8 for the PostgreSQL DBM SQL prerequisites.
 #
 # Docs: https://docs.datadoghq.com/database_monitoring/setup_postgres/selfhosted/
 # Docs: https://docs.datadoghq.com/database_monitoring/

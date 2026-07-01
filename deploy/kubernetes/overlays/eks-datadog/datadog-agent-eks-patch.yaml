@@ -3,7 +3,7 @@
 # =============================================================================
 # Applied by: make deploy-k8s-dd (auto-detected when running on EKS)
 #
-# EKS-specific differences from a local (Colima/k3s) deployment:
+# EKS-specific differences from a local cluster deployment:
 #   containerLogsPath  — Bottlerocket stores logs at /var/log/containers
 #                        (patched at deploy time by make deploy-k8s-dd)
 #   kubelet.tlsVerify  — true on EKS; nodes have valid TLS certs

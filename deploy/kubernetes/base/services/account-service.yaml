@@ -53,6 +53,9 @@ spec:
         app: account-service
         component: service
         admission.datadoghq.com/enabled: "true"
+        tags.datadoghq.com/env: "staging"
+        tags.datadoghq.com/service: "account-service"
+        tags.datadoghq.com/version: "latest"
     spec:
       # Wait for both PostgreSQL and ActiveMQ before starting.
       # account-service's Spring Actuator health check includes JMS, so
@@ -130,6 +133,13 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: status.hostIP
+            # ── APPLICATION SECURITY MANAGEMENT (ASM) ───────────────────────
+            # Enables AppSec threat detection in the tracer. Works alongside
+            # the Agent-side asm.threats feature in datadog-agent.yaml.
+            # Detects SQLi, XSS, SSRF and business-logic attacks at runtime.
+            # Docs: https://docs.datadoghq.com/security/application_security/
+            - name: DD_APPSEC_ENABLED
+              value: "true"
           # ── Health checks ──────────────────────────────────────────────
           # Use the custom /health endpoint (not /actuator/health) because Spring
           # Actuator includes the JMS health indicator which would report DOWN

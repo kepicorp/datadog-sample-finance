@@ -43,6 +43,13 @@ spec:
     kubelet:
       tlsVerify: false # Set to true in production with proper cert
 
+    # ── APP-SIDE APPSEC ENABLEMENT ────────────────────────────────────────────
+    # Each application pod also needs DD_APPSEC_ENABLED=true set as an env var.
+    # This is done in the service manifests (deploy/kubernetes/base/services/).
+    # The Admission Controller can inject it automatically when asm.threats is
+    # enabled above — see admissionController.mutateUnlabelled below.
+    # ────────────────────────────────────────────────────────────────────────────
+
   # ── FEATURES ──────────────────────────────────────────────────────────────
   features:
     # ── APM / DISTRIBUTED TRACING ─────────────────────────────────────────────
@@ -118,6 +125,57 @@ spec:
       enabled: true
       mutateUnlabelled: false # false = only inject into pods with admission.datadoghq.com/enabled:true label
       # Set to true to inject into ALL pods in non-excluded namespaces (simpler, but broader)
+
+    # ── APPLICATION SECURITY MANAGEMENT (ASM / AppSec) ───────────────────────
+    # Detects and blocks web attacks (SQLi, XSS, SSRF, etc.) and tracks
+    # business-logic threats (credential stuffing, payment fraud) in real time.
+    # Works by instrumenting the APM tracer — no separate agent needed.
+    #
+    # Finance relevance:
+    #   - Detects SQLi attempts against the ledger API
+    #   - Tracks brute-force on /v1/payments (business logic rules)
+    #   - Surfaces threats in Security > Application Security > Threats
+    #
+    # Requires: DD_APPSEC_ENABLED=true on each service pod (see service manifests).
+    # The Agent feature below enables the threat intake pipeline on the Agent side.
+    #
+    # Docs: https://docs.datadoghq.com/security/application_security/
+    # Docs: https://docs.datadoghq.com/security/application_security/enabling/
+    asm:
+      threats:
+        enabled: true
+      sca:
+        enabled: true # Software Composition Analysis — OSS vulnerability scanning
+
+    # ── CLOUD WORKLOAD SECURITY (CWS / CSM Threats) ───────────────────────────
+    # Runtime security monitoring at the kernel level via eBPF. Detects:
+    #   - Unexpected process execution inside containers (e.g. shell in app pod)
+    #   - File integrity violations (e.g. write to /etc inside a container)
+    #   - Network anomalies and suspicious syscalls
+    #   - Privilege escalation attempts
+    #
+    # Finance relevance: PCI-DSS and SOC 2 require evidence of runtime threat
+    # detection. CWS generates audit-ready security signals.
+    #
+    # Requires: privileged DaemonSet (the Operator sets this automatically when
+    # cwsInstrumentation is enabled). No app-side changes needed.
+    #
+    # Docs: https://docs.datadoghq.com/security/cloud_workload_security/
+    # Docs: https://docs.datadoghq.com/security/cloud_security_management/
+    cws:
+      enabled: true
+      syscallMonitorEnabled: true # Audit syscalls for deeper forensic visibility
+
+    # ── CSM MISCONFIGURATIONS (CSPM) ──────────────────────────────────────────
+    # Continuously evaluates K8s and cloud resources against CIS benchmarks,
+    # PCI-DSS, SOC 2, and NIST frameworks.
+    # Surfaces misconfigured RBAC, exposed secrets, insecure pod specs, etc.
+    #
+    # Docs: https://docs.datadoghq.com/security/cloud_security_management/misconfigurations/
+    cspm:
+      enabled: true
+      hostBenchmarks:
+        enabled: true # CIS benchmark checks on the underlying node OS
 
   # Cluster Agent replicas via override (Operator v2alpha1 >= 1.0)
   override:

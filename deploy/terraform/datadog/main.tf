@@ -668,215 +668,215 @@ resource "datadog_dashboard" "finance_overview" {
     }
   }
 
-    # ── Row 4: APM Service Health ────────────────────────────────────────────
-    widget {
-      group_definition {
-        title            = "APM Service Health"
-        layout_type      = "ordered"
-        background_color = "vivid_blue"
+  # ── Row 4: APM Service Health ────────────────────────────────────────────
+  widget {
+    group_definition {
+      title            = "APM Service Health"
+      layout_type      = "ordered"
+      background_color = "vivid_blue"
 
-        widget {
-          timeseries_definition {
-            title       = "Request Rate by Service"
-            title_size  = "16"
-            title_align = "left"
-            show_legend = true
+      widget {
+        timeseries_definition {
+          title       = "Request Rate by Service"
+          title_size  = "16"
+          title_align = "left"
+          show_legend = true
 
-            request {
-              q            = "sum:trace.web.request.hits{${local.env_filter}} by {service}.as_rate()"
-              display_type = "line"
-            }
+          request {
+            q            = "sum:trace.web.request.hits{${local.env_filter}} by {service}.as_rate()"
+            display_type = "line"
           }
         }
+      }
 
-        widget {
-          timeseries_definition {
-            title       = "Error Rate by Service"
-            title_size  = "16"
-            title_align = "left"
-            show_legend = true
+      widget {
+        timeseries_definition {
+          title       = "Error Rate by Service"
+          title_size  = "16"
+          title_align = "left"
+          show_legend = true
 
-            request {
-              q            = "sum:trace.web.request.errors{${local.env_filter}} by {service}.as_rate()"
-              display_type = "bars"
-            }
+          request {
+            q            = "sum:trace.web.request.errors{${local.env_filter}} by {service}.as_rate()"
+            display_type = "bars"
           }
         }
+      }
 
-        widget {
-          timeseries_definition {
-            title       = "p95 Latency by Service (ms)"
-            title_size  = "16"
-            title_align = "left"
-            show_legend = true
+      widget {
+        timeseries_definition {
+          title       = "p95 Latency by Service (ms)"
+          title_size  = "16"
+          title_align = "left"
+          show_legend = true
 
-            request {
-              q            = "p95:trace.web.request{${local.env_filter}} by {service}"
-              display_type = "line"
-            }
+          request {
+            q            = "p95:trace.web.request{${local.env_filter}} by {service}"
+            display_type = "line"
           }
         }
       }
     }
+  }
 
-    # ── Row 5: DogStatsD Custom Metrics ───────────────────────────────────────
-    widget {
-      group_definition {
-        title            = "Finance Custom Metrics (DogStatsD)"
-        layout_type      = "ordered"
-        background_color = "orange"
+  # ── Row 5: DogStatsD Custom Metrics ───────────────────────────────────────
+  widget {
+    group_definition {
+      title            = "Finance Custom Metrics (DogStatsD)"
+      layout_type      = "ordered"
+      background_color = "orange"
 
-        widget {
-          query_value_definition {
-            title       = "Payments Initiated (1h)"
-            title_size  = "16"
-            title_align = "left"
-            autoscale   = true
-            precision   = 0
+      widget {
+        query_value_definition {
+          title       = "Payments Initiated (1h)"
+          title_size  = "16"
+          title_align = "left"
+          autoscale   = true
+          precision   = 0
 
-            request {
-              q          = "sum:finance.payment.initiated{${local.env_filter}}.as_count()"
-              aggregator = "sum"
-            }
+          request {
+            q          = "sum:finance.payment.initiated{${local.env_filter}}.as_count()"
+            aggregator = "sum"
           }
         }
+      }
 
-        widget {
-          timeseries_definition {
-            title       = "Payment Initiated Rate by Currency"
-            title_size  = "16"
-            title_align = "left"
-            show_legend = true
+      widget {
+        timeseries_definition {
+          title       = "Payment Initiated Rate by Currency"
+          title_size  = "16"
+          title_align = "left"
+          show_legend = true
 
-            request {
-              q            = "sum:finance.payment.initiated{${local.env_filter}} by {payment.currency}.as_rate()"
-              display_type = "bars"
-            }
+          request {
+            q            = "sum:finance.payment.initiated{${local.env_filter}} by {payment.currency}.as_rate()"
+            display_type = "bars"
           }
         }
+      }
 
-        widget {
-          timeseries_definition {
-            title       = "Payment Processing Time p95 (ms)"
-            title_size  = "16"
-            title_align = "left"
-            show_legend = true
+      widget {
+        timeseries_definition {
+          title       = "Payment Processing Time p95 (ms)"
+          title_size  = "16"
+          title_align = "left"
+          show_legend = true
 
-            request {
-              q            = "p95:finance.payment.processing_time{${local.env_filter}}"
-              display_type = "line"
-            }
+          request {
+            q            = "p95:finance.payment.processing_time{${local.env_filter}}"
+            display_type = "line"
           }
         }
       }
     }
+  }
 
-    # ── Row 6: Database Monitoring ────────────────────────────────────────────
-    widget {
-      group_definition {
-        title            = "Database — PostgreSQL Ledger"
-        layout_type      = "ordered"
-        background_color = "gray"
+  # ── Row 6: Database Monitoring ────────────────────────────────────────────
+  widget {
+    group_definition {
+      title            = "Database — PostgreSQL Ledger"
+      layout_type      = "ordered"
+      background_color = "gray"
 
-        widget {
-          timeseries_definition {
-            title       = "DB Query Latency p95 (ms)"
-            title_size  = "16"
-            title_align = "left"
-            show_legend = false
+      widget {
+        timeseries_definition {
+          title       = "DB Query Latency p95 (ms)"
+          title_size  = "16"
+          title_align = "left"
+          show_legend = false
 
-            request {
-              q            = "p95:postgresql.query.duration{db:ledger,${local.env_filter}} * 1000"
-              display_type = "line"
-            }
+          request {
+            q            = "p95:postgresql.query.duration{db:ledger,${local.env_filter}} * 1000"
+            display_type = "line"
           }
         }
+      }
 
-        widget {
-          timeseries_definition {
-            title       = "Active DB Connections"
-            title_size  = "16"
-            title_align = "left"
-            show_legend = false
+      widget {
+        timeseries_definition {
+          title       = "Active DB Connections"
+          title_size  = "16"
+          title_align = "left"
+          show_legend = false
 
-            request {
-              q            = "avg:postgresql.connections{db:ledger,${local.env_filter}}"
-              display_type = "line"
-            }
+          request {
+            q            = "avg:postgresql.connections{db:ledger,${local.env_filter}}"
+            display_type = "line"
           }
         }
+      }
 
-        widget {
-          timeseries_definition {
-            title       = "Stuck Pending Transactions"
-            title_size  = "16"
-            title_align = "left"
-            show_legend = false
+      widget {
+        timeseries_definition {
+          title       = "Stuck Pending Transactions"
+          title_size  = "16"
+          title_align = "left"
+          show_legend = false
 
-            request {
-              q            = "max:finance.db.ledger.pending_count{${local.env_filter}}"
-              display_type = "bars"
-            }
+          request {
+            q            = "max:finance.db.ledger.pending_count{${local.env_filter}}"
+            display_type = "bars"
           }
         }
       }
     }
+  }
 
-    # ── Row 7: Messaging — ActiveMQ ───────────────────────────────────────────
-    widget {
-      group_definition {
-        title            = "Messaging — ActiveMQ Artemis"
-        layout_type      = "ordered"
-        background_color = "vivid_orange"
+  # ── Row 7: Messaging — ActiveMQ ───────────────────────────────────────────
+  widget {
+    group_definition {
+      title            = "Messaging — ActiveMQ Artemis"
+      layout_type      = "ordered"
+      background_color = "vivid_orange"
 
-        widget {
-          timeseries_definition {
-            title       = "Queue Depth by Queue"
-            title_size  = "16"
-            title_align = "left"
-            show_legend = true
+      widget {
+        timeseries_definition {
+          title       = "Queue Depth by Queue"
+          title_size  = "16"
+          title_align = "left"
+          show_legend = true
 
-            request {
-              q            = "max:activemq.artemis.queue.message_count{${local.env_filter}} by {queue_name}"
-              display_type = "line"
-            }
+          request {
+            q            = "max:activemq.artemis.queue.message_count{${local.env_filter}} by {queue_name}"
+            display_type = "line"
           }
         }
+      }
 
-        widget {
-          timeseries_definition {
-            title       = "Consumer Count by Queue"
-            title_size  = "16"
-            title_align = "left"
-            show_legend = true
+      widget {
+        timeseries_definition {
+          title       = "Consumer Count by Queue"
+          title_size  = "16"
+          title_align = "left"
+          show_legend = true
 
-            request {
-              q            = "min:activemq.artemis.queue.consumer_count{${local.env_filter}} by {queue_name}"
-              display_type = "line"
-            }
+          request {
+            q            = "min:activemq.artemis.queue.consumer_count{${local.env_filter}} by {queue_name}"
+            display_type = "line"
           }
         }
+      }
 
-        widget {
-          timeseries_definition {
-            title       = "Messages Added Rate"
-            title_size  = "16"
-            title_align = "left"
-            show_legend = true
+      widget {
+        timeseries_definition {
+          title       = "Messages Added Rate"
+          title_size  = "16"
+          title_align = "left"
+          show_legend = true
 
-            request {
-              q            = "sum:activemq.artemis.queue.messages_added{${local.env_filter}} by {queue_name}.as_rate()"
-              display_type = "bars"
-            }
+          request {
+            q            = "sum:activemq.artemis.queue.messages_added{${local.env_filter}} by {queue_name}.as_rate()"
+            display_type = "bars"
           }
         }
       }
     }
+  }
 
-    # ── Row 8: Finance Metrics from Spans & Logs ─────────────────────────────
-    # These widgets use metrics generated by datadog_spans_metric and
-    # datadog_logs_metric resources defined above. They are populated as soon as
-    # APM instrumentation is active (Step 3) and logs are flowing (Step 1).
+  # ── Row 8: Finance Metrics from Spans & Logs ─────────────────────────────
+  # These widgets use metrics generated by datadog_spans_metric and
+  # datadog_logs_metric resources defined above. They are populated as soon as
+  # APM instrumentation is active (Step 3) and logs are flowing (Step 1).
   widget {
     group_definition {
       title            = "Finance Metrics from Spans & Logs"
@@ -1107,15 +1107,15 @@ resource "datadog_service_level_objective" "payment_availability" {
   }
 
   thresholds {
-    timeframe       = "7d"
-    target          = 99.9
-    warning         = 99.95
+    timeframe = "7d"
+    target    = 99.9
+    warning   = 99.95
   }
 
   thresholds {
-    timeframe       = "30d"
-    target          = 99.9
-    warning         = 99.95
+    timeframe = "30d"
+    target    = 99.9
+    warning   = 99.95
   }
 
   tags = local.common_tags
@@ -1131,9 +1131,9 @@ resource "datadog_service_level_objective" "payment_latency" {
   monitor_ids = [datadog_monitor.payment_latency.id]
 
   thresholds {
-    timeframe       = "7d"
-    target          = 99
-    warning         = 99.5
+    timeframe = "7d"
+    target    = 99
+    warning   = 99.5
   }
 
   tags = local.common_tags
@@ -1150,10 +1150,666 @@ resource "datadog_service_level_objective" "fraud_consumer_availability" {
   monitor_ids = [datadog_monitor.fraud_queue_depth.id]
 
   thresholds {
-    timeframe       = "7d"
-    target          = 99.5
-    warning         = 99.9
+    timeframe = "7d"
+    target    = 99.5
+    warning   = 99.9
   }
 
   tags = local.common_tags
+}
+
+# =============================================================================
+# Synthetic Tests
+# =============================================================================
+# Seven API tests derived from real traffic patterns observed on env:staging.
+# Sources:
+#   - APM span aggregation: POST /api/v2/spans/analytics/aggregate
+#   - Traffic generator: scripts/generate-traffic.py
+#
+# Observed baselines (p95, 2-hour window):
+#   GET  /health                          →  < 6ms
+#   GET  /v1/accounts/{id}/balance        → 16ms
+#   POST /v1/payments                     → 24ms  (gateway)
+#   POST /v1/payments                     → 16ms  (transaction-service)
+#   POST /v1/accounts                     → 575ms (PostgreSQL insert, cold pool)
+#
+# Docs: https://docs.datadoghq.com/synthetics/api_tests/
+# Terraform resource: https://registry.terraform.io/providers/DataDog/datadog/latest/docs/resources/synthetics_test
+# =============================================================================
+
+# ── 1. Health checks ─────────────────────────────────────────────────────────
+# Most frequent route (500+ hits/h). One test per service entry point.
+# Fast canary — if any of these fail, the service is down.
+
+resource "datadog_synthetics_test" "health_gateway" {
+  name    = "Finance Health Check — gateway-api"
+  type    = "api"
+  subtype = "http"
+  status  = "live"
+
+  request_definition {
+    method = "GET"
+    url    = "http://gateway-api.finance.svc.cluster.local:8080/health"
+  }
+
+  request_headers = {
+    Accept = "application/json"
+  }
+
+  assertion {
+    type     = "statusCode"
+    operator = "is"
+    target   = "200"
+  }
+  assertion {
+    type     = "body"
+    operator = "contains"
+    target   = "ok"
+  }
+  assertion {
+    type     = "responseTime"
+    operator = "lessThan"
+    target   = "2000"
+  }
+
+  locations = ["aws:eu-west-1"]
+
+  options_list {
+    tick_every = 60
+
+    retry {
+      count    = 1
+      interval = 300
+    }
+
+    monitor_options {
+      renotify_interval = 120
+    }
+  }
+
+  tags = concat(local.common_tags, ["service:gateway-api", "synthetic_type:health"])
+}
+
+resource "datadog_synthetics_test" "health_account_service" {
+  name    = "Finance Health Check — account-service"
+  type    = "api"
+  subtype = "http"
+  status  = "live"
+
+  request_definition {
+    method = "GET"
+    url    = "http://account-service.finance.svc.cluster.local:8081/health"
+  }
+
+  request_headers = {
+    Accept = "application/json"
+  }
+
+  assertion {
+    type     = "statusCode"
+    operator = "is"
+    target   = "200"
+  }
+  assertion {
+    type     = "responseTime"
+    operator = "lessThan"
+    target   = "2000"
+  }
+
+  locations = ["aws:eu-west-1"]
+
+  options_list {
+    tick_every = 60
+
+    retry {
+      count    = 1
+      interval = 300
+    }
+
+    monitor_options {
+      renotify_interval = 120
+    }
+  }
+
+  tags = concat(local.common_tags, ["service:account-service", "synthetic_type:health"])
+}
+
+resource "datadog_synthetics_test" "health_transaction_service" {
+  name    = "Finance Health Check — transaction-service"
+  type    = "api"
+  subtype = "http"
+  status  = "live"
+
+  request_definition {
+    method = "GET"
+    url    = "http://transaction-service.finance.svc.cluster.local:8082/health"
+  }
+
+  request_headers = {
+    Accept = "application/json"
+  }
+
+  assertion {
+    type     = "statusCode"
+    operator = "is"
+    target   = "200"
+  }
+  assertion {
+    type     = "responseTime"
+    operator = "lessThan"
+    target   = "2000"
+  }
+
+  locations = ["aws:eu-west-1"]
+
+  options_list {
+    tick_every = 60
+
+    retry {
+      count    = 1
+      interval = 300
+    }
+
+    monitor_options {
+      renotify_interval = 120
+    }
+  }
+
+  tags = concat(local.common_tags, ["service:transaction-service", "synthetic_type:health"])
+}
+
+# ── 2. Payment happy path ─────────────────────────────────────────────────────
+# Most business-critical route. 93 hits/h, observed p95=24ms on gateway-api.
+# Multi-step: POST /v1/payments → extract payment_id → GET /v1/payments/{id}
+
+resource "datadog_synthetics_test" "payment_happy_path" {
+  name    = "Finance Payment Flow — Happy Path (POST → GET)"
+  type    = "api"
+  subtype = "multi"
+  status  = "live"
+
+  api_step {
+    name    = "POST /v1/payments — Initiate payment"
+    subtype = "http"
+
+    request_definition {
+      method = "POST"
+      url    = "http://gateway-api.finance.svc.cluster.local:8080/v1/payments"
+      body = jsonencode({
+        account_id       = "acc-synthetic-001"
+        amount           = 1.00
+        currency         = "EUR"
+        transaction_type = "payment"
+      })
+    }
+
+    request_headers = {
+      Content-Type  = "application/json"
+      Accept        = "application/json"
+      Authorization = "Bearer {{SYNTHETIC_BEARER_TOKEN}}"
+    }
+
+    assertion {
+      type     = "statusCode"
+      operator = "is"
+      target   = "201"
+    }
+    assertion {
+      type     = "responseTime"
+      operator = "lessThan"
+      target   = "5000"
+    }
+
+    extracted_value {
+      name  = "PAYMENT_ID"
+      type  = "http_body"
+      field = "$.payment_id"
+    }
+  }
+
+  api_step {
+    name    = "GET /v1/payments/{{PAYMENT_ID}} — Verify record"
+    subtype = "http"
+
+    request_definition {
+      method = "GET"
+      url    = "http://transaction-service.finance.svc.cluster.local:8082/v1/payments/{{PAYMENT_ID}}"
+    }
+
+    request_headers = {
+      Accept = "application/json"
+    }
+
+    assertion {
+      type     = "statusCode"
+      operator = "is"
+      target   = "200"
+    }
+    assertion {
+      type     = "responseTime"
+      operator = "lessThan"
+      target   = "2000"
+    }
+  }
+
+  locations = ["aws:eu-west-1"]
+
+  options_list {
+    tick_every = 300
+
+    retry {
+      count    = 1
+      interval = 1000
+    }
+
+    monitor_options {
+      renotify_interval = 60
+    }
+  }
+
+  tags = concat(local.common_tags, ["service:gateway-api", "synthetic_type:journey", "flow:payment"])
+}
+
+# ── 3. Balance check ──────────────────────────────────────────────────────────
+# Highest-volume authenticated route: 70 hits/h, observed p95=16ms.
+
+resource "datadog_synthetics_test" "balance_check" {
+  name    = "Finance Balance Check — Authenticated GET"
+  type    = "api"
+  subtype = "http"
+  status  = "live"
+
+  request_definition {
+    method = "GET"
+    url    = "http://gateway-api.finance.svc.cluster.local:8080/v1/accounts/{{SYNTHETIC_ACCOUNT_ID}}/balance"
+  }
+
+  request_headers = {
+    Accept        = "application/json"
+    Authorization = "Bearer {{SYNTHETIC_BEARER_TOKEN}}"
+  }
+
+  assertion {
+    type     = "statusCode"
+    operator = "is"
+    target   = "200"
+  }
+  assertion {
+    type     = "responseTime"
+    operator = "lessThan"
+    target   = "200"
+  }
+
+  locations = ["aws:eu-west-1"]
+
+  options_list {
+    tick_every = 60
+
+    retry {
+      count    = 1
+      interval = 300
+    }
+
+    monitor_options {
+      renotify_interval = 120
+    }
+  }
+
+  tags = concat(local.common_tags, ["service:gateway-api", "synthetic_type:api", "flow:balance-check", "observed_p95:16ms"])
+}
+
+# ── 4. Unauthenticated rejection ──────────────────────────────────────────────
+# Guards the auth middleware. A 200 here means auth is broken.
+
+resource "datadog_synthetics_test" "unauthenticated_rejection" {
+  name    = "Finance Auth — Unauthenticated Request Rejected (401)"
+  type    = "api"
+  subtype = "http"
+  status  = "live"
+
+  request_definition {
+    method = "GET"
+    url    = "http://gateway-api.finance.svc.cluster.local:8080/v1/accounts/acc-synthetic-test/balance"
+  }
+
+  request_headers = {
+    Accept = "application/json"
+    # Deliberately no Authorization header
+  }
+
+  assertion {
+    type     = "statusCode"
+    operator = "is"
+    target   = "401"
+  }
+  assertion {
+    type     = "responseTime"
+    operator = "lessThan"
+    target   = "500"
+  }
+
+  locations = ["aws:eu-west-1"]
+
+  options_list {
+    tick_every = 300
+
+    retry {
+      count    = 1
+      interval = 300
+    }
+
+    monitor_options {
+      renotify_interval = 120
+    }
+  }
+
+  tags = concat(local.common_tags, ["service:gateway-api", "synthetic_type:security", "flow:auth-rejection"])
+}
+
+# ── 5. Bad payload rejection ──────────────────────────────────────────────────
+# Validates input validation. A 500 here means unhandled exception.
+
+resource "datadog_synthetics_test" "payment_bad_payload" {
+  name    = "Finance Payment — Bad Payload Rejected (422)"
+  type    = "api"
+  subtype = "http"
+  status  = "live"
+
+  request_definition {
+    method = "POST"
+    url    = "http://gateway-api.finance.svc.cluster.local:8080/v1/payments"
+    body   = jsonencode({ not_a_valid_field = "synthetic-test" })
+  }
+
+  request_headers = {
+    Content-Type  = "application/json"
+    Accept        = "application/json"
+    Authorization = "Bearer {{SYNTHETIC_BEARER_TOKEN}}"
+  }
+
+  assertion {
+    type     = "statusCode"
+    operator = "is"
+    target   = "422"
+  }
+  assertion {
+    type     = "statusCode"
+    operator = "isNot"
+    target   = "500"
+  }
+  assertion {
+    type     = "responseTime"
+    operator = "lessThan"
+    target   = "500"
+  }
+
+  locations = ["aws:eu-west-1"]
+
+  options_list {
+    tick_every = 300
+
+    retry {
+      count    = 1
+      interval = 300
+    }
+
+    monitor_options {
+      renotify_interval = 120
+    }
+  }
+
+  tags = concat(local.common_tags, ["service:gateway-api", "synthetic_type:negative", "flow:payment-validation"])
+}
+
+# ── 6. Account not found ──────────────────────────────────────────────────────
+# Guards against silent failures (missing record returning 200).
+
+resource "datadog_synthetics_test" "account_not_found" {
+  name    = "Finance Account — Not Found (404)"
+  type    = "api"
+  subtype = "http"
+  status  = "live"
+
+  request_definition {
+    method = "GET"
+    url    = "http://account-service.finance.svc.cluster.local:8081/v1/accounts/acc-does-not-exist-synthetic"
+  }
+
+  request_headers = {
+    Accept = "application/json"
+  }
+
+  assertion {
+    type     = "statusCode"
+    operator = "is"
+    target   = "404"
+  }
+  assertion {
+    type     = "statusCode"
+    operator = "isNot"
+    target   = "500"
+  }
+  assertion {
+    type     = "responseTime"
+    operator = "lessThan"
+    target   = "500"
+  }
+
+  locations = ["aws:eu-west-1"]
+
+  options_list {
+    tick_every = 300
+
+    retry {
+      count    = 1
+      interval = 300
+    }
+
+    monitor_options {
+      renotify_interval = 120
+    }
+  }
+
+  tags = concat(local.common_tags, ["service:account-service", "synthetic_type:negative", "flow:account-not-found"])
+}
+
+# ── 7. Account creation latency baseline ─────────────────────────────────────
+# Tracks POST /v1/accounts over time. Observed p95=575ms — highest latency
+# route in the app. Threshold set at 2000ms to catch regressions without
+# false positives; tighten once connection pool is warmed.
+
+resource "datadog_synthetics_test" "account_creation_latency" {
+  name    = "Finance Account Creation — Latency Baseline (observed p95=575ms)"
+  type    = "api"
+  subtype = "http"
+  status  = "live"
+
+  request_definition {
+    method = "POST"
+    url    = "http://account-service.finance.svc.cluster.local:8081/v1/accounts"
+    body = jsonencode({
+      owner           = "synthetic-test-user"
+      account_type    = "retail"
+      currency        = "EUR"
+      initial_balance = 0.00
+    })
+  }
+
+  request_headers = {
+    Content-Type = "application/json"
+    Accept       = "application/json"
+  }
+
+  assertion {
+    type     = "statusCode"
+    operator = "is"
+    target   = "201"
+  }
+  assertion {
+    type     = "responseTime"
+    operator = "lessThan"
+    target   = "2000"
+  }
+
+  locations = ["aws:eu-west-1"]
+
+  options_list {
+    tick_every = 600 # every 10 min — creates a real DB record each run
+
+    retry {
+      count    = 1
+      interval = 1000
+    }
+
+    monitor_options {
+      renotify_interval = 120
+    }
+  }
+
+  tags = concat(local.common_tags, ["service:account-service", "synthetic_type:latency-baseline", "observed_p95:575ms"])
+}
+
+# =============================================================================
+# Application Security Management (ASM) — Monitors & Signals
+# =============================================================================
+# These resources configure ASM alerting on top of the Agent-side threat
+# detection enabled in datadog-agent.yaml (asm.threats.enabled: true).
+#
+# ASM works by instrumenting APM traces — no separate agent needed.
+# Threats appear in Security > Application Security > Threats.
+#
+# Docs: https://docs.datadoghq.com/security/application_security/
+# =============================================================================
+
+# ── ASM: High-severity attack volume monitor ──────────────────────────────────
+# Alert when the number of high-severity security signals spikes — indicates
+# an active attack campaign against the finance API.
+resource "datadog_monitor" "asm_high_severity_attacks" {
+  name    = "[Finance] ASM — High-Severity Attack Volume Spike"
+  type    = "log alert"
+  message = <<-EOT
+    High-severity AppSec signals are spiking on the Finance API.
+    This may indicate an active attack campaign (SQLi, credential stuffing, etc.).
+
+    Investigate in Security > Application Security > Threats:
+    https://app.datadoghq.com/security/appsec
+
+    Service: {{log.attributes.service}}
+    Attack type: {{log.attributes.@appsec.type}}
+
+    @finance-platform
+  EOT
+
+  query = "logs(\"source:appsec @severity:high env:${var.environment}\").index(\"*\").rollup(\"count\").by(\"service\").last(\"5m\") > 10"
+
+  monitor_thresholds {
+    critical = 10
+    warning  = 5
+  }
+
+  notify_no_data    = false
+  renotify_interval = 60
+  tags              = concat(local.common_tags, ["security:appsec", "team:finance"])
+}
+
+# ── ASM: Authentication brute-force monitor ───────────────────────────────────
+# Finance-specific business logic rule: alert on repeated login failures,
+# which may indicate credential stuffing against the Keycloak-backed API.
+resource "datadog_monitor" "asm_brute_force" {
+  name    = "[Finance] ASM — Authentication Brute Force Detected"
+  type    = "log alert"
+  message = <<-EOT
+    Repeated authentication failures detected on the Finance gateway.
+    Possible credential stuffing or brute-force attack.
+
+    Investigate in Security > Application Security > Threats:
+    https://app.datadoghq.com/security/appsec
+
+    @finance-platform
+  EOT
+
+  query = "logs(\"source:appsec @appsec.type:users.login.failure env:${var.environment}\").index(\"*\").rollup(\"count\").last(\"5m\") > 20"
+
+  monitor_thresholds {
+    critical = 20
+    warning  = 10
+  }
+
+  notify_no_data    = false
+  renotify_interval = 30
+  tags              = concat(local.common_tags, ["security:appsec", "team:finance", "flow:auth"])
+}
+
+# =============================================================================
+# Cloud Security Management (CSM) — Misconfigurations & CWS Monitors
+# =============================================================================
+# Monitors on top of the Agent-side CWS and CSPM enabled in
+# datadog-agent.yaml (cws.enabled: true, cspm.enabled: true).
+#
+# CWS detects runtime threats (unexpected process exec, file writes, syscalls).
+# CSPM audits K8s/cloud configs against CIS, PCI-DSS, SOC 2 benchmarks.
+#
+# Docs: https://docs.datadoghq.com/security/cloud_workload_security/
+# Docs: https://docs.datadoghq.com/security/cloud_security_management/misconfigurations/
+# =============================================================================
+
+# ── CWS: Critical runtime security signal ────────────────────────────────────
+# Alert immediately on any critical-severity CWS signal in the finance
+# namespace — e.g. shell spawned inside a container, /etc modified, etc.
+resource "datadog_monitor" "cws_critical_signal" {
+  name    = "[Finance] CWS — Critical Runtime Security Signal"
+  type    = "log alert"
+  message = <<-EOT
+    A critical Cloud Workload Security signal was detected in the Finance namespace.
+    This may indicate active exploitation (container breakout, backdoor, etc.).
+
+    Investigate immediately in Security > Cloud Security > Signals:
+    https://app.datadoghq.com/security/signals
+
+    Host: {{host.name}}
+    Container: {{log.attributes.container.name}}
+    Rule: {{log.attributes.agent.rule.name}}
+
+    @finance-platform @pagerduty-finance-sev1
+  EOT
+
+  query = "logs(\"source:runtime-security @severity:critical kube_namespace:finance\").index(\"*\").rollup(\"count\").last(\"5m\") > 0"
+
+  monitor_thresholds {
+    critical = 0 # any occurrence is critical
+  }
+
+  notify_no_data    = false
+  renotify_interval = 15
+  tags              = concat(local.common_tags, ["security:cws", "team:finance"])
+}
+
+# ── CSPM: Critical misconfiguration count ────────────────────────────────────
+# Alert when new critical misconfigurations are detected — e.g. privileged
+# pod specs, exposed secrets in env vars, overly permissive RBAC.
+resource "datadog_monitor" "cspm_critical_findings" {
+  name    = "[Finance] CSPM — Critical Misconfiguration Detected"
+  type    = "log alert"
+  message = <<-EOT
+    A critical cloud security misconfiguration was detected in the Finance cluster.
+    Common causes: privileged pods, exposed secrets, insecure RBAC, missing network policies.
+
+    Review in Security > Cloud Security > Misconfigurations:
+    https://app.datadoghq.com/security/compliance
+
+    Rule: {{log.attributes.@rules.name}}
+    Resource: {{log.attributes.@resource_type}}
+
+    @finance-platform
+  EOT
+
+  query = "logs(\"source:compliance-agent @severity:critical env:${var.environment}\").index(\"*\").rollup(\"count\").last(\"1h\") > 0"
+
+  monitor_thresholds {
+    critical = 0
+  }
+
+  notify_no_data    = false
+  renotify_interval = 120
+  tags              = concat(local.common_tags, ["security:cspm", "team:finance"])
 }

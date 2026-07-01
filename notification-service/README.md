@@ -23,10 +23,7 @@ Datadog configuration. Follow the steps below to progressively enable each obser
 
 ### Step 1 — Enable the Datadog Agent
 
-Start the Datadog Agent alongside the service. In Docker Compose, the `datadog-agent` service is
-pre-configured in `deploy/docker/docker-compose.yml`.
-
-For Kubernetes, deploy the Datadog Operator and add the admission controller annotation to the pod spec:
+Deploy the Datadog Agent via the Datadog Operator. Add the admission controller annotation to the pod spec:
 ```yaml
 annotations:
   admission.datadoghq.com/enabled: "true"
@@ -156,13 +153,13 @@ Reference: https://docs.datadoghq.com/data_streams/go/
 ### Step 9 — Configure Database Monitoring (DBM)
 
 `notification-service` does not directly query PostgreSQL. DBM is configured on the Agent for
-`postgres-ledger` — see `account-service/README.md` Step 9 and `deploy/docker/docker-compose.yml`
-for the Agent `postgres.d/conf.yaml` mount.
+`postgres-ledger` — see `account-service/README.md` Step 9 and
+`deploy/kubernetes/datadog/checks/postgres-check.yaml` for the Agent `postgres.d/conf.yaml` config.
 
 ### Step 10 — Add ActiveMQ Broker Metrics
 
 The Datadog Agent's ActiveMQ integration collects queue depth, consumer count, and memory usage
-from the Artemis broker via JMX. See `deploy/docker/docker-compose.yml` for the
+from the Artemis broker via JMX. See `deploy/kubernetes/datadog/checks/` for the
 `activemq.d/conf.yaml` Agent configuration.
 
 This gives you `finance.jms.queue.depth` for `alert.queue` — useful for alerting on notification
