@@ -46,73 +46,109 @@ make tf-apply-dd
 
 ---
 
-## Prerequisites
+## Secrets & Credentials
 
-### Datadog credentials — K8s Secret
+The app uses two separate secret stores — here is why:
 
-Three keys are stored in a single K8s Secret (`datadog-secret` in the `datadog` namespace):
-
-| Key | Used by | Where to get it |
+| Store | What lives there | Why |
 |---|---|---|
-| `api-key` | Datadog Agent (DaemonSet auth) | https://app.datadoghq.com/organization-settings/api-keys |
-| `app-key` | Terraform (`tf-apply-dd`), catalog registration | https://app.datadoghq.com/organization-settings/application-keys |
-| `dbm-password` | DBM Agent check (PostgreSQL read-only user) | Set when creating the monitoring user |
+| `.env` (local file, git-ignored) | `DD_API_KEY`, `DD_APP_KEY`, `DATADOG_DBM_PASSWORD` | Never committed. Read by `make create-dd-secret` to populate K8s secrets. On EKS, fetched from AWS Secrets Manager instead. |
+| `app-secrets` K8s Secret (`finance` namespace) | Application credentials (PostgreSQL, ActiveMQ, Keycloak) | Applied by `make deploy-k8s`. Pre-set with safe dev defaults in `02-secrets.yaml`. Rotate before staging/production. |
+| `datadog-secret` K8s Secret (`datadog` namespace) | `DD_API_KEY`, `DD_APP_KEY`, `dbm-password` | Created by `make deploy-k8s-dd` (calls `make create-dd-secret` automatically). Read from `.env` locally or AWS Secrets Manager on EKS. |
+| `keycloak-tls` K8s Secret (`finance` namespace) | Self-signed TLS cert for the nginx HTTPS proxy | Generated automatically by `make deploy-k8s`. Never committed. |
 
-#### Option A — `make create-dd-secret` (recommended)
+---
 
-Auto-detects local vs EKS and creates the secret in one command:
+### Application secrets — `app-secrets` K8s Secret
+
+Applied automatically by `make deploy-k8s` from `deploy/kubernetes/base/02-secrets.yaml`.
+These are dev defaults — rotate all values before any staging or production deployment.
+
+| Secret key | Dev value | Used by |
+|---|---|---|
+| `postgres-user` | `finance` | account-service, batch-processor |
+| `postgres-password` | `finance_dev_password` | account-service, batch-processor |
+| `artemis-user` | `admin` | all JMS services (ActiveMQ) |
+| `artemis-password` | `artemis_dev_password` | all JMS services (ActiveMQ) |
+| `keycloak-admin-password` | `Finance@Admin2025!` | Keycloak admin (internal use only) |
+| `keycloak-client-secret` | `FuX1ZIddFs02LzJT-s5MZufplT7SzGmflb42_6P8VcI` | gateway-api OIDC validation, finance dashboard login |
+
+To override any value, edit `deploy/kubernetes/base/02-secrets.yaml` before running `make deploy-k8s`, or patch the secret after deploy:
 
 ```bash
-make create-dd-secret
+kubectl patch secret app-secrets -n finance \
+  --type='json' \
+  -p='[{"op":"replace","path":"/data/postgres-password","value":"'$(echo -n newpassword | base64)'"}]'
 ```
 
-**Local (Docker Desktop / kind / k3d / minikube):** reads from `.env` at the project root:
+---
+
+### Finance realm users
+
+Pre-imported into the Keycloak `finance` realm. Log in at the Finance dashboard: `http://localhost:30080`.
+
+| Username | Password | Role | Permissions |
+|---|---|---|---|
+| `alice.analyst` | `Finance@2025!` | `finance-analyst` | Read-only: view accounts and balances |
+| `bob.trader` | `Finance@2025!` | `finance-trader` | Initiate payments and transfers |
+| `carol.admin` | `Finance@2025!` | `finance-admin` | Full access: deposits, transfers, payments |
+| `dave.auditor` | `Finance@2025!` | `finance-auditor` | Read-only: view accounts and payments |
+| `eve.compliance` | `Finance@2025!` | `finance-compliance` | Approve or reject pending payments |
+
+---
+
+### Datadog secrets — `datadog-secret` K8s Secret
+
+Created automatically by `make deploy-k8s-dd`. Source depends on environment:
+
+**Local — reads from `.env`:**
 ```bash
 cp .env.example .env
-# edit .env — set DD_API_KEY and DD_APP_KEY
+# set DD_API_KEY and DD_APP_KEY in .env
+make deploy-k8s-dd   # creates the secret then deploys the Agent
+```
+
+**EKS — reads from AWS Secrets Manager:**
+```bash
+aws sso login --profile partner
+make deploy-k8s-dd   # auto-fetches from finance-app/staging/dd-{api,app}-key
+```
+
+| Key | Source | Notes |
+|---|---|---|
+| `api-key` | `DD_API_KEY` in `.env` / Secrets Manager | https://app.datadoghq.com/organization-settings/api-keys |
+| `app-key` | `DD_APP_KEY` in `.env` / Secrets Manager | https://app.datadoghq.com/organization-settings/application-keys |
+| `dbm-password` | `DATADOG_DBM_PASSWORD` in `.env` / Secrets Manager | Password you choose when running the DBM SQL setup (Step 9). Not pre-set — you must supply it. |
+
+To create or rotate the secret independently of deploying the Agent:
+```bash
 make create-dd-secret
 ```
 
-**EKS:** fetches from AWS Secrets Manager automatically (requires a valid SSO session):
-```bash
-aws sso login --profile partner
-make create-dd-secret   # pulls from finance-app/staging/dd-{api,app}-key
-```
-
-Idempotent — safe to re-run to rotate keys.
-
-#### Option B — kubectl literals
-
-```bash
-kubectl create namespace datadog --dry-run=client -o yaml | kubectl apply -f -
-kubectl create secret generic datadog-secret \
-  --from-literal api-key="<YOUR_DD_API_KEY>" \
-  --from-literal app-key="<YOUR_DD_APP_KEY>" \
-  --from-literal dbm-password="<YOUR_DBM_PASSWORD>" \
-  --namespace datadog \
-  --dry-run=client -o yaml | kubectl apply -f -
-```
-
-#### Option C — External Secrets Operator (GitOps / production)
-
-An `ExternalSecret` manifest is in `deploy/kubernetes/datadog/secrets/datadog-secrets.yaml`. It pulls from AWS Secrets Manager, GCP Secret Manager, or Vault and keeps the secret in sync.
-
-```bash
-helm repo add external-secrets https://charts.external-secrets.io
-helm install external-secrets external-secrets/external-secrets \
-  --namespace external-secrets --create-namespace
-kubectl apply -f deploy/kubernetes/datadog/secrets/datadog-secrets.yaml
-```
-
-Docs: https://external-secrets.io/
-
-#### Verify the secret
-
+To verify what's stored:
 ```bash
 kubectl get secret datadog-secret -n datadog \
   -o jsonpath='{.data}' | python3 -m json.tool
-# Expected keys: api-key, app-key, dbm-password (base64-encoded — correct)
+# Expected keys: api-key, app-key, dbm-password
 ```
+
+**GitOps / production** — use the External Secrets Operator to sync from AWS Secrets Manager, GCP Secret Manager, or Vault. An `ExternalSecret` manifest is in `deploy/kubernetes/datadog/secrets/datadog-secrets.yaml`.
+
+Docs: https://external-secrets.io/
+
+---
+
+### TLS secret — `keycloak-tls`
+
+Generated automatically by `make deploy-k8s` (idempotent — skipped if already exists).
+Contains a self-signed certificate valid for `localhost` and `keycloak` for 10 years.
+Used by nginx to serve Keycloak over HTTPS on port 30443.
+
+On EKS, TLS is terminated by the NLB using an ACM certificate — `keycloak-tls` is not used.
+
+---
+
+## Prerequisites
 
 ### Datadog Operator
 
@@ -124,63 +160,6 @@ helm install datadog-operator datadog/datadog-operator \
 
 make deploy-k8s-dd   # creates the datadog-secret from .env, then deploys the Agent
 ```
-
----
-
-## Credentials
-
-All credentials for local development are pre-configured in `.env` and
-`deploy/kubernetes/base/02-secrets.yaml`. `make deploy-k8s` applies both
-automatically — no manual substitution needed for the first run.
-
-### Application secrets (`deploy/kubernetes/base/02-secrets.yaml`)
-
-| Secret key | Value | Used by |
-|---|---|---|
-| `postgres-user` | `finance` | account-service, batch-processor |
-| `postgres-password` | `finance_dev_password` | account-service, batch-processor |
-| `artemis-user` | `admin` | all JMS services (ActiveMQ) |
-| `artemis-password` | `artemis_dev_password` | all JMS services (ActiveMQ) |
-| `keycloak-admin-password` | `Finance@Admin2025!` | Keycloak admin console |
-| `keycloak-client-secret` | `FuX1ZIddFs02LzJT-s5MZufplT7SzGmflb42_6P8VcI` | gateway-api OIDC auth, frontend dashboard |
-
-### Finance realm users (Keycloak)
-
-Pre-imported into the `finance` realm. Use these to log in to the dashboard at `http://localhost:30080`.
-
-| Username | Password | Role | Permissions |
-|---|---|---|---|
-| `alice.analyst` | `Finance@2025!` | `finance-analyst` | Read-only: view accounts and balances |
-| `bob.trader` | `Finance@2025!` | `finance-trader` | Initiate payments and transfers |
-| `carol.admin` | `Finance@2025!` | `finance-admin` | Full access: deposits, transfers, payments |
-| `dave.auditor` | `Finance@2025!` | `finance-auditor` | Read-only: view accounts and payments |
-| `eve.compliance` | `Finance@2025!` | `finance-compliance` | Approve or reject pending payments |
-
-### Keycloak admin console
-
-| URL | `https://localhost:30443/admin/master/console/#/finance` |
-|---|---|
-| Username | `admin` |
-| Password | `Finance@Admin2025!` |
-| Version | Keycloak 26.0 |
-
-The admin console opens on the `finance` realm via the nginx HTTPS proxy. Keycloak itself is `ClusterIP`-only — the browser reaches it through **nginx on port 30443 (HTTPS, self-signed cert)**.
-
-> **First visit:** accept the self-signed certificate warning in your browser once — click **Advanced → Accept** (Firefox) or **Advanced → Proceed** (Chrome).
-
-`KEYCLOAK_PUBLIC_URL` in `deploy/kubernetes/base/01-config.yaml` controls Keycloak's public URL (`https://localhost:30443` locally; patch to the HTTPS NLB hostname on EKS).
-
-### Datadog credentials (`.env`)
-
-Read by `make create-dd-secret` to create the `datadog-secret` K8s secret:
-
-| Variable | Value | Notes |
-|---|---|---|
-| `DD_API_KEY` | your key | https://app.datadoghq.com/organization-settings/api-keys |
-| `DD_APP_KEY` | your key | https://app.datadoghq.com/organization-settings/application-keys |
-| `DATADOG_DBM_PASSWORD` | your password | Password for the PostgreSQL `datadog` read-only monitoring user — set when running the DBM SQL setup in Step 9 |
-
-> **Security:** all values in `02-secrets.yaml` are development defaults — rotate before any staging or production deployment. `.env` is git-ignored and must never be committed.
 
 ---
 
