@@ -90,3 +90,16 @@ output "log_metrics" {
     payments_initiated = datadog_logs_metric.payments_initiated.name
   }
 }
+
+# ── RUM ────────────────────────────────────────────────────────────────────────────
+
+output "rum_application_id" {
+  description = "RUM application ID for the finance-frontend dashboard. Used by 'make instrument' to populate the RUM SDK snippet."
+  value       = datadog_rum_application.finance_frontend.app_id
+}
+
+output "rum_client_token" {
+  description = "RUM client token for the finance-frontend dashboard. Used by 'make instrument' to populate the RUM SDK snippet."
+  value       = datadog_rum_application.finance_frontend.client_token
+  sensitive   = true
+}

@@ -87,6 +87,26 @@ instrument:
 		patch -p1 --forward -s < $$p || true; \
 	done
 	@echo ""
+	@echo "==> Injecting RUM credentials from Terraform output..."
+	@if cd deploy/terraform/datadog && terraform output rum_application_id >/dev/null 2>&1; then \
+		RUM_APP_ID=$$(cd deploy/terraform/datadog && terraform output -raw rum_application_id 2>/dev/null); \
+		RUM_TOKEN=$$(cd deploy/terraform/datadog && terraform output -raw rum_client_token 2>/dev/null); \
+		if [ -n "$$RUM_APP_ID" ] && [ -n "$$RUM_TOKEN" ]; then \
+			sed -i '' \
+				"s|'REPLACE_WITH_APPLICATION_ID'|'$$RUM_APP_ID'|g" \
+				frontend-stub/index.html; \
+			sed -i '' \
+				"s|'REPLACE_WITH_CLIENT_TOKEN'|'$$RUM_TOKEN'|g" \
+				frontend-stub/index.html; \
+			echo "  ✓ RUM credentials injected (app_id: $$RUM_APP_ID)"; \
+		else \
+			echo "  ⚠  RUM output is empty — run 'make tf-apply-dd' first, then re-run 'make instrument'"; \
+		fi; \
+	else \
+		echo "  ⚠  Terraform output not available — run 'make tf-apply-dd' first to create the RUM app."; \
+		echo "     RUM block left with placeholders. Re-run 'make instrument' after 'make tf-apply-dd'."; \
+	fi
+	@echo ""
 	@echo "✓ Instrumentation enabled. Redeploy to activate:"
 	@echo "   Local: make build && load images into k3s && kubectl rollout restart deployment -n finance"
 	@echo "   EKS:   make build-ecr && make deploy-k8s-eks && kubectl rollout restart deployment -n finance"
@@ -104,6 +124,14 @@ uninstrument:
 		echo "  $$svc"; \
 		patch -p1 --reverse -s < $$p || true; \
 	done
+	@echo "==> Restoring RUM credential placeholders..."
+	@sed -i '' \
+		"s|'[a-f0-9]\{8\}-[a-f0-9]\{4\}-[a-f0-9]\{4\}-[a-f0-9]\{4\}-[a-f0-9]\{12\}'|'REPLACE_WITH_APPLICATION_ID'|g" \
+		frontend-stub/index.html
+	@sed -i '' \
+		"s|clientToken:             '[a-z0-9]*'|clientToken:             'REPLACE_WITH_CLIENT_TOKEN'|g" \
+		frontend-stub/index.html
+	@echo "  ✓ RUM placeholders restored"
 	@echo ""
 	@echo "✓ Instrumentation disabled. Redeploy to deactivate:"
 	@echo "   Local: make build && load images into k3s && kubectl rollout restart deployment -n finance"
@@ -206,6 +234,13 @@ deploy-k8s:
 	kubectl create configmap traffic-generator-script \
 		--from-file=generate-traffic.py=scripts/generate-traffic.py \
 		-n finance --dry-run=client -o yaml | kubectl apply -f -
+	@echo "Creating frontend dashboard ConfigMap (injecting KEYCLOAK_PUBLIC_URL)..."
+	@KEYCLOAK_URL=$$(grep 'KEYCLOAK_PUBLIC_URL' deploy/kubernetes/base/01-config.yaml | sed 's/.*: *"\(.*\)"/\1/'); \
+	sed "s|http://localhost:30089|$$KEYCLOAK_URL|g" frontend-stub/index.html > /tmp/finance-index.html; \
+	kubectl create configmap frontend-dashboard \
+		--from-file=index.html=/tmp/finance-index.html \
+		-n finance --dry-run=client -o yaml | kubectl apply -f -; \
+	rm -f /tmp/finance-index.html
 	@echo "Applying application services..."
 	kubectl apply -f deploy/kubernetes/base/services/account-service.yaml
 	kubectl apply -f deploy/kubernetes/base/services/batch-processor.yaml
@@ -243,17 +278,22 @@ deploy-k8s-eks:
 	@echo ""
 	@echo "✓  Deployed. Check pod status:"
 	@echo "     kubectl get pods -n finance"
+	@echo ""
+	@echo "⚠  Keycloak public URL: wait for Keycloak NLB then run:"
+	@echo "     KC_HOST=\$$(kubectl get svc keycloak -n finance -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')"
+	@echo "     kubectl patch configmap app-config -n finance --type=merge -p '{\"data\":{\"KEYCLOAK_PUBLIC_URL\":\"http://\$$KC_HOST\"}}'"
+	@echo "     kubectl rollout restart deployment/keycloak deployment/frontend -n finance"
 
 ## deploy-k8s-dd: Deploy the Datadog Agent. Auto-detects local vs EKS.
 ##               Run AFTER 'make deploy-k8s' (local) or 'make deploy-k8s-eks' (EKS).
+##               Calls 'make create-dd-secret' automatically — no separate secret step needed.
 ##
-##               LOCAL: installs Operator (if absent), creates the datadog-secret from
-##                      deploy/kubernetes/datadog/secrets/datadog-secrets.yaml (edit that
-##                      file with your API key first), applies the base agent config.
+##               LOCAL: reads DD_API_KEY + DD_APP_KEY from .env, creates datadog-secret,
+##                      installs Operator (if absent), applies the Agent config.
 ##
-##               EKS:   installs Operator via Helm (idempotent), fetches the API key
-##                      automatically from AWS Secrets Manager, patches the agent config
-##                      for Bottlerocket (log path, kubelet TLS, cloud tags).
+##               EKS:   installs Operator via Helm (idempotent), fetches keys from
+##                      AWS Secrets Manager (requires valid SSO session + staging.tfvars),
+##                      patches the Agent config for Bottlerocket (log path, kubelet TLS).
 deploy-k8s-dd:
 	@echo "==> Detecting cluster environment..."
 	@IS_EKS=$$(kubectl get nodes -o jsonpath='{.items[0].spec.providerID}' 2>/dev/null | grep -c 'aws:///') ; \

@@ -5,7 +5,7 @@ Two complementary instrumentation layers — both independent, both reversible:
 | Layer | What it does | How |
 |---|---|---|
 | **1 — Single-step (Admission Controller)** | Injects the Datadog tracer into every pod at startup — no code changes, no rebuilds | `admission.datadoghq.com/enabled: "true"` label + Operator webhook |
-| **2 — Manual (`make instrument`)** | Adds custom business spans, Finance-domain tags, and DogStatsD metrics | Unified diff patches — fully reversible with `make uninstrument` |
+| **2 — Manual (`make instrument`)** | Adds custom business spans, Finance-domain tags, DogStatsD metrics, and Browser RUM SDK | Unified diff patches — fully reversible with `make uninstrument` |
 
 Layer 1 alone gives distributed tracing, log correlation, and runtime metrics out of the box. Layer 2 enriches it with business context.
 
@@ -20,9 +20,8 @@ make build
 # On kind/k3d/minikube: load images first — see README.md Prerequisites.
 make deploy-k8s
 
-# 2. Add Datadog
-make create-dd-secret   # reads DD_API_KEY + DD_APP_KEY from .env
-make deploy-k8s-dd      # Operator + DaemonSet + Cluster Agent + ASM/CWS/CSPM
+# 2. Add Datadog (creates the K8s secret from .env automatically, then deploys the Agent)
+make deploy-k8s-dd
 
 # 3. Watch traces appear (no code changes needed)
 kubectl logs -n finance deploy/traffic-generator -f
@@ -40,7 +39,7 @@ kubectl rollout restart deployment -n finance
 # 5. Reverse Layer 2 at any time
 make uninstrument && make build   # then reload (if needed) + rollout restart
 
-# 6. Apply Terraform resources (monitors, SLOs, dashboard, 9 synthetic tests)
+# 6. Apply Terraform resources (monitors, SLOs, dashboard, 7 synthetic tests)
 eval "$(make dd-secrets)"   # EKS only — or export TF_VAR_* manually
 make tf-apply-dd
 ```
@@ -123,9 +122,61 @@ helm install datadog-operator datadog/datadog-operator \
   --namespace datadog --create-namespace \
   --set watchNamespaces='{datadog,finance}'
 
-make create-dd-secret
-make deploy-k8s-dd
+make deploy-k8s-dd   # creates the datadog-secret from .env, then deploys the Agent
 ```
+
+---
+
+## Credentials
+
+All credentials for local development are pre-configured in `.env` and
+`deploy/kubernetes/base/02-secrets.yaml`. `make deploy-k8s` applies both
+automatically — no manual substitution needed for the first run.
+
+### Application secrets (`deploy/kubernetes/base/02-secrets.yaml`)
+
+| Secret key | Value | Used by |
+|---|---|---|
+| `postgres-user` | `finance` | account-service, batch-processor |
+| `postgres-password` | `finance_dev_password` | account-service, batch-processor |
+| `artemis-user` | `admin` | all JMS services (ActiveMQ) |
+| `artemis-password` | `artemis_dev_password` | all JMS services (ActiveMQ) |
+| `keycloak-admin-password` | `Finance@Admin2025!` | Keycloak admin console |
+| `keycloak-client-secret` | `FuX1ZIddFs02LzJT-s5MZufplT7SzGmflb42_6P8VcI` | gateway-api OIDC auth, frontend dashboard |
+
+### Finance realm users (Keycloak)
+
+Pre-imported into the `finance` realm. Use these to log in to the dashboard at `http://localhost:30080`.
+
+| Username | Password | Role | Permissions |
+|---|---|---|---|
+| `alice.analyst` | `Finance@2025!` | `finance-analyst` | Read-only: view accounts and balances |
+| `bob.trader` | `Finance@2025!` | `finance-trader` | Initiate payments and transfers |
+| `carol.admin` | `Finance@2025!` | `finance-admin` | Full access: deposits, transfers, payments |
+| `dave.auditor` | `Finance@2025!` | `finance-auditor` | Read-only: view accounts and payments |
+| `eve.compliance` | `Finance@2025!` | `finance-compliance` | Approve or reject pending payments |
+
+### Keycloak admin console
+
+| URL | `http://localhost:30089/admin/master/console/#/finance` |
+|---|---|
+| Username | `admin` |
+| Password | `Finance@Admin2025!` |
+| Version | Keycloak 24.0 |
+
+The admin console opens directly on the `finance` realm. Keycloak runs on **NodePort 30089** — it is accessed directly by the browser, not through the nginx frontend at `:30080`. The public URL is controlled by `KEYCLOAK_PUBLIC_URL` in `deploy/kubernetes/base/01-config.yaml` (`http://localhost:30089` locally; patch to the NLB hostname on EKS).
+
+### Datadog credentials (`.env`)
+
+Read by `make create-dd-secret` to create the `datadog-secret` K8s secret:
+
+| Variable | Value | Notes |
+|---|---|---|
+| `DD_API_KEY` | your key | https://app.datadoghq.com/organization-settings/api-keys |
+| `DD_APP_KEY` | your key | https://app.datadoghq.com/organization-settings/application-keys |
+| `DATADOG_DBM_PASSWORD` | your password | Password for the PostgreSQL `datadog` read-only monitoring user — set when running the DBM SQL setup in Step 9 |
+
+> **Security:** all values in `02-secrets.yaml` are development defaults — rotate before any staging or production deployment. `.env` is git-ignored and must never be committed.
 
 ---
 
@@ -186,7 +237,7 @@ kubectl exec -n finance deploy/gateway-api -- env | grep DD_INSTRUMENTATION
 
 ## Layer 2 — Manual instrumentation (`make instrument`)
 
-Applies unified diff patches to five services, uncommenting custom spans and DogStatsD metrics. Fully reversible with `make uninstrument`.
+Applies unified diff patches to six targets, uncommenting custom spans, DogStatsD metrics, and the Browser RUM SDK. Fully reversible with `make uninstrument`.
 
 ### What each patch adds
 
@@ -197,13 +248,19 @@ Applies unified diff patches to five services, uncommenting custom spans and Dog
 | `transaction-service` | `tracer.startSpan("ledger.commit")` with `transaction.type`, `payment.currency`, `db.instance` tags |
 | `notification-service` | `tracer.StartSpanFromContext("alert.send")` with `messaging.destination`, `jms.correlation_id` tags; `profiler.Start()` |
 | `batch-processor` | OpenTracing span tags in `DatadogJobListener` (`job.name`, `job.status`, `job.records_processed`) |
+| **`frontend-stub/index.html`** | **RUM SDK** — `DD_RUM.init()` + `startSessionReplayRecording()` using `applicationId`/`clientToken` from Terraform |
 
 `account-service` has no Layer 2 patch — fully covered by the Java agent auto-instrumentation.
 
 ### Workflow
 
+> **RUM prerequisite:** `make instrument` automatically injects the RUM `applicationId` and `clientToken` from Terraform output into the finance dashboard. Run `make tf-apply-dd` first so the `datadog_rum_application` resource exists. If Terraform output is not available, `make instrument` will skip RUM with a warning — re-run after `make tf-apply-dd`.
+
 ```bash
-make instrument
+# Optional but recommended: apply Terraform first so RUM credentials are available
+make tf-apply-dd
+
+make instrument   # patches services + injects RUM credentials + uncomments SDK block
 make build
 
 # Local — reload images if needed, then rolling-restart
@@ -220,9 +277,13 @@ kubectl rollout restart deployment -n finance
 
 ### Regenerating patches
 
+If you modify any instrumented source file, regenerate the affected patch:
+
 ```bash
-make uninstrument                        # uninstrumented state required first
-python3 scripts/generate-patches.py     # regenerates all 5 patch files
+make uninstrument                        # must be in uninstrumented state first
+python3 scripts/generate-patches.py     # regenerates service patches (gateway-api, fraud-detection, etc.)
+# The frontend.patch is maintained manually — edit scripts/patches/frontend.patch directly
+# if you change the RUM block in frontend-stub/index.html
 for p in scripts/patches/*.patch; do
   patch --dry-run -p1 -s --input "$p" && echo "OK: $p" || echo "FAIL: $p"
 done
@@ -340,7 +401,63 @@ For Java: add `-Ddd.profiling.enabled=true` to `JAVA_TOOL_OPTIONS`.
 
 ---
 
-### Step 8 — Database Monitoring (PostgreSQL)
+### Step 8 — Browser RUM + Session Replay (Layer 2)
+
+The finance dashboard (`frontend-stub/index.html`) ships with the Datadog Browser RUM SDK commented out. `make instrument` uncomments it and injects real credentials from Terraform automatically.
+
+#### Prerequisites
+
+```bash
+# 1. Create the RUM application via Terraform (creates datadog_rum_application.finance_frontend)
+make tf-apply-dd
+
+# 2. Apply Layer 2 patches — RUM credentials are injected from Terraform output
+make instrument
+
+# 3. Rebuild the frontend ConfigMap and restart the frontend pod
+kubectl create configmap frontend-dashboard \
+  --from-file=index.html=frontend-stub/index.html \
+  -n finance --dry-run=client -o yaml | kubectl apply -f -
+kubectl rollout restart deployment/frontend -n finance
+```
+
+If `make tf-apply-dd` has not been run yet, `make instrument` leaves `REPLACE_WITH_APPLICATION_ID` / `REPLACE_WITH_CLIENT_TOKEN` as placeholders and prints a `⚠` warning. Re-run `make instrument` after `make tf-apply-dd`.
+
+#### What gets enabled
+
+| Feature | Config |
+|---|---|
+| Page view tracking | Automatic — all navigation events |
+| User interactions | `trackUserInteractions: true` — clicks, form submits |
+| Session Replay | `sessionReplaySampleRate: 100` — full replay recorded |
+| PII masking | `defaultPrivacyLevel: 'mask-user-input'` — form values never recorded |
+| Service | `finance-frontend` — appears in RUM > Applications |
+
+#### Finance-specific RUM actions (already instrumented in the dashboard)
+
+The dashboard JS calls `appLog()` which is wired to emit structured console events. After enabling RUM, replace `appLog()` calls with `DD_RUM.addAction()` to surface Finance-domain actions in RUM:
+
+| Action | Trigger | Tags to add |
+|---|---|---|
+| `payment.initiated` | `POST /v1/payments` success | `amount_bucket`, `currency` |
+| `balance.checked` | `GET /v1/accounts/{id}/balance` | `account_tier` |
+| `login.success` | Keycloak token issued | `role` |
+| `payment.validated` | Compliance role approves/rejects | `decision` |
+
+#### PII cardinality warning
+
+Never pass raw `account_id`, `payment_id`, or exact amounts as RUM action attributes — use bucketed values:
+```javascript
+amount_bucket: amount < 100 ? '<100' : amount < 1000 ? '100-1000' : '>1000'
+```
+
+**Validate:** RUM → Applications → `finance-frontend` → Sessions → click any session → Session Replay available.
+
+Docs: https://docs.datadoghq.com/real_user_monitoring/browser/
+
+---
+
+### Step 9 — Database Monitoring (PostgreSQL)
 
 DBM is Agent-side only — no application code changes.
 
@@ -348,6 +465,10 @@ DBM is Agent-side only — no application code changes.
 
 ```sql
 -- Run on the 'ledger' database
+-- Replace <your-dbm-password> with a password of your choice.
+-- Set the same value as DATADOG_DBM_PASSWORD in .env before running 'make create-dd-secret'.
+-- Unlike other app credentials (postgres, artemis, keycloak) this password is NOT pre-configured
+-- in 02-secrets.yaml — you must choose it yourself.
 CREATE USER datadog WITH PASSWORD '<your-dbm-password>';
 GRANT pg_monitor TO datadog;
 CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
@@ -367,7 +488,7 @@ The ConfigMap is already applied by `make deploy-k8s-dd`. Ensure `dbm-password` 
 
 ---
 
-### Step 9 — ActiveMQ JMX metrics
+### Step 10 — ActiveMQ JMX metrics
 
 ```bash
 kubectl apply -f deploy/kubernetes/datadog/checks/activemq-check.yaml
@@ -379,7 +500,7 @@ Already applied by `make deploy-k8s-dd`.
 
 ---
 
-### Step 10 — Datadog Terraform resources
+### Step 11 — Datadog Terraform resources
 
 ```bash
 eval "$(make dd-secrets)"   # EKS: exports TF_VAR_datadog_api_key + TF_VAR_datadog_app_key
@@ -403,14 +524,14 @@ Resources created:
 | 7 monitors | Pod restarts, error rate, payment latency, payment errors, fraud queue, stuck transactions, pods not running |
 | 3 SLOs | Payment availability (99.9%), payment latency (99%), fraud consumer (99.5%) |
 | Dashboard | Finance App overview (APM, DogStatsD, DBM, ActiveMQ) |
-| **9 Synthetic tests** | See Step 11 |
-| **4 Security monitors** | See Step 12 |
+| **7 Synthetic tests** | See Step 12 |
+| **4 Security monitors** | See Step 13 |
 
 **Validate:** [Dashboards](https://app.datadoghq.com/dashboard/list) → search `Finance App`
 
 ---
 
-### Step 11 — Synthetic Monitoring
+### Step 12 — Synthetic Monitoring
 
 Nine API tests generated from **real observed traffic** (APM span aggregation on `env:staging`):
 
@@ -441,7 +562,7 @@ Docs: https://docs.datadoghq.com/synthetics/apm/
 
 ---
 
-### Step 12 — Application Security (ASM) + Cloud Security (CWS / CSPM)
+### Step 13 — Application Security (ASM) + Cloud Security (CWS / CSPM)
 
 All security features are enabled in `deploy/kubernetes/datadog/agent/datadog-agent.yaml` — no application code changes required beyond `DD_APPSEC_ENABLED=true` (set automatically by the Admission Controller when `asm.threats.enabled: true`).
 
@@ -536,18 +657,17 @@ make teardown
 ```
 
 Removes in order:
-1. Any stray `kubectl port-forward` processes
-2. `finance` namespace — all pods, services, ConfigMaps, PVCs
+1. Any stray `kubectl port-forward` processes (from `make test` / `make test-traffic`)
+2. `finance` namespace — all pods, services, ConfigMaps, PVCs (PostgreSQL and Redis data gone)
 3. `datadog` namespace — Agent DaemonSet, Cluster Agent, Operator
 4. Datadog Operator Helm release
-5. Orphaned Docker volumes (`postgres-data`, `redis-data`, `artemis-data`, `keycloak-data`)
+5. Orphaned Docker volumes (`postgres-data`, `redis-data`, `artemis-data`, `keycloak-data`) — only relevant if you previously ran a Docker Compose stack; harmless no-op otherwise
 
-> **K8s data:** PVCs are deleted with the namespace — no separate cleanup needed.
-> **Docker volumes:** leftover from previous Compose runs — `make teardown` removes them.
+> **K8s data:** PVCs are deleted with the namespace — no separate step needed.
 
 Start fresh:
 ```bash
-make build && make deploy-k8s && make create-dd-secret && make deploy-k8s-dd
+make build && make deploy-k8s && make deploy-k8s-dd
 ```
 
 ---
@@ -563,11 +683,11 @@ make build && make deploy-k8s && make create-dd-secret && make deploy-k8s-dd
 | `make deploy-k8s-dd` | Deploy Datadog Agent (Operator + DaemonSet + checks + security) |
 | `make deploy-k8s-eks` | Deploy to EKS using Kustomize overlay (ECR images + LoadBalancer) |
 | `make undeploy-k8s` | Remove finance + datadog namespaces |
-| `make teardown` | Full reset — namespaces + Helm + Docker volumes |
-| `make instrument` | Uncomment all Layer 2 instrumentation across 5 services |
-| `make uninstrument` | Re-comment all Layer 2 instrumentation |
-| `make test` | Run e2e test suite from laptop (requires `kubectl port-forward`) |
-| `make test-traffic` | Run traffic generator from laptop (requires `kubectl port-forward`) |
+| `make teardown` | Full reset — namespaces (+ PVCs), Helm release, stray port-forwards, orphaned Docker volumes |
+| `make instrument` | Uncomment Layer 2 (5 services + frontend RUM) via patches; injects RUM credentials from Terraform |
+| `make uninstrument` | Reverse all Layer 2 patches; restores RUM placeholder tokens |
+| `make test` | Run e2e test suite from laptop — requires active port-forwards (see note below) |
+| `make test-traffic` | Run traffic generator from laptop — requires active port-forwards (see note below) |
 | `make tf-apply-dd` | Apply Datadog Terraform resources (monitors, SLOs, dashboard, synthetics) |
 | `make tf-destroy-dd` | Destroy Datadog Terraform resources |
 | `make tf-plan-aws` | Plan AWS EKS infrastructure |
@@ -575,6 +695,15 @@ make build && make deploy-k8s && make create-dd-secret && make deploy-k8s-dd
 | `make tf-configure-kubectl` | Update kubeconfig for EKS |
 | `make tf-destroy-aws` | Destroy all AWS resources (handles ELB, node groups, ECR in order) |
 | `make dd-secrets` | Print `eval`-ready `TF_VAR_*` exports from Secrets Manager (EKS) |
+
+> **Port-forward note:** `make test` and `make test-traffic` connect to services from your laptop. `scripts/port-forward.sh` was removed — start port-forwards manually before running these:
+> ```bash
+> kubectl port-forward svc/gateway-api 8080:8080 -n finance &
+> kubectl port-forward svc/account-service 8081:8081 -n finance &
+> kubectl port-forward svc/transaction-service 8082:8082 -n finance &
+> kubectl port-forward svc/keycloak 8089:8080 -n finance &
+> ```
+> The in-cluster `traffic-generator` Deployment generates continuous traffic automatically — no port-forward needed for Datadog telemetry.
 
 ---
 
@@ -615,7 +744,7 @@ Common causes:
 ```bash
 kubectl exec -n datadog daemonset/datadog-agent -c agent -- agent status
 # 'no valid instances'       → check YAML in deploy/kubernetes/datadog/checks/
-# 'pg_stat_statements error' → run the SQL setup in Step 8a
+# 'pg_stat_statements error' → run the SQL setup in Step 9a
 # 'authentication failed'    → verify dbm-password in the datadog-secret
 ```
 
@@ -666,14 +795,17 @@ Last validated: Docker Desktop with Kubernetes enabled (single-node, Apple Silic
 | APM — `batch-processor` | Layer 1 (injection) | ✅ Java agent injected |
 | Custom spans | Layer 2 (patch) | ✅ after `make instrument` + rebuild |
 | DogStatsD metrics | Layer 2 (patch) | ✅ `finance.payment.initiated` flowing |
+| Browser RUM | Layer 2 (patch) + Terraform | ✅ after `make tf-apply-dd` + `make instrument` + frontend restart |
 | Log collection | Agent | ✅ `kube_namespace:finance` logs in Datadog |
 | Log–trace correlation | Layer 1 | ✅ `dd.trace_id` in every log line |
 | Traffic generator | In-cluster | ✅ continuous load, no laptop required |
+| Keycloak 24.0 | NodePort 30089 (direct, not via nginx) | ✅ admin console + finance realm users |
+| `KEYCLOAK_PUBLIC_URL` | `01-config.yaml` | ✅ `http://localhost:30089` (local) — patch to NLB hostname on EKS |
 | Service Catalog | API registration | ✅ 6 services registered (v3 schema) |
 | DBM — PostgreSQL | Agent check | ✅ query metrics + samples |
 | ActiveMQ JMX | Agent check | ✅ broker + queue metrics |
 | Datadog Terraform | `tf-apply-dd` | ✅ 7 monitors, 3 SLOs, dashboard |
-| Synthetic tests | `tf-apply-dd` | ✅ 9 tests from APM traffic analysis |
+| Synthetic tests | `tf-apply-dd` | ✅ 7 tests from APM traffic analysis |
 | ASM Threats | `DD_APPSEC_ENABLED=true` + Agent | ✅ all 6 services |
 | ASM SCA | Agent `asm.sca.enabled: true` | ✅ OSS vulnerability scanning |
 | CWS | Agent `cws.enabled: true` | ✅ 3/3 self-tests passed |
@@ -700,6 +832,9 @@ Last validated: Docker Desktop with Kubernetes enabled (single-node, Apple Silic
 | Data Streams Monitoring | https://docs.datadoghq.com/data_streams/ |
 | Data Jobs Monitoring | https://docs.datadoghq.com/data_jobs/ |
 | ActiveMQ integration | https://docs.datadoghq.com/integrations/activemq/ |
+| Browser RUM | https://docs.datadoghq.com/real_user_monitoring/browser/ |
+| RUM Session Replay | https://docs.datadoghq.com/real_user_monitoring/session_replay/ |
+| RUM Privacy / PII masking | https://docs.datadoghq.com/real_user_monitoring/session_replay/privacy_options/ |
 | Synthetic Monitoring | https://docs.datadoghq.com/synthetics/ |
 | Synthetic API tests | https://docs.datadoghq.com/synthetics/api_tests/ |
 | Synthetic → APM correlation | https://docs.datadoghq.com/synthetics/apm/ |

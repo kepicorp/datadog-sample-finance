@@ -200,13 +200,15 @@
       "directAccessGrantsEnabled": true,
       "serviceAccountsEnabled": true,
       "authorizationServicesEnabled": false,
-      "secret": "REPLACE_WITH_SECRET",
+      "secret": "FuX1ZIddFs02LzJT-s5MZufplT7SzGmflb42_6P8VcI",
       "redirectUris": [
-        "http://localhost:8080/*",
+        "http://localhost:30080/*",
+        "http://localhost:30089/*",
         "http://gateway-api:8080/*"
       ],
       "webOrigins": [
-        "http://localhost:8080",
+        "http://localhost:30080",
+        "http://localhost:30089",
         "http://gateway-api:8080"
       ],
       "defaultClientScopes": [

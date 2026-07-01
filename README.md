@@ -68,7 +68,7 @@ Supporting infrastructure:
 | PostgreSQL 15 | `postgres:15` | Primary ledger database |
 | Redis 7 | `redis:7` | Session store and cache |
 | ActiveMQ Artemis | `apache/activemq-artemis` | JMS 2.0 broker (mirrors IBM MQ / TIBCO patterns) |
-| Keycloak 26 | `quay.io/keycloak/keycloak:26.0` | OIDC for gateway-api · SAML SSO for Datadog |
+| Keycloak 24 | `quay.io/keycloak/keycloak:24.0` | OIDC for gateway-api · SAML SSO for Datadog |
 | NGINX | `nginx:1.25` | Reverse proxy · frontend dashboard |
 
 ---
@@ -124,6 +124,72 @@ cp .env.example .env
 
 ---
 
+## Credentials
+
+All credentials for local development are pre-set in `.env` and `deploy/kubernetes/base/02-secrets.yaml`. No manual substitution needed for the first run — just `make deploy-k8s`.
+
+### Application credentials
+
+| Component | What | Value | Used by |
+|---|---|---|---|
+| PostgreSQL | database | `ledger` | account-service, batch-processor |
+| PostgreSQL | user | `finance` | account-service, batch-processor |
+| PostgreSQL | password | `finance_dev_password` | account-service, batch-processor |
+| ActiveMQ Artemis | user | `admin` | all JMS producers/consumers |
+| ActiveMQ Artemis | password | `artemis_dev_password` | all JMS producers/consumers |
+| Keycloak | admin user | `admin` | Keycloak admin console |
+| Keycloak | admin password | `Finance@Admin2025!` | Keycloak admin console |
+| Keycloak | finance realm client | `finance-gateway` | gateway-api, frontend dashboard |
+| Keycloak | client secret | `FuX1ZIddFs02LzJT-s5MZufplT7SzGmflb42_6P8VcI` | gateway-api, frontend dashboard |
+
+### Access URLs
+
+| What | URL | Notes |
+|---|---|---|
+| **Finance dashboard** | `http://localhost:30080` | Login with any finance realm user below |
+| **Keycloak admin console** | `http://localhost:30089/admin/master/console/#/finance` | Login as `admin` / `Finance@Admin2025!` |
+| **Keycloak finance realm account** | `http://localhost:30089/realms/finance/account/` | Self-service account page for realm users |
+| **ActiveMQ management console** | `kubectl port-forward svc/activemq-artemis 8161:8161 -n finance` then `http://localhost:8161` | Broker metrics and queue management (not proxied through nginx) |
+
+### Finance realm users and roles
+
+Pre-imported into the `finance` Keycloak realm. Log in via the Finance dashboard at `http://localhost:30080` — it redirects to Keycloak (port 30089) automatically.
+
+All users share the password **`Finance@2025!`**.
+
+| Username | Role | Dashboard capabilities |
+|---|---|---|
+| `alice.analyst` | `finance-analyst` | View accounts list · Check balances · Read-only |
+| `bob.trader` | `finance-trader` | Everything analyst can do · **Initiate payments** · **Initiate transfers** |
+| `carol.admin` | `finance-admin` | Everything trader can do · **Make deposits** · **Approve/reject payments** · Create accounts |
+| `dave.auditor` | `finance-auditor` | View accounts list · Check balances · Read-only |
+| `eve.compliance` | `finance-compliance` | View accounts · **Approve or reject pending payments** |
+
+#### What each dashboard card shows per role
+
+| Dashboard card | analyst | trader | admin | auditor | compliance |
+|---|---|---|---|---|---|
+| Account list | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Balance check | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Initiate payment | ❌ | ✅ | ✅ | ❌ | ❌ |
+| Initiate transfer | ❌ | ✅ | ✅ | ❌ | ❌ |
+| Make deposit | ❌ | ❌ | ✅ | ❌ | ❌ |
+| Payment validation | ❌ | ❌ | ✅ | ❌ | ✅ |
+
+### Datadog credentials
+
+Set in `.env` — read automatically by `make create-dd-secret`:
+
+| Key | Where to get it |
+|---|---|
+| `DD_API_KEY` | https://app.datadoghq.com/organization-settings/api-keys |
+| `DD_APP_KEY` | https://app.datadoghq.com/organization-settings/application-keys |
+| `DATADOG_DBM_PASSWORD` | Password you set for the PostgreSQL `datadog` monitoring user (Step 8 in INSTRUMENTATION.md) |
+
+> **Security:** `.env` is git-ignored and must never be committed. All values in `02-secrets.yaml` are development-only defaults — rotate everything before any staging or production deployment.
+
+---
+
 ## Quick Start
 
 The app runs cleanly with no Datadog config. No API key needed for the first run.
@@ -152,17 +218,18 @@ Traffic starts flowing automatically from the in-cluster `traffic-generator` pod
 kubectl logs -n finance deploy/traffic-generator -f
 ```
 
-Frontend dashboard (nginx + Keycloak login): `http://localhost:30080`
+**Finance dashboard:** `http://localhost:30080` — log in with any finance realm user (e.g. `carol.admin` / `Finance@2025!`).
+
+**Keycloak admin console:** `http://localhost:30089/admin/master/console/#/finance` — log in as `admin` / `Finance@Admin2025!`.
+
+See [Credentials](#credentials) for all users, roles, and URLs.
 
 ---
 
 ## Adding Datadog
 
 ```bash
-# 1. Create the Datadog secret (reads from .env automatically)
-make create-dd-secret
-
-# 2. Deploy the Datadog Agent (Operator + DaemonSet + Cluster Agent)
+# Deploy the Datadog Agent (creates the secret automatically from .env, then deploys Operator + DaemonSet)
 make deploy-k8s-dd
 ```
 
@@ -172,6 +239,15 @@ Watch traces flowing:
 ```bash
 kubectl exec -n datadog daemonset/datadog-agent -c trace-agent -- agent status | grep "Traces received"
 ```
+
+> **Note:** `make test` and `make test-traffic` connect to services from your laptop and require active port-forwards. Since `scripts/port-forward.sh` was removed, run these manually first:
+> ```bash
+> kubectl port-forward svc/gateway-api 8080:8080 -n finance &
+> kubectl port-forward svc/account-service 8081:8081 -n finance &
+> kubectl port-forward svc/transaction-service 8082:8082 -n finance &
+> kubectl port-forward svc/keycloak 8089:8080 -n finance &
+> ```
+> Alternatively, the in-cluster `traffic-generator` pod generates continuous traffic automatically — no port-forward needed.
 
 ---
 
@@ -223,7 +299,7 @@ Summary of what gets enabled:
 | 8 | Database Monitoring | Agent check — `deploy/kubernetes/datadog/checks/postgres-check.yaml` |
 | 9 | ActiveMQ JMX | Agent check — `deploy/kubernetes/datadog/checks/activemq-check.yaml` |
 | 10 | Terraform resources | `make tf-apply-dd` — monitors, SLOs, dashboard, synthetics |
-| 11 | Synthetic tests | Included in Terraform — 9 tests from real APM traffic |
+| 11 | Synthetic tests | Included in Terraform — 7 tests from real APM traffic |
 | 12 | ASM + CWS + CSPM | Agent-side — enabled in `datadog-agent.yaml` |
 
 ---
@@ -247,10 +323,9 @@ deploy/
 ```bash
 make build
 # load images if needed — see Prerequisites above (skip on Docker Desktop)
-make deploy-k8s          # deploys app + traffic-generator
-make create-dd-secret    # reads from .env
-make deploy-k8s-dd       # Datadog Agent
-make teardown            # full reset (namespaces + volumes)
+make deploy-k8s       # deploys app + traffic-generator
+make deploy-k8s-dd    # creates Datadog secret from .env then deploys Agent
+make teardown         # full reset (namespaces + volumes)
 ```
 
 ### AWS EKS via Terraform
@@ -276,10 +351,22 @@ kubectl get nodes   # verify cluster is reachable
 eval "$(cd deploy/terraform/aws && terraform output -raw ecr_login_command)"
 make build-ecr
 
-# 6. Deploy the app (EKS overlay: ECR images + LoadBalancer frontend)
+# 6. Deploy the app (EKS overlay: ECR images + LoadBalancer for frontend + Keycloak)
 make deploy-k8s-eks
 
+# 6b. Set the Keycloak public URL once the NLB hostname is assigned (~2 min)
+#     Keycloak is exposed via its own NLB (not proxied through nginx).
+#     KEYCLOAK_PUBLIC_URL in app-config drives both KC_HOSTNAME_URL on the
+#     Keycloak pod and the KEYCLOAK_BASE variable in the finance dashboard.
+KC_HOST=$(kubectl get svc keycloak -n finance -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+kubectl patch configmap app-config -n finance --type=merge \
+  -p "{\"data\":{\"KEYCLOAK_PUBLIC_URL\":\"http://$KC_HOST\"}}"
+kubectl rollout restart deployment/keycloak deployment/frontend -n finance
+# Dashboard: http://$(kubectl get svc frontend -n finance -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+# Keycloak:  http://$KC_HOST/admin/master/console/#/finance
+
 # 7. Add Datadog (auto-fetches keys from Secrets Manager)
+#    Prerequisites: deploy/terraform/aws/staging.tfvars must have aws_region + aws_profile.
 #    Populate secrets first if not done:
 #    aws secretsmanager put-secret-value --secret-id finance-app/staging/dd-api-key \
 #      --secret-string "<key>" --profile <profile> --region <region>
@@ -324,11 +411,11 @@ Scaffolded in `deploy/terraform/gcp/` — not yet tested end-to-end. See `deploy
 make teardown
 ```
 
-Removes: finance + datadog namespaces, Datadog Operator Helm release, orphaned Docker volumes.
+Removes: finance + datadog namespaces (including all PVCs), Datadog Operator Helm release, and any orphaned Docker volumes from previous Compose runs.
 
 Start fresh after:
 ```bash
-make build && make deploy-k8s && make create-dd-secret && make deploy-k8s-dd
+make build && make deploy-k8s && make deploy-k8s-dd
 ```
 
 ---
@@ -346,12 +433,19 @@ make build && make deploy-k8s && make create-dd-secret && make deploy-k8s-dd
 
 ## Identity Provider
 
-Keycloak provides:
+Keycloak 24.0 provides:
 - **OIDC for gateway-api** — JWT Bearer token validation per request
 - **SAML 2.0 SSO for Datadog** — mirrors enterprise IdPs (Okta, Azure AD, PingFederate)
-- **Finance roles** — `finance-analyst`, `finance-trader`, `finance-admin`, `finance-auditor`
+- **Finance roles** — `finance-analyst`, `finance-trader`, `finance-admin`, `finance-auditor`, `finance-compliance`
 
-Admin console: `http://localhost:8089` (after `make deploy-k8s`, via `kubectl port-forward svc/keycloak 8089:8080 -n finance`)
+Keycloak is exposed **directly** on NodePort **30089** — it is not proxied through the nginx frontend at `:30080`. The nginx frontend (`:30080`) only proxies `/v1/` (gateway-api), `/internal/accounts` (account-service), `/health`, and static files.
+
+`KEYCLOAK_PUBLIC_URL` in `deploy/kubernetes/base/01-config.yaml` is the single source of truth for Keycloak's public URL. It is used by `KC_HOSTNAME_URL` on the Keycloak pod and injected into the finance dashboard at deploy time. On EKS, patch it to the NLB hostname after deploy (see AWS EKS workflow above).
+
+| URL | Credentials |
+|---|---|
+| **Admin console:** `http://localhost:30089/admin/master/console/#/finance` | `admin` / `Finance@Admin2025!` |
+| **Realm account page:** `http://localhost:30089/realms/finance/account/` | any finance realm user |
 
 Full guide: `identity-provider/README.md`
 

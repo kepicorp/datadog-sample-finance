@@ -36,8 +36,16 @@ data:
   # Session store and cache used by gateway-api.
   REDIS_URL: "redis://redis:6379"
 
-  # ── Keycloak / OIDC ─────────────────────────────────────────────────────────
+  # ── Keycloak / OIDC ─────────────────────────────────────────────────────
   # gateway-api validates bearer tokens against this issuer.
   # The `finance` realm is imported via the keycloak-realm-import ConfigMap.
   KEYCLOAK_ISSUER: "http://keycloak:8080/realms/finance"
   KEYCLOAK_JWKS_URI: "http://keycloak:8080/realms/finance/protocol/openid-connect/certs"
+
+  # ── Keycloak public URL ────────────────────────────────────────────────
+  # The URL browsers use to reach Keycloak.
+  # Local: Keycloak NodePort 30089 — http://localhost:30089
+  # EKS:   patched by the Kustomize overlay to the NLB/frontend hostname.
+  # Used by KC_HOSTNAME_URL on the Keycloak pod and KEYCLOAK_BASE in the
+  # frontend dashboard ConfigMap (injected at deploy time by make deploy-k8s).
+  KEYCLOAK_PUBLIC_URL: "http://localhost:30089"

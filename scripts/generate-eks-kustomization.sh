@@ -82,6 +82,19 @@ patches:
       kind: Service
       name: frontend
 
+  # Expose Keycloak via its own NLB so browsers can reach it directly.
+  # Same approach as local (NodePort 30089) but with a real external IP.
+  # After deploy, patch KEYCLOAK_PUBLIC_URL to the assigned NLB hostname.
+  - patch: |-
+      - op: replace
+        path: /spec/type
+        value: LoadBalancer
+      - op: remove
+        path: /spec/ports/0/nodePort
+    target:
+      kind: Service
+      name: keycloak
+
   # imagePullPolicy: Always — EKS nodes have no local image cache.
   # Applied per-service; frontend (nginx) is excluded as it uses a public image.
   - patch: |-
@@ -130,3 +143,18 @@ EOF
 
 echo "    Written: $OUT"
 echo "    ECR base: $(echo "$GW" | sed 's|/finance-app/gateway-api||')"
+
+# ── Update KEYCLOAK_PUBLIC_URL in the base ConfigMap ──────────────────────────────
+# On EKS, Keycloak is exposed via a dedicated NLB (LoadBalancer service).
+# We get its hostname after the first 'kubectl apply -k' by waiting for the
+# service to be assigned an external IP, then patch the ConfigMap.
+# The make deploy-k8s-eks target calls this script BEFORE applying the overlay,
+# so the NLB hostname isn't known yet. Instead we print instructions.
+echo ""
+echo "NOTE: After 'kubectl apply -k deploy/kubernetes/overlays/eks', wait for"
+echo "      the Keycloak LoadBalancer hostname and run:"
+echo ""
+echo "  KC_HOST=\$(kubectl get svc keycloak -n finance -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')"
+echo "  kubectl patch configmap app-config -n finance --type=merge \\"
+echo "    -p \"{\\\"data\\\":{\\\"KEYCLOAK_PUBLIC_URL\\\":\\\"http://\$KC_HOST\\\"}}\""
+echo "  kubectl rollout restart deployment/keycloak deployment/frontend -n finance"

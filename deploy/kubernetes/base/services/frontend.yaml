@@ -52,39 +52,7 @@ data:
             proxy_read_timeout 30s;
         }
 
-        # ── Keycloak — all Keycloak traffic ────────────────────────────────────
-        # /auth/    → Keycloak OIDC login, token, account console, admin console
-        # /resources/ → Keycloak static assets (JS, CSS, fonts) used by the
-        #               account and admin console UIs — must be proxied from the
-        #               same origin or the browser receives 404 for all assets.
-        location /auth/ {
-            proxy_pass         http://keycloak:8080/;
-            proxy_http_version 1.1;
-            proxy_set_header   Host              $host;
-            proxy_set_header   X-Real-IP         $remote_addr;
-            proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
-            proxy_set_header   X-Forwarded-Proto $scheme;
-            proxy_set_header   X-Forwarded-Host  $host;
-            proxy_read_timeout 60s;
-        }
 
-        location /resources/ {
-            proxy_pass         http://keycloak:8080/resources/;
-            proxy_http_version 1.1;
-            proxy_set_header   Host $host;
-            proxy_read_timeout 30s;
-        }
-
-        location /realms/ {
-            proxy_pass         http://keycloak:8080/realms/;
-            proxy_http_version 1.1;
-            proxy_set_header   Host              $host;
-            proxy_set_header   X-Real-IP         $remote_addr;
-            proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
-            proxy_set_header   X-Forwarded-Proto $scheme;
-            proxy_set_header   X-Forwarded-Host  $host;
-            proxy_read_timeout 60s;
-        }
 
         # ── Gateway-API health ───────────────────────────────────────────────────
         location = /health {
@@ -108,38 +76,9 @@ data:
         }
     }
 
-  # Placeholder index.html served from the nginx html root.
-  # In a real deployment, build the frontend assets into the nginx image
-  # or mount them via a PVC / initContainer.
-  index.html: |
-    <!DOCTYPE html>
-    <html lang="en">
-    <head>
-      <meta charset="UTF-8" />
-      <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-      <title>Finance Sample App</title>
-      <style>
-        body { font-family: sans-serif; max-width: 640px; margin: 80px auto; padding: 0 20px; }
-        h1   { color: #1a1a2e; }
-        code { background: #f4f4f4; padding: 2px 6px; border-radius: 4px; }
-        ul   { line-height: 2; }
-      </style>
-    </head>
-    <body>
-      <h1>Finance Sample App</h1>
-      <p>The application is running. Use the links below to explore the services:</p>
-      <ul>
-        <li><a href="/health">Gateway API — health check</a></li>
-        <li><a href="/internal/accounts">Account Service — accounts list</a></li>
-        <li><a href="/realms/finance/account/">Keycloak — finance realm account</a></li>
-        <li><a href="/auth/admin/master/console/#/finance">Keycloak — admin console (finance realm)</a></li>
-      </ul>
-      <p>
-        This is a placeholder page. Replace it by building your frontend assets
-        into the nginx container image or mounting them via a volume.
-      </p>
-    </body>
-    </html>
+  # index.html is served from a separate ConfigMap (frontend-dashboard)
+  # created by 'make deploy-k8s' from frontend-stub/index.html.
+  # The nginx ConfigMap only holds the site configuration.
 
 ---
 # ── Service (NodePort) ─────────────────────────────────────────────────────────
@@ -226,8 +165,9 @@ spec:
               mountPath: /etc/nginx/conf.d/default.conf
               subPath: default.conf
               readOnly: true
-            # Placeholder static assets
-            - name: nginx-config
+            # Finance dashboard UI (from frontend-stub/index.html)
+            # Created by 'make deploy-k8s' as the frontend-dashboard ConfigMap.
+            - name: frontend-dashboard
               mountPath: /usr/share/nginx/html/index.html
               subPath: index.html
               readOnly: true
@@ -236,3 +176,6 @@ spec:
         - name: nginx-config
           configMap:
             name: nginx-frontend-config
+        - name: frontend-dashboard
+          configMap:
+            name: frontend-dashboard

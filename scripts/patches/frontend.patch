@@ -1,0 +1,68 @@
+--- a/frontend-stub/index.html
++++ b/frontend-stub/index.html
+@@ -5,43 +5,28 @@
+         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+         <title>Finance Platform — Dashboard</title>
+ 
+-        <!--
+-  ── DATADOG RUM ─────────────────────────────────────────────────────────────
+-  Step 8 — Browser RUM + Session Replay
+-  Docs: https://docs.datadoghq.com/real_user_monitoring/browser/
+-
+-  Uncomment the block below after creating a RUM application in Datadog UI.
+-  Prerequisites:
+-    1. UX Monitoring > RUM Applications > New Application
+-    2. Copy applicationId and clientToken into the placeholders below.
+-    3. Set env/version to match DD_ENV / DD_VERSION from your services.
+-
+-  PII MASKING: defaultPrivacyLevel 'mask-user-input' automatically hides form
+-  values in Session Replay — balances, IBANs, amounts are never recorded.
+-  Add class dd-privacy-hidden to any element that must never appear in replays.
+-  Docs: https://docs.datadoghq.com/real_user_monitoring/session_replay/privacy_options/
+-
+-  CARDINALITY WARNING: never pass raw account_id, payment_id, or amounts as
+-  RUM action attributes — use bucketed values (amount_bucket '<100' | '100-1000' | '>1000').
+-
+-  <script src="https://www.datadoghq-browser-agent.com/us1/v5/datadog-rum.js"></script>
+-  <script>
+-    window.DD_RUM && window.DD_RUM.init({
+-      applicationId:           'REPLACE_WITH_APPLICATION_ID',
+-      clientToken:             'REPLACE_WITH_CLIENT_TOKEN',
+-      site:                    'datadoghq.com',
+-      service:                 'finance-frontend',
+-      env:                     'staging',
+-      version:                 '1.0.0',
+-      sessionSampleRate:       100,
+-      sessionReplaySampleRate: 100,
+-      trackUserInteractions:   true,
+-      defaultPrivacyLevel:     'mask-user-input',
+-    });
+-    window.DD_RUM.startSessionReplayRecording();
+-  </script>
+-  ── END DATADOG RUM ──────────────────────────────────────────────────────────
+-  -->
++        <!-- ── DATADOG RUM ─────────────────────────────────────────────────────────────
++        Step 8 — Browser RUM + Session Replay
++        Docs: https://docs.datadoghq.com/real_user_monitoring/browser/
++        RUM app created by Terraform (make tf-apply-dd). Credentials injected by make instrument.
++        PII MASKING: 'mask-user-input' hides form values in Session Replay.
++        ─────────────────────────────────────────────────────────────────────────── -->
++        <script src="https://www.datadoghq-browser-agent.com/us1/v5/datadog-rum.js"></script>
++        <script>
++            window.DD_RUM && window.DD_RUM.init({
++                applicationId:           'REPLACE_WITH_APPLICATION_ID',
++                clientToken:             'REPLACE_WITH_CLIENT_TOKEN',
++                site:                    'datadoghq.com',
++                service:                 'finance-frontend',
++                env:                     'staging',
++                version:                 '1.0.0',
++                sessionSampleRate:       100,
++                sessionReplaySampleRate: 100,
++                trackUserInteractions:   true,
++                defaultPrivacyLevel:     'mask-user-input',
++            });
++            window.DD_RUM.startSessionReplayRecording();
++        </script>
+ 
+         <style>
+             *,

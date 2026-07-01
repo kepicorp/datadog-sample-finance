@@ -1813,3 +1813,19 @@ resource "datadog_monitor" "cspm_critical_findings" {
   renotify_interval = 120
   tags              = concat(local.common_tags, ["security:cspm", "team:finance"])
 }
+
+# =============================================================================
+# RUM Application — Finance Frontend Dashboard
+# =============================================================================
+# Creates a Browser RUM application for the finance-frontend dashboard.
+# The applicationId and clientToken outputs are used by 'make instrument'
+# to populate the RUM SDK snippet in frontend-stub/index.html.
+#
+# Docs: https://docs.datadoghq.com/real_user_monitoring/browser/
+# Terraform: https://registry.terraform.io/providers/DataDog/datadog/latest/docs/resources/rum_application
+# =============================================================================
+
+resource "datadog_rum_application" "finance_frontend" {
+  name = "finance-frontend"
+  type = "browser"
+}

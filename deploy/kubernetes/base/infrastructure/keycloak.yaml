@@ -29,13 +29,20 @@ metadata:
     app: keycloak
     component: infrastructure
 spec:
-  type: ClusterIP
+  # NodePort 30089 exposes Keycloak directly on the host so the browser
+  # talks to Keycloak without going through nginx.
+  # This avoids cookie Secure/SameSite issues that arise when proxying
+  # Keycloak's admin and account consoles through a plain-HTTP nginx.
+  # The finance dashboard (port 30080) still talks to Keycloak internally
+  # via ClusterIP DNS — only the browser uses 30089.
+  type: NodePort
   selector:
     app: keycloak
   ports:
     - name: http
       port: 8080
       targetPort: 8080
+      nodePort: 30089
 
 ---
 # ── Deployment ────────────────────────────────────────────────────────────────
@@ -60,7 +67,7 @@ spec:
     spec:
       containers:
         - name: keycloak
-          image: quay.io/keycloak/keycloak:26.0
+          image: quay.io/keycloak/keycloak:24.0
           imagePullPolicy: IfNotPresent
 
           # In Kubernetes, `args` appends to the Keycloak ENTRYPOINT (/opt/keycloak/bin/kc.sh).
@@ -92,6 +99,26 @@ spec:
               value: "false"
             - name: KC_LOG_LEVEL
               value: "INFO"
+            # Set the public-facing URL explicitly so Keycloak builds correct
+            # issuer URLs and redirect URIs for both the finance dashboard
+            # and the admin console.
+            # KC_HOSTNAME_URL overrides all URL construction in Keycloak 26.
+            # For EKS, patch this to the NLB hostname via the Kustomize overlay.
+            # KC_HOSTNAME_URL tells Keycloak its public-facing URL so it
+            # builds correct issuer URLs and redirect URIs.
+            # Value comes from KEYCLOAK_PUBLIC_URL in app-config:
+            #   Local: http://localhost:30089 (NodePort direct)
+            #   EKS:   patched by Kustomize overlay to the NLB hostname
+            - name: KC_HOSTNAME_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: app-config
+                  key: KEYCLOAK_PUBLIC_URL
+            - name: KC_HOSTNAME_ADMIN_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: app-config
+                  key: KEYCLOAK_PUBLIC_URL
 
           # ── Health checks ──────────────────────────────────────────────
           # TCP probes are used because:
