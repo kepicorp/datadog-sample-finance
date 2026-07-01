@@ -167,3 +167,44 @@ output "aws_region" {
   description = "AWS region where all resources are deployed."
   value       = var.aws_region
 }
+
+# =============================================================================
+# ACM CERTIFICATE
+# =============================================================================
+
+output "acm_certificate_arn" {
+  description = <<-EOT
+    ARN of the ACM certificate for the Finance frontend NLB.
+    Empty string when domain_name is not set.
+
+    Use this ARN in the EKS Kustomize overlay annotation:
+      service.beta.kubernetes.io/aws-load-balancer-ssl-cert: <arn>
+
+    The EKS kustomization generator (scripts/generate-eks-kustomization.sh)
+    reads this output and automatically injects the annotation into the
+    frontend Service when domain_name is configured.
+  EOT
+  value       = var.domain_name != "" ? aws_acm_certificate_validation.frontend[0].certificate_arn : ""
+}
+
+output "acm_validation_records" {
+  description = <<-EOT
+    DNS CNAME records required to validate the ACM certificate.
+    Add these to your DNS provider if you are NOT using Route 53.
+
+    Format: { domain => { name, type, value } }
+    Empty when domain_name is not set.
+  EOT
+  value = var.domain_name != "" ? {
+    for dvo in aws_acm_certificate.frontend[0].domain_validation_options :
+    dvo.domain_name => {
+      cname_name  = dvo.resource_record_name
+      cname_value = dvo.resource_record_value
+    }
+  } : {}
+}
+
+output "domain_name" {
+  description = "Custom domain name configured for the Finance app. Empty if using the NLB hostname directly."
+  value       = var.domain_name
+}

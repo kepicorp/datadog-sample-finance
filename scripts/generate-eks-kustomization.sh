@@ -32,7 +32,34 @@ FD=$(get_url "fraud-detection")
 NS=$(get_url "notification-service")
 BP=$(get_url "batch-processor")
 
-cat > "$OUT" << EOF
+# Read ACM certificate ARN (empty string if domain_name not set)
+ACM_CERT_ARN=$(cd "$TF_DIR" && terraform output -raw acm_certificate_arn 2>/dev/null || echo "")
+DOMAIN_NAME=$(cd "$TF_DIR" && terraform output -raw domain_name 2>/dev/null || echo "")
+
+if [ -n "$ACM_CERT_ARN" ]; then
+  echo "    ACM certificate ARN: $ACM_CERT_ARN"
+  echo "    HTTPS NLB will be provisioned on port 443"
+  FRONTEND_PATCH_ANNOTATIONS="
+      annotations:
+        service.beta.kubernetes.io/aws-load-balancer-type: \"nlb\"
+        service.beta.kubernetes.io/aws-load-balancer-ssl-cert: \"${ACM_CERT_ARN}\"
+        service.beta.kubernetes.io/aws-load-balancer-ssl-ports: \"443\"
+        service.beta.kubernetes.io/aws-load-balancer-backend-protocol: \"http\"
+        service.beta.kubernetes.io/aws-load-balancer-cross-zone-load-balancing-enabled: \"true\""
+  FRONTEND_PORT_PATCH="
+      - port: 443
+        targetPort: 80
+        protocol: TCP"
+else
+  echo "    No ACM certificate — NLB will use HTTP only"
+  echo "    Set domain_name in staging.tfvars and re-run make tf-apply-aws for HTTPS"
+  FRONTEND_PATCH_ANNOTATIONS=""
+  FRONTEND_PORT_PATCH=""
+fi
+
+ECR_REGISTRY=$(echo "$GW" | sed 's|/finance-app/gateway-api||')
+
+cat > "$OUT" << HEREDOC
 # =============================================================================
 # Kustomize overlay — EKS
 # =============================================================================
@@ -40,7 +67,9 @@ cat > "$OUT" << EOF
 # Regenerated on every 'make deploy-k8s-eks' from live Terraform output.
 # Gitignored: deploy/kubernetes/overlays/eks/kustomization.yaml
 #
-# ECR registry: $(echo "$GW" | sed 's|/finance-app/gateway-api||')
+# ECR registry: ${ECR_REGISTRY}
+# ACM cert:     ${ACM_CERT_ARN:-none}
+# Domain:       ${DOMAIN_NAME:-<nlb-hostname>}
 # =============================================================================
 
 apiVersion: kustomize.config.k8s.io/v1beta1
@@ -72,8 +101,33 @@ images:
     newTag: latest
 
 patches:
-  # Expose the frontend via an AWS LoadBalancer (NLB) instead of NodePort.
-  # EKS nodes are in private subnets so NodePort is not externally reachable.
+  # ── Frontend: LoadBalancer (NLB) ──────────────────────────────────────────────
+  # Exposes the Finance app via an AWS NLB.
+  # With ACM cert: NLB terminates TLS on :443, forwards HTTP to nginx :80.
+  # Without cert:  NLB exposes HTTP :80 only.
+HEREDOC
+
+# Emit the frontend Service patch — with or without ACM HTTPS annotations
+if [ -n "$ACM_CERT_ARN" ]; then
+  cat >> "$OUT" << HEREDOC
+  - patch: |-
+      - op: replace
+        path: /spec/type
+        value: LoadBalancer
+      - op: add
+        path: /metadata/annotations
+        value:
+          service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
+          service.beta.kubernetes.io/aws-load-balancer-ssl-cert: "${ACM_CERT_ARN}"
+          service.beta.kubernetes.io/aws-load-balancer-ssl-ports: "443"
+          service.beta.kubernetes.io/aws-load-balancer-backend-protocol: "http"
+          service.beta.kubernetes.io/aws-load-balancer-cross-zone-load-balancing-enabled: "true"
+    target:
+      kind: Service
+      name: frontend
+HEREDOC
+else
+  cat >> "$OUT" << HEREDOC
   - patch: |-
       - op: replace
         path: /spec/type
@@ -81,6 +135,10 @@ patches:
     target:
       kind: Service
       name: frontend
+HEREDOC
+fi
+
+cat >> "$OUT" << HEREDOC
 
   # imagePullPolicy: Always — EKS nodes have no local image cache.
   # Applied per-service; frontend (nginx) is excluded as it uses a public image.
@@ -126,10 +184,10 @@ patches:
     target:
       kind: Deployment
       name: batch-processor
-EOF
+HEREDOC
 
 echo "    Written: $OUT"
-echo "    ECR base: $(echo "$GW" | sed 's|/finance-app/gateway-api||')"
+echo "    ECR base: ${ECR_REGISTRY}"
 
 # ── Update KEYCLOAK_PUBLIC_URL in the base ConfigMap ──────────────────────────────
 # On EKS, Keycloak is exposed via a dedicated NLB (LoadBalancer service).
@@ -139,12 +197,29 @@ echo "    ECR base: $(echo "$GW" | sed 's|/finance-app/gateway-api||')"
 # so the NLB hostname isn't known yet. Instead we print instructions.
 echo ""
 echo "NOTE: After 'kubectl apply -k deploy/kubernetes/overlays/eks', wait for"
-echo "      the Keycloak LoadBalancer hostname and run:"
+echo "      the NLB hostname (~2 min) and patch KEYCLOAK_PUBLIC_URL:"
 echo ""
-echo "  KC_HOST=\$(kubectl get svc frontend -n finance -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')"
-echo "  kubectl patch configmap app-config -n finance --type=merge \\"
-echo "    -p \"{\\\"data\\\":{\\\"KEYCLOAK_PUBLIC_URL\\\":\\\"https://\$KC_HOST\\\"}}\""
-echo "  kubectl rollout restart deployment/keycloak deployment/frontend -n finance"
-echo ""
-echo "  NOTE: On EKS use the HTTPS frontend NLB hostname (not a separate Keycloak NLB)."
-echo "        The nginx HTTPS listener on :30443 / :8443 proxies all Keycloak traffic."
+if [ -n "$ACM_CERT_ARN" ]; then
+  if [ -n "$DOMAIN_NAME" ]; then
+    echo "  # Using custom domain: $DOMAIN_NAME"
+    echo "  KC_URL=\"https://$DOMAIN_NAME\""
+  else
+    echo "  # Using NLB hostname (add your domain as a CNAME to this)"
+    echo "  KC_HOST=\$(kubectl get svc frontend -n finance -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')"
+    echo "  KC_URL=\"https://\$KC_HOST\""
+  fi
+  echo "  kubectl patch configmap app-config -n finance --type=merge \\"
+  echo "    -p \"{\\\"data\\\":{\\\"KEYCLOAK_PUBLIC_URL\\\":\\\"\$KC_URL\\\"}}\""
+  echo "  kubectl rollout restart deployment/keycloak deployment/frontend -n finance"
+  echo ""
+  echo "  HTTPS is handled by the NLB using your ACM certificate."
+  echo "  The nginx :8443 HTTPS listener is NOT needed on EKS — the NLB terminates TLS."
+else
+  echo "  ⚠  No ACM certificate configured. NLB exposes HTTP only."
+  echo "  Set domain_name in staging.tfvars + make tf-apply-aws to enable HTTPS."
+  echo ""
+  echo "  KC_HOST=\$(kubectl get svc frontend -n finance -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')"
+  echo "  kubectl patch configmap app-config -n finance --type=merge \\"
+  echo "    -p \"{\\\"data\\\":{\\\"KEYCLOAK_PUBLIC_URL\\\":\\\"http://\$KC_HOST\\\"}}\""
+  echo "  kubectl rollout restart deployment/keycloak deployment/frontend -n finance"
+fi

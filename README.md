@@ -351,19 +351,32 @@ kubectl get nodes   # verify cluster is reachable
 eval "$(cd deploy/terraform/aws && terraform output -raw ecr_login_command)"
 make build-ecr
 
-# 6. Deploy the app (EKS overlay: ECR images + LoadBalancer for frontend + Keycloak)
+# 6a. (Recommended) Configure a custom domain + ACM certificate for HTTPS
+#     Without this, the NLB uses HTTP only and Keycloak admin console may have
+#     cookie issues. See deploy/terraform/aws/variables.tf for domain_name.
+#     Edit staging.tfvars:
+#       domain_name = "finance.example.com"
+#     Then re-apply:
+#       make tf-apply-aws
+#     Then add a CNAME in your DNS: finance.example.com → <nlb-hostname>
+
+# 6b. Deploy the app (generates EKS overlay with ACM cert annotations if configured)
 make deploy-k8s-eks
 
-# 6b. Set the Keycloak public URL once the NLB hostname is assigned (~2 min)
-#     Keycloak is exposed via its own NLB (not proxied through nginx).
-#     KEYCLOAK_PUBLIC_URL in app-config drives both KC_HOSTNAME_URL on the
-#     Keycloak pod and the KEYCLOAK_BASE variable in the finance dashboard.
-KC_HOST=$(kubectl get svc keycloak -n finance -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+# 6c. Set the Keycloak public URL once the NLB hostname is assigned (~2 min)
+#     With ACM cert + custom domain:
+# KC_URL="https://finance.example.com"
+#     With ACM cert + NLB hostname (no custom domain):
+# KC_HOST=$(kubectl get svc frontend -n finance -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+# KC_URL="https://$KC_HOST"
+#     Without ACM cert (HTTP only — Keycloak admin console has cookie limitations):
+# KC_HOST=$(kubectl get svc frontend -n finance -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+# KC_URL="http://$KC_HOST"
 kubectl patch configmap app-config -n finance --type=merge \
-  -p "{\"data\":{\"KEYCLOAK_PUBLIC_URL\":\"http://$KC_HOST\"}}"
+  -p "{\"data\":{\"KEYCLOAK_PUBLIC_URL\":\"$KC_URL\"}}"
 kubectl rollout restart deployment/keycloak deployment/frontend -n finance
-# Dashboard: http://$(kubectl get svc frontend -n finance -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
-# Keycloak:  http://$KC_HOST/admin/master/console/#/finance
+# Dashboard: https://finance.example.com (or http://<nlb-hostname> without cert)
+# Keycloak:  $KC_URL/admin/master/console/#/finance
 
 # 7. Add Datadog (auto-fetches keys from Secrets Manager)
 #    Prerequisites: deploy/terraform/aws/staging.tfvars must have aws_region + aws_profile.

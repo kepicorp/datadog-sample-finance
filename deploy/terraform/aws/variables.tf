@@ -153,3 +153,24 @@ variable "log_retention_days" {
   type        = number
   default     = 30
 }
+
+variable "domain_name" {
+  description = <<-EOT
+    Optional custom domain name for the Finance app (e.g. finance.example.com).
+    When set, an ACM certificate is created and validated via DNS for this domain,
+    and the NLB HTTPS listener uses it — no browser security warnings.
+
+    Leave empty (default) to use the auto-assigned NLB hostname with the ACM
+    certificate for the NLB hostname itself (AWS issues a cert automatically
+    when you use AWS-managed certificates with ALB/NLB).
+
+    When using a custom domain, add a CNAME in your DNS provider pointing
+    finance.example.com → <nlb-hostname>.
+
+    Examples:
+      domain_name = "finance.example.com"   # custom domain
+      domain_name = ""                       # use NLB hostname directly
+  EOT
+  type        = string
+  default     = ""
+}

@@ -571,6 +571,92 @@ resource "aws_cloudwatch_log_group" "finance_app" {
   }
 }
 
+# =============================================================================
+# ACM CERTIFICATE — HTTPS for the Finance frontend NLB
+# =============================================================================
+# When domain_name is set, requests a publicly trusted TLS certificate from
+# AWS Certificate Manager (ACM) and validates it via DNS.
+#
+# The NLB LoadBalancer service (deploy/kubernetes/base/services/frontend.yaml)
+# is annotated in the EKS Kustomize overlay to use this certificate ARN,
+# enabling HTTPS on port 443 without browser security warnings.
+#
+# With this in place:
+#   - Browser → NLB :443 (HTTPS, ACM cert) → nginx :80 (HTTP, in-cluster)
+#   - nginx sets X-Forwarded-Proto: https → Keycloak issues Secure cookies
+#   - No self-signed certificate needed on EKS (self-signed is local-only)
+#
+# If domain_name is empty, the certificate resource is not created and the
+# NLB uses HTTP only — in that case set KEYCLOAK_PUBLIC_URL to the http://
+# NLB hostname and use the self-signed cert workaround documented in
+# INSTRUMENTATION.md.
+#
+# Docs: https://docs.aws.amazon.com/acm/latest/userguide/gs-acm-request-public.html
+# =============================================================================
+
+resource "aws_acm_certificate" "frontend" {
+  count = var.domain_name != "" ? 1 : 0
+
+  domain_name       = var.domain_name
+  validation_method = "DNS"
+
+  # subject_alternative_names covers the www. subdomain if needed.
+  subject_alternative_names = [
+    "www.${var.domain_name}",
+  ]
+
+  lifecycle {
+    # ACM certificates cannot be deleted while in use by a load balancer.
+    # create_before_destroy ensures the new cert is attached before the old one
+    # is deleted during a certificate replacement (e.g. domain change).
+    create_before_destroy = true
+  }
+
+  tags = {
+    Name        = "${var.cluster_name}-frontend-cert"
+    Environment = var.environment
+  }
+}
+
+# DNS validation records — add these CNAME records to your DNS provider.
+# Terraform outputs them as acm_validation_records for easy copy-paste.
+# The certificate remains in PENDING_VALIDATION until the CNAMEs are added.
+resource "aws_route53_record" "acm_validation" {
+  # Only created if domain_name is set AND you manage the zone in Route 53.
+  # If you use another DNS provider, use the acm_validation_records output
+  # to add the CNAMEs manually and comment out this resource.
+  for_each = var.domain_name != "" ? {
+    for dvo in aws_acm_certificate.frontend[0].domain_validation_options :
+    dvo.domain_name => {
+      name   = dvo.resource_record_name
+      type   = dvo.resource_record_type
+      record = dvo.resource_record_value
+    }
+  } : {}
+
+  allow_overwrite = true
+  name            = each.value.name
+  type            = each.value.type
+  ttl             = 60
+  records         = [each.value.record]
+
+  # zone_id: set this to your Route 53 hosted zone ID.
+  # If you don't use Route 53, delete this resource and add the CNAMEs manually.
+  # zone_id = var.route53_zone_id  # uncomment and set in staging.tfvars
+  zone_id = "" # placeholder — set to your Route 53 zone ID or delete this resource
+}
+
+resource "aws_acm_certificate_validation" "frontend" {
+  count = var.domain_name != "" ? 1 : 0
+
+  certificate_arn         = aws_acm_certificate.frontend[0].arn
+  validation_record_fqdns = [for record in aws_route53_record.acm_validation : record.fqdn]
+
+  timeouts {
+    create = "10m"
+  }
+}
+
 # NOTE: The EKS cluster control-plane log group (/aws/eks/<name>/cluster) is
 # managed by module.eks (create_cloudwatch_log_group = true above).
 # The orphaned log group is cleaned automatically by scripts/aws-pre-apply.sh,
