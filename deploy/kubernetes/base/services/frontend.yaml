@@ -65,6 +65,13 @@ data:
             proxy_read_timeout 60s;
         }
 
+        # ── Gateway-API health ───────────────────────────────────────────────────
+        location = /health {
+            proxy_pass         http://gateway-api:8080/health;
+            proxy_http_version 1.1;
+            proxy_set_header   Host $host;
+        }
+
         # ── Static frontend ────────────────────────────────────────────────────
         location / {
             root  /usr/share/nginx/html;
@@ -101,9 +108,10 @@ data:
       <h1>Finance Sample App</h1>
       <p>The application is running. Use the links below to explore the services:</p>
       <ul>
-        <li><a href="/v1/health">Gateway API — health</a></li>
-        <li><a href="/internal/accounts">Account Service — internal dashboard</a></li>
-        <li><a href="/auth/">Keycloak — identity provider</a></li>
+        <li><a href="/health">Gateway API — health check</a></li>
+        <li><a href="/internal/accounts">Account Service — accounts list</a></li>
+        <li><a href="/auth/realms/finance/account/">Keycloak — finance realm account</a></li>
+        <li><a href="/auth/admin/master/console/#/finance">Keycloak — admin console (finance realm)</a></li>
       </ul>
       <p>
         This is a placeholder page. Replace it by building your frontend assets
