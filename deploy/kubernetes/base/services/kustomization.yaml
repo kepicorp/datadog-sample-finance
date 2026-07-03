@@ -8,4 +8,5 @@ resources:
   - frontend.yaml
   - gateway-api.yaml
   - notification-service.yaml
+  - traffic-generator.yaml
   - transaction-service.yaml

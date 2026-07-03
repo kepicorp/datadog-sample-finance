@@ -134,7 +134,18 @@ spec:
           volumeMounts:
             - name: artemis-data
               mountPath: /var/lib/artemis-instance
+            # etc-override: files here are copied over the freshly generated
+            # etc/broker.xml on every container start (see docker-run.sh in
+            # the apache/activemq-artemis image). Used to fix the STOMP
+            # anycastPrefix/multicastPrefix bug — see
+            # activemq-broker-config.yaml for the full explanation.
+            - name: broker-config-override
+              mountPath: /var/lib/artemis-instance/etc-override/broker.xml
+              subPath: broker.xml
 
       volumes:
         - name: artemis-data
           emptyDir: {} # Replace with a PVC for durable message storage in production
+        - name: broker-config-override
+          configMap:
+            name: activemq-broker-config

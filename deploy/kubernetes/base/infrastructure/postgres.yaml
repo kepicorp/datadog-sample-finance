@@ -127,6 +127,18 @@ spec:
             - name: postgres-data
               mountPath: /var/lib/postgresql/data
               subPath: pgdata # subPath prevents the mount from masking the directory
+            # Runs automatically on first init of an empty data directory —
+            # creates the transactions / account_transactions tables that
+            # batch-processor's Spring Batch jobs read from. See
+            # postgres-init.yaml for the full explanation.
+            - name: postgres-init-scripts
+              mountPath: /docker-entrypoint-initdb.d
+              readOnly: true
+
+      volumes:
+        - name: postgres-init-scripts
+          configMap:
+            name: postgres-init-scripts
 
   # ── Persistent storage ─────────────────────────────────────────────────────
   volumeClaimTemplates:

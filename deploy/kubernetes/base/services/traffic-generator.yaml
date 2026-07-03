@@ -69,6 +69,8 @@ spec:
               echo "  account-service ✓"
               until nc -z transaction-service 8082; do echo "  transaction-service not ready"; sleep 5; done
               echo "  transaction-service ✓"
+              until nc -z batch-processor 8083; do echo "  batch-processor not ready"; sleep 5; done
+              echo "  batch-processor ✓"
               echo "All services ready — starting traffic generator."
 
       containers:
@@ -92,8 +94,21 @@ spec:
               value: "http://account-service:8081"
             - name: TXNS_URL
               value: "http://transaction-service:8082"
+            - name: BATCH_URL
+              value: "http://batch-processor:8083"
             - name: KEYCLOAK_URL
               value: "http://keycloak:8080"
+
+            # ── Keycloak OIDC client secret ───────────────────────────────────
+            # Must match the finance-gateway client secret seeded into Keycloak
+            # via identity-provider/realm-export/finance-realm.json. Without
+            # this, password-grant token requests fail with invalid_client_credentials
+            # and every authenticated scenario (balance checks, payments) 401s.
+            - name: KEYCLOAK_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: app-secrets
+                  key: keycloak-client-secret
 
             # ── Tuning ───────────────────────────────────────────────────────
             # TRAFFIC_RATE: requests per second. Default 2 — enough to produce

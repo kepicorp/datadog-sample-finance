@@ -57,9 +57,18 @@ spec:
         tags.datadoghq.com/service: "transaction-service"
         tags.datadoghq.com/version: "latest"
     spec:
-      # transaction-service uses ActiveMQ STOMP to publish fraud-scoring events.
-      # The init container prevents startup failures while the broker is initialising.
+      # transaction-service writes to the ledger DB (PostgreSQL) and publishes
+      # fraud-scoring events via ActiveMQ STOMP. Both init containers prevent
+      # startup failures while their respective dependency is initialising.
       initContainers:
+        - name: wait-for-postgres
+          image: busybox:1.36
+          command:
+            [
+              "sh",
+              "-c",
+              'until nc -z postgres-ledger 5432; do echo "waiting for postgres..."; sleep 3; done',
+            ]
         - name: wait-for-activemq
           image: busybox:1.36
           command:
@@ -78,7 +87,23 @@ spec:
               containerPort: 8082
 
           env:
-            # ── ActiveMQ (STOMP) ─────────────────────────────────────────────
+            # ── PostgreSQL ──────────────────────────────────────────────
+            - name: POSTGRES_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: app-config
+                  key: POSTGRES_URL
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: app-secrets
+                  key: postgres-user
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: app-secrets
+                  key: postgres-password
+            # ── ActiveMQ (STOMP) ──────────────────────────────────────
             - name: ACTIVEMQ_STOMP_URL
               valueFrom:
                 configMapKeyRef:

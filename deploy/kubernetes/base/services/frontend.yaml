@@ -6,10 +6,19 @@
 #   :8443 (NodePort 30443) — HTTPS reverse proxy for Keycloak
 #
 # Routing on :80:
-#   /v1/              →  gateway-api:8080  (JWT required)
-#   /internal/accounts →  account-service:8081
-#   /health           →  gateway-api:8080/health
-#   /                 →  static finance dashboard
+#   /v1/                              →  gateway-api:8080  (JWT required)
+#   /internal/accounts                →  account-service:8081/v1/accounts (unauthenticated)
+#   /internal/transactions            →  transaction-service:8082/v1/payments (unauthenticated, read-only via GET)
+#   /health                           →  gateway-api:8080/health
+#   /internal/account-service/health  →  account-service:8081/health
+#   /internal/transaction-service/health →  transaction-service:8082/health
+#   /auth/                            →  keycloak:8080 (plain HTTP, for Synthetics login step)
+#   /                                 →  static finance dashboard
+#
+# The /internal/* routes exist so Datadog Synthetic API tests (which run from
+# Datadog's public testing infrastructure, not from inside the cluster) can
+# reach account-service and transaction-service without a Kubernetes Private
+# Location. See deploy/terraform/datadog/main.tf's Synthetic Tests section.
 #
 # Routing on :8443 (TLS, self-signed cert in 'keycloak-tls' Secret):
 #   all paths         →  keycloak:8080
@@ -48,7 +57,12 @@ data:
             proxy_read_timeout 30s;
         }
 
-        # ── Internal accounts ─────────────────────────────────────────────
+        # ── Internal accounts ───────────────────────────────────
+        # NOTE: unauthenticated — same trust level as before this change,
+        # just now reachable from the public NLB instead of only in-cluster.
+        # See the Datadog Synthetic Tests section in deploy/terraform/datadog
+        # for why this is exposed (account_not_found / account_creation_latency
+        # synthetic tests need a publicly-reachable target).
         location /internal/accounts {
             rewrite ^/internal/accounts(.*)$ /v1/accounts$1 break;
             proxy_pass         http://account-service:8081;
@@ -60,9 +74,60 @@ data:
             proxy_read_timeout 30s;
         }
 
-        # ── Gateway-API health ──────────────────────────────────────────
+        # ── Internal transactions (read-only) ───────────────────
+        # Only used by the payment_happy_path synthetic test's second step
+        # (GET /v1/payments/{id} to verify the record after POSTing via the
+        # authenticated /v1/ gateway route above). Exposes payment lookups by
+        # ID only — no listing, no writes.
+        location /internal/transactions {
+            rewrite ^/internal/transactions(.*)$ /v1/payments$1 break;
+            proxy_pass         http://transaction-service:8082;
+            proxy_http_version 1.1;
+            proxy_set_header   Host              $host;
+            proxy_set_header   X-Real-IP         $remote_addr;
+            proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+            proxy_set_header   X-Forwarded-Proto $scheme;
+            proxy_read_timeout 30s;
+        }
+
+        # ── Keycloak token endpoint (plain HTTP, port 80) ─────────────
+        # Used by Datadog Synthetic tests to log in and obtain a fresh JWT as
+        # their first step. The :8443 server block below also proxies to
+        # Keycloak, but with a self-signed cert — Datadog's multistep API
+        # tests do not reliably honour accept_self_signed/allow_insecure, so
+        # this plain-HTTP route avoids TLS validation entirely. Token issuance
+        # (password grant) doesn't depend on redirect_uri/hostname matching,
+        # so it works the same regardless of which route reaches it.
+        location /auth/ {
+            rewrite ^/auth(.*)$ $1 break;
+            proxy_pass         http://keycloak:8080;
+            proxy_http_version 1.1;
+            proxy_set_header   Host              $host;
+            proxy_set_header   X-Real-IP         $remote_addr;
+            proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+            proxy_set_header   X-Forwarded-Proto $scheme;
+            proxy_read_timeout 30s;
+        }
+
+        # ── Gateway-API health ────────────────────────
         location = /health {
             proxy_pass         http://gateway-api:8080/health;
+            proxy_http_version 1.1;
+            proxy_set_header   Host $host;
+        }
+
+        # ── account-service / transaction-service health (Datadog Synthetics) ──
+        # Exact-match locations take priority over the /internal/accounts and
+        # /internal/transactions prefix matches above, so these correctly hit
+        # each service's own /health endpoint instead of being rewritten.
+        location = /internal/account-service/health {
+            proxy_pass         http://account-service:8081/health;
+            proxy_http_version 1.1;
+            proxy_set_header   Host $host;
+        }
+
+        location = /internal/transaction-service/health {
+            proxy_pass         http://transaction-service:8082/health;
             proxy_http_version 1.1;
             proxy_set_header   Host $host;
         }

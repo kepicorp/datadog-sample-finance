@@ -3,6 +3,8 @@ kind: Kustomization
 
 resources:
   - activemq.yaml
+  - activemq-broker-config.yaml
   - keycloak.yaml
   - postgres.yaml
+  - postgres-init.yaml
   - redis.yaml

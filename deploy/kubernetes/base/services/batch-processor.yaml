@@ -6,8 +6,13 @@
 #   - Monthly statement generation (StatementJob)
 #   - Reads/writes to the `ledger` PostgreSQL database
 #
-# This service exposes no HTTP port. It is scheduled internally by Spring Batch
-# (via @Scheduled or Spring Batch JobLauncher).
+# Exposes an HTTP port (8083) for two purposes:
+#   - On-demand job triggers: POST /jobs/reconciliation, POST /jobs/statement
+#     (see BatchJobController) — used by the traffic generator so this demo
+#     produces batch.job / batch.step spans without waiting for a cron.
+#   - Spring Boot Actuator health/metrics endpoints.
+# In production, prefer scheduling via @Scheduled cron or a Kubernetes CronJob
+# and treat the HTTP trigger as a manual/demo-only escape hatch.
 #
 # Resource limits are intentionally higher than other services because batch
 # jobs are CPU and memory intensive during peak processing windows.
@@ -17,7 +22,26 @@
 # resources are released after each run.
 # =============================================================================
 
-# ── Deployment ────────────────────────────────────────────────────────────────
+# ── Service ───────────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: Service
+metadata:
+  name: batch-processor
+  namespace: finance
+  labels:
+    app: batch-processor
+    component: service
+spec:
+  type: ClusterIP
+  selector:
+    app: batch-processor
+  ports:
+    - name: http
+      port: 8083
+      targetPort: 8083
+
+---
+# ── Deployment ────────────────────────────────────────────────────
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -62,7 +86,9 @@ spec:
           image: finance-sample-app-batch-processor:latest
           imagePullPolicy: IfNotPresent
 
-          # No ports — this is a batch job runner only.
+          ports:
+            - name: http
+              containerPort: 8083
 
           env:
             # ── Spring Boot DataSource ────────────────────────────────────────
@@ -83,10 +109,6 @@ spec:
                   name: app-secrets
                   key: postgres-password
 
-            # ── Health check ──────────────────────────────────────────────
-            # batch-processor is a non-web Spring Boot app (no HTTP server).
-            # Use a process-existence check instead of an HTTP probe.
-            # The JVM process name is 'app.jar' (from the Docker CMD).
             # ── Datadog Unified Service Tagging ─────────────────────────────
             - name: DD_ENV
               value: "staging"
@@ -107,16 +129,22 @@ spec:
             # Docs: https://docs.datadoghq.com/security/application_security/
             - name: DD_APPSEC_ENABLED
               value: "true"
+          # HTTP probes against Spring Boot Actuator — batch-processor now
+          # runs an embedded web server (spring-boot-starter-web) to expose
+          # the on-demand job trigger endpoints (/jobs/reconciliation,
+          # /jobs/statement) alongside /actuator/health.
           livenessProbe:
-            exec:
-              command: ["sh", "-c", 'pgrep -f "java" > /dev/null']
+            httpGet:
+              path: /actuator/health
+              port: 8083
             initialDelaySeconds: 60
             periodSeconds: 30
             failureThreshold: 3
 
           readinessProbe:
-            exec:
-              command: ["sh", "-c", 'pgrep -f "java" > /dev/null']
+            httpGet:
+              path: /actuator/health
+              port: 8083
             initialDelaySeconds: 30
             periodSeconds: 15
             failureThreshold: 3
