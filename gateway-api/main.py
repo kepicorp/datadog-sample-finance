@@ -16,48 +16,30 @@ import os
 import time
 import uuid
 
+#
+import ddtrace.profiling.auto  # noqa: F401  — side-effect import, starts profiler
 import httpx
+
+#
+from ddtrace import patch_all, tracer
+from ddtrace.contrib.logging import patch as patch_logging
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from jose import JWTError, jwt
 from pydantic import BaseModel, Field
 from pythonjsonlogger import jsonlogger
 
-# ── DATADOG INSTRUMENTATION ──────────────────────────────────────────
-# Step 7 — Continuous Profiler: captures CPU/wall-clock flamegraphs so you
-#           can correlate slow payment traces with hot code paths.
-# Import BEFORE any other ddtrace import; profiler must start at module load.
-# Docs: https://docs.datadoghq.com/profiler/
-#
-# import ddtrace.profiling.auto  # noqa: F401  — side-effect import, starts profiler
-# ─────────────────────────────────────────────────────────────────────
+patch_all()  # must be called before importing instrumented libraries
+patch_logging()  # injects dd.trace_id / dd.span_id into every log record
 
-# ── DATADOG INSTRUMENTATION ──────────────────────────────────────────
-# Step 3 — APM / Distributed Tracing: auto-instruments FastAPI, httpx,
-#           logging, and all popular libraries in one call.
-#           Enables traces in APM > Services and propagates context to
-#           downstream services (account-service, transaction-service).
-# Docs: https://docs.datadoghq.com/tracing/trace_collection/dd_libraries/python/
 #
-# from ddtrace import patch_all, tracer
-# from ddtrace.contrib.logging import patch as patch_logging
-# patch_all()        # must be called before importing instrumented libraries
-# patch_logging()    # injects dd.trace_id / dd.span_id into every log record
-# ─────────────────────────────────────────────────────────────────────
+from datadog import initialize, statsd
 
-# ── DATADOG INSTRUMENTATION ──────────────────────────────────────────
-# Step 6 — DogStatsD custom metrics: emits Finance-domain counters and
-#           histograms so you can alert on payment volume and latency
-#           independently of APM traces.
-# Docs: https://docs.datadoghq.com/developers/dogstatsd/
 #
-# from datadog import initialize, statsd
-#
-# initialize(
-#     statsd_host=os.getenv("DD_AGENT_HOST", "datadog-agent"),
-#     statsd_port=int(os.getenv("DD_DOGSTATSD_PORT", "8125")),
-# )
-# ─────────────────────────────────────────────────────────────────────
+initialize(
+    statsd_host=os.getenv("DD_AGENT_HOST", "datadog-agent"),
+    statsd_port=int(os.getenv("DD_DOGSTATSD_PORT", "8125")),
+)
 
 
 # ---------------------------------------------------------------------------
@@ -67,6 +49,14 @@ from pythonjsonlogger import jsonlogger
 # Datadog Log Management ingests this format without a custom pipeline.
 # When Step 4 (DD_LOGS_INJECTION=true) is enabled, dd.trace_id and
 # dd.span_id are automatically appended to every record by ddtrace.
+#
+# NOTE: this only covers loggers built via _build_logger() below (the app's
+# own "gateway-api" logger). uvicorn's own "uvicorn"/"uvicorn.access" loggers
+# are separate and, left unconfigured, print plain text with no `level` field
+# -- Datadog's automatic status detection then misclassifies lines like
+# "INFO:     Uvicorn running on ..." as status:error. See logging_config.json
+# (passed to uvicorn via --log-config in the Dockerfile CMD) which routes
+# those loggers through the same JSON formatter.
 
 
 def _build_logger(name: str) -> logging.Logger:
@@ -114,16 +104,34 @@ KEYCLOAK_JWKS_URI = os.getenv(
 )
 
 _jwks_cache: dict | None = None  # in-memory cache; cleared on process restart
+_jwks_cache_fetched_at: float = 0.0
+
+# BUG FIX: this cache used to be populated once and kept FOREVER (only
+# `if _jwks_cache is None`). If gateway-api started before Keycloak's realm
+# was fully ready, the first fetch could succeed with an incomplete/about-
+# to-rotate key set, or Keycloak could rotate its signing key later — either
+# way every subsequent token would fail "Signature verification failed"
+# forever, with no way to recover short of a manual pod restart. Fixed with
+# two complementary mechanisms:
+#   1. A TTL so the cache is refreshed periodically even if nothing goes
+#      wrong (defends against silent key rotation).
+#   2. Self-healing retry in verify_token(): on a signature/JWKS-related
+#      failure, force a fresh fetch and retry once before returning 401.
+#      This recovers immediately on the very next request instead of
+#      waiting for the TTL to expire.
+JWKS_CACHE_TTL_SECONDS = 300
 
 
-async def _get_jwks() -> dict:
-    """Fetch Keycloak's public JWKS once and cache in-memory."""
-    global _jwks_cache
-    if _jwks_cache is None:
+async def _get_jwks(force_refresh: bool = False) -> dict:
+    """Fetch Keycloak's public JWKS and cache in-memory, with a TTL."""
+    global _jwks_cache, _jwks_cache_fetched_at
+    is_stale = (time.time() - _jwks_cache_fetched_at) > JWKS_CACHE_TTL_SECONDS
+    if force_refresh or _jwks_cache is None or is_stale:
         async with httpx.AsyncClient(timeout=5.0) as c:
             r = await c.get(KEYCLOAK_JWKS_URI)
             r.raise_for_status()
             _jwks_cache = r.json()
+            _jwks_cache_fetched_at = time.time()
     return _jwks_cache
 
 
@@ -142,9 +150,9 @@ async def verify_token(request: Request) -> dict:
     if not auth_header.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Missing Bearer token")
     token = auth_header[len("Bearer ") :]
-    try:
-        jwks = await _get_jwks()
-        claims = jwt.decode(
+
+    def _decode(jwks: dict) -> dict:
+        return jwt.decode(
             token,
             jwks,
             algorithms=["RS256"],
@@ -158,6 +166,22 @@ async def verify_token(request: Request) -> dict:
                 "verify_iss": False,
             },
         )
+
+    try:
+        try:
+            claims = _decode(await _get_jwks())
+        except JWTError as exc:
+            # Self-healing retry: the cached JWKS may be stale (fetched before
+            # Keycloak's realm was fully ready, or the signing key rotated
+            # since). Force a fresh fetch and retry exactly once before
+            # giving up — this is what lets the service recover on the very
+            # next request instead of needing a manual restart.
+            log.warning(
+                "auth.jwks_stale_retry",
+                extra={"error": str(exc)},
+            )
+            claims = _decode(await _get_jwks(force_refresh=True))
+
         # Manually verify the realm so tokens from other Keycloak realms are rejected.
         token_iss: str = claims.get("iss", "")
         if "/realms/finance" not in token_iss:
@@ -214,7 +238,9 @@ class BalanceResponse(BaseModel):
 
 class DepositRequest(BaseModel):
     amount: float = Field(..., gt=0, description="Amount to credit to the account")
-    note: str | None = Field(None, description="Optional description (e.g. 'Initial funding')")
+    note: str | None = Field(
+        None, description="Optional description (e.g. 'Initial funding')"
+    )
 
 
 class DepositResponse(BaseModel):
@@ -229,7 +255,9 @@ class TransferRequest(BaseModel):
     from_account_id: str = Field(..., description="Source account ID")
     to_account_id: str = Field(..., description="Destination account ID")
     amount: float = Field(..., gt=0, description="Amount to transfer")
-    currency: str = Field(..., min_length=3, max_length=3, description="ISO 4217 currency code")
+    currency: str = Field(
+        ..., min_length=3, max_length=3, description="ISO 4217 currency code"
+    )
 
 
 class TransferResponse(BaseModel):
@@ -380,7 +408,7 @@ async def validate_payment(
     # Rejection and flagging leave the balance unchanged.
     if body.action == "approved":
         account_id = payment_data.get("account_id")
-        amount     = payment_data.get("amount", 0)
+        amount = payment_data.get("amount", 0)
         if account_id:
             try:
                 debit_resp = await http_client.patch(
@@ -402,7 +430,11 @@ async def validate_payment(
                 # In production, this should trigger a reconciliation alert.
                 log.error(
                     "account.balance.debit.failed",
-                    extra={"error": str(exc), "payment_id": payment_id, "account_id": account_id},
+                    extra={
+                        "error": str(exc),
+                        "payment_id": payment_id,
+                        "account_id": account_id,
+                    },
                 )
 
     return payment_data
@@ -419,7 +451,7 @@ async def deposit(
 
     Restricted to finance-admin. Applies a positive delta to the account balance.
     """
-    user_sub   = claims.get("sub", "unknown")
+    user_sub = claims.get("sub", "unknown")
     user_roles = claims.get("roles", [])
 
     if "finance-admin" not in user_roles:
@@ -441,7 +473,10 @@ async def deposit(
         resp.raise_for_status()
         data = resp.json()
     except httpx.HTTPError as exc:
-        log.error("account.deposit.failed", extra={"error": str(exc), "account_id": account_id})
+        log.error(
+            "account.deposit.failed",
+            extra={"error": str(exc), "account_id": account_id},
+        )
         raise HTTPException(status_code=502, detail="Could not reach account-service")
 
     return DepositResponse(
@@ -465,7 +500,7 @@ async def transfer(
     Atomically debits the source and credits the destination.
     If the credit fails the debit is reversed (best-effort rollback).
     """
-    user_sub   = claims.get("sub", "unknown")
+    user_sub = claims.get("sub", "unknown")
     user_roles = claims.get("roles", [])
 
     TRANSFER_ROLES = {"finance-trader", "finance-admin"}
@@ -473,14 +508,16 @@ async def transfer(
         raise HTTPException(
             status_code=403,
             detail=f"Role '{', '.join(user_roles)}' cannot transfer funds. "
-                   f"Requires finance-trader or finance-admin.",
+            f"Requires finance-trader or finance-admin.",
         )
 
     if body.from_account_id == body.to_account_id:
-        raise HTTPException(status_code=400, detail="Source and destination accounts must differ.")
+        raise HTTPException(
+            status_code=400, detail="Source and destination accounts must differ."
+        )
 
     transfer_id = f"txf-{uuid.uuid4().hex[:12]}"
-    created_at  = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    created_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
     log.info(
         "transfer.start",
@@ -502,7 +539,10 @@ async def transfer(
         )
         debit_resp.raise_for_status()
     except httpx.HTTPError as exc:
-        log.error("transfer.debit.failed", extra={"error": str(exc), "transfer_id": transfer_id})
+        log.error(
+            "transfer.debit.failed",
+            extra={"error": str(exc), "transfer_id": transfer_id},
+        )
         raise HTTPException(status_code=502, detail="Could not debit source account")
 
     # Step 2 — credit destination
@@ -513,7 +553,10 @@ async def transfer(
         )
         credit_resp.raise_for_status()
     except httpx.HTTPError as exc:
-        log.error("transfer.credit.failed", extra={"error": str(exc), "transfer_id": transfer_id})
+        log.error(
+            "transfer.credit.failed",
+            extra={"error": str(exc), "transfer_id": transfer_id},
+        )
         # Best-effort reversal of the debit
         try:
             await http_client.patch(
@@ -523,11 +566,17 @@ async def transfer(
             log.info("transfer.debit.reversed", extra={"transfer_id": transfer_id})
         except httpx.HTTPError:
             log.error("transfer.reversal.failed", extra={"transfer_id": transfer_id})
-        raise HTTPException(status_code=502, detail="Could not credit destination account")
+        raise HTTPException(
+            status_code=502, detail="Could not credit destination account"
+        )
 
     log.info(
         "transfer.complete",
-        extra={"transfer_id": transfer_id, "amount": body.amount, "currency": body.currency},
+        extra={
+            "transfer_id": transfer_id,
+            "amount": body.amount,
+            "currency": body.currency,
+        },
     )
     return TransferResponse(
         transfer_id=transfer_id,
@@ -597,26 +646,15 @@ async def initiate_payment(
         },
     )
 
-    # ── DATADOG INSTRUMENTATION ──────────────────────────────────────────
-    # Step 5 — Custom span: wraps the payment.authorize business operation so
-    #           it appears as a named span in the APM flame graph, separate
-    #           from the auto-instrumented FastAPI route span. Adds Finance
-    #           domain tags for slicing error rates by currency and account tier.
-    # Docs: https://docs.datadoghq.com/tracing/trace_collection/custom_instrumentation/python/
     #
-    # with tracer.trace("payment.authorize", service="gateway-api", resource=payload.account_id) as span:
-    #     span.set_tag("transaction.type", "payment")
-    #     span.set_tag("payment.currency", payload.currency)
-    #     span.set_tag("account.id", payload.account_id)   # bounded — safe as tag
-    #     span.set_tag("user.id", user_sub)                 # UUID from Keycloak — safe, not PII
-    #     span.set_tag("user.roles", ",".join(user_roles))  # e.g. "finance-trader"
-    #     # ── PII WARNING: use user.id (sub), NOT user.email, as a span tag ───────
-    #     # Docs: https://docs.datadoghq.com/tracing/configure_data_security/
-    #     # ── HIGH-CARDINALITY WARNING ────────────────────────────────────────
-    #     # payment_id is unique per request — do NOT set as a span tag.
-    #     # Store it in the log record (above) for correlation instead.
-    #     # Docs: https://docs.datadoghq.com/tagging/assigning_tags/#defining-tags
-    # ─────────────────────────────────────────────────────────────────────
+    with tracer.trace(
+        "payment.authorize", service="gateway-api", resource=payload.account_id
+    ) as span:
+        span.set_tag("transaction.type", "payment")
+        span.set_tag("payment.currency", payload.currency)
+        span.set_tag("account.id", payload.account_id)  # bounded — safe as tag
+        span.set_tag("user.id", user_sub)  # UUID from Keycloak — safe, not PII
+        span.set_tag("user.roles", ",".join(user_roles))  # e.g. "finance-trader"
 
     # --- Stub: call transaction-service ---
     # In a real deployment this POST reaches the Node.js transaction-service.
@@ -642,6 +680,31 @@ async def initiate_payment(
         # Stub fallback — remove this branch when transaction-service is running.
         tx_status = "pending"
 
+    # Notify: publish a payment-initiated alert via account-service so
+    # notification-service (Go) can dispatch the email/SMS stub. This only
+    # runs for callers who passed the finance-trader/finance-admin check
+    # above. Best-effort — a notification hiccup must never fail the payment,
+    # which has already been accepted by transaction-service.
+    try:
+        alert_resp = await http_client.post(
+            f"{ACCOUNT_SERVICE_URL}/v1/accounts/{payload.account_id}/payment-alert",
+            json={"currency": payload.currency},
+        )
+        if alert_resp.status_code == 404:
+            log.warning(
+                "payment.alert.account_not_found",
+                extra={"payment_id": payment_id, "account_id": payload.account_id},
+            )
+    except httpx.HTTPError as exc:
+        log.warning(
+            "payment.alert.unreachable",
+            extra={
+                "error": str(exc),
+                "payment_id": payment_id,
+                "account_id": payload.account_id,
+            },
+        )
+
     elapsed_ms = (time.perf_counter() - start) * 1000
 
     log.info(
@@ -654,30 +717,24 @@ async def initiate_payment(
         },
     )
 
-    # ── DATADOG INSTRUMENTATION ──────────────────────────────────────────
-    # Step 6 — DogStatsD metrics: records payment volume (counter) and
-    #           end-to-end latency (histogram) so you can alert on SLA
-    #           breaches and throughput drops from any Finance dashboard.
-    # Docs: https://docs.datadoghq.com/developers/dogstatsd/
     #
-    # statsd.increment(
-    #     "finance.payment.initiated",
-    #     tags=[
-    #         f"transaction.type:payment",
-    #         f"payment.currency:{payload.currency}",
-    #         f"status:{tx_status}",
-    #         f"env:{os.getenv('DD_ENV', 'local')}",
-    #     ],
-    # )
-    # statsd.histogram(
-    #     "finance.payment.processing_time",
-    #     elapsed_ms,
-    #     tags=[
-    #         f"payment.currency:{payload.currency}",
-    #         f"env:{os.getenv('DD_ENV', 'local')}",
-    #     ],
-    # )
-    # ─────────────────────────────────────────────────────────────────────
+    statsd.increment(
+        "finance.payment.initiated",
+        tags=[
+            f"transaction.type:payment",
+            f"payment.currency:{payload.currency}",
+            f"status:{tx_status}",
+            f"env:{os.getenv('DD_ENV', 'local')}",
+        ],
+    )
+    statsd.histogram(
+        "finance.payment.processing_time",
+        elapsed_ms,
+        tags=[
+            f"payment.currency:{payload.currency}",
+            f"env:{os.getenv('DD_ENV', 'local')}",
+        ],
+    )
 
     return PaymentResponse(
         payment_id=payment_id,
@@ -707,18 +764,12 @@ async def get_account_balance(
         extra={"account_id": account_id, "user.id": user_sub, "user.roles": user_roles},
     )
 
-    # ── DATADOG INSTRUMENTATION ──────────────────────────────────────────
-    # Step 5 — Custom span: wraps account.balance_check so latency to
-    #           account-service is tracked as a named operation in APM,
-    #           enabling SLA alerting per account tier.
-    # Docs: https://docs.datadoghq.com/tracing/trace_collection/custom_instrumentation/python/
     #
-    # with tracer.trace("account.balance_check", service="gateway-api", resource=account_id) as span:
-    #     span.set_tag("account.id", account_id)
-    #     # account.tier must come from account-service response — set it below
-    #     # span.set_tag("account.tier", balance_data.get("tier", "unknown"))
-    #     span.set_tag("http.route", "/v1/accounts/{account_id}/balance")
-    # ─────────────────────────────────────────────────────────────────────
+    with tracer.trace(
+        "account.balance_check", service="gateway-api", resource=account_id
+    ) as span:
+        span.set_tag("account.id", account_id)
+        span.set_tag("http.route", "/v1/accounts/{account_id}/balance")
 
     # --- Stub: call account-service ---
     try:

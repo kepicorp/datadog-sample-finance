@@ -98,6 +98,30 @@ public class AccountController {
     }
 
     /**
+     * Publishes a payment-initiated alert for the given account.
+     *
+     * Called by gateway-api immediately after a finance-trader or
+     * finance-admin successfully initiates a payment (POST /v1/payments).
+     * notification-service (Go) consumes alert.queue and dispatches the
+     * email/SMS stub. Best-effort — the gateway does not fail the payment
+     * if this call fails or the account cannot be found.
+     */
+    @PostMapping("/v1/accounts/{id}/payment-alert")
+    public ResponseEntity<Map<String, Object>> paymentAlert(
+            @PathVariable String id,
+            @RequestBody Map<String, String> body) {
+
+        String currency = body.getOrDefault("currency", "UNKNOWN");
+        log.info("event=payment_alert.request account_id={} currency={}", id, currency);
+
+        boolean published = accountService.sendPaymentAlert(id, currency);
+        if (!published) {
+            return ResponseEntity.notFound().build();
+        }
+        return ResponseEntity.accepted().body(Map.of("accountId", id, "status", "alert_published"));
+    }
+
+    /**
      * List all accounts.
      * Used by the frontend dashboard to populate the account table.
      */

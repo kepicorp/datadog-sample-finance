@@ -72,6 +72,27 @@ public class AccountService {
     }
 
     /**
+     * Publishes a payment-initiated alert for the given account, resolving the
+     * account's tier so the alert carries Finance-domain context.
+     * Called by the gateway right after a finance-trader or finance-admin
+     * successfully initiates a payment. Best-effort: notification dispatch
+     * must never block or fail the payment itself.
+     *
+     * @return true if the account was found and the alert was published.
+     */
+    public boolean sendPaymentAlert(String accountId, String currency) {
+        return findById(accountId)
+                .map(account -> {
+                    paymentEventProducer.sendPaymentAlert(accountId, currency, account.getTier());
+                    return true;
+                })
+                .orElseGet(() -> {
+                    log.warn("event=payment_alert status=account_not_found account_id={}", accountId);
+                    return false;
+                });
+    }
+
+    /**
      * Atomically applies a balance delta to an account.
      * Negative delta = debit (payment approved).
      * Positive delta = credit (refund or reversal).

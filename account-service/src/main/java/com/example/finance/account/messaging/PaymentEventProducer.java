@@ -14,6 +14,7 @@ package com.example.finance.account.messaging;
 // ─────────────────────────────────────────────────────────────────────
 
 import com.example.finance.account.model.Account;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.jms.core.JmsTemplate;
@@ -51,6 +52,7 @@ public class PaymentEventProducer {
     static final String ALERT_QUEUE = "alert.queue";
 
     private final JmsTemplate jmsTemplate;
+    private final ObjectMapper objectMapper = new ObjectMapper();
 
     public PaymentEventProducer(JmsTemplate jmsTemplate) {
         this.jmsTemplate = jmsTemplate;
@@ -132,17 +134,40 @@ public class PaymentEventProducer {
     /**
      * Sends a payment-initiated alert to alert.queue.
      * The notification-service (Go) consumes this to dispatch email/SMS stubs.
+     *
+     * BUG FIX — schema mismatch: this used to send camelCase keys
+     * ("eventType", "accountId") with no "channel" or "correlation_id"
+     * field at all. notification-service's AlertMessage struct expects
+     * snake_case JSON keys ("event_type", "account_id", "channel",
+     * "correlation_id" — see notification-service/main.go). Go's
+     * encoding/json silently leaves unmatched struct fields at their zero
+     * value instead of erroring, so every alert was "processed" with
+     * completely empty event_type/account_id/channel/correlation_id and
+     * logged a WARN "alert.send.unknown_channel" — no error, no crash,
+     * just silently wrong data. This was invisible until the STOMP
+     * anycastPrefix/multicastPrefix routing fix (see broker.xml) let any
+     * message reach the consumer at all.
      */
     public void sendPaymentAlert(String accountId, String currency, String tier) {
+        // Premium/corporate accounts get an SMS alert (higher urgency SLA);
+        // retail accounts get email. Bounded set of values — safe as a tag.
+        String channel = ("premium".equals(tier) || "corporate".equals(tier)) ? "sms" : "email";
+        // Business-level correlation key across the async hop, independent of
+        // the broker-assigned message ID. Short and prefixed, not a raw UUID,
+        // to keep it readable in logs while still being effectively unique.
+        String correlationId = "alert-" + java.util.UUID.randomUUID().toString().substring(0, 8);
+
         var payload = Map.of(
-                "eventType", "payment.initiated",
-                "accountId", accountId,
+                "event_type", "payment.initiated",
+                "account_id", accountId,
+                "channel", channel,
+                "correlation_id", correlationId,
                 "currency", currency,
                 "tier", tier
         );
 
-        log.info("event=jms.produce queue={} event_type=payment.initiated account_tier={} currency={}",
-                ALERT_QUEUE, tier, currency);
+        log.info("event=jms.produce queue={} event_type=payment.initiated account_tier={} currency={} channel={} correlation_id={}",
+                ALERT_QUEUE, tier, currency, channel, correlationId);
 
         try {
             jmsTemplate.send(ALERT_QUEUE, session -> {
@@ -170,14 +195,25 @@ public class PaymentEventProducer {
     }
 
     /**
-     * Minimal JSON serialisation — replace with Jackson ObjectMapper in production.
-     * Jackson is already on the classpath via spring-boot-starter-web.
+     * JSON serialisation via Jackson's ObjectMapper (already on the classpath
+     * via spring-boot-starter-web).
+     *
+     * BUG FIX: this used to be a hand-rolled string concatenation
+     * (`"{\"" + k + "\":\"" + v + ...}"`) with no escaping at all. Any field
+     * value containing a quote, backslash, or control character produced
+     * broken JSON on the wire — consumers (fraud-detection, notification-
+     * service) would fail with e.g. "Invalid control character at: line 1
+     * column 41" and silently drop the message after logging a parse error.
+     * Jackson handles escaping correctly and is already a dependency, so
+     * there is no reason to hand-roll this.
      */
     private String toJson(Map<String, String> map) {
-        var sb = new StringBuilder("{");
-        map.forEach((k, v) -> sb.append("\"").append(k).append("\":\"").append(v).append("\","));
-        if (sb.charAt(sb.length() - 1) == ',') sb.deleteCharAt(sb.length() - 1);
-        sb.append("}");
-        return sb.toString();
+        try {
+            return objectMapper.writeValueAsString(map);
+        } catch (Exception e) {
+            log.error("event=jms.produce status=serialization_error error_type={} message={}",
+                    e.getClass().getSimpleName(), e.getMessage());
+            return "{}";
+        }
     }
 }

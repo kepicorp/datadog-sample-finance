@@ -22,6 +22,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application source.
 COPY main.py .
+COPY logging_config.json .
 
 # Non-root user for security best practice.
 RUN adduser --disabled-password --gecos "" appuser
@@ -39,4 +40,11 @@ EXPOSE 8080
 # CMD ["ddtrace-run", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"]
 # ─────────────────────────────────────────────────────────────────────
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"]
+# BUG FIX: without --log-config, uvicorn's own "uvicorn"/"uvicorn.access" loggers
+# print plain text (e.g. "INFO:     Uvicorn running on ..."), which carries no
+# `level` field for Datadog's status_remapper to read -- its automatic status
+# detection then defaulted these lines to status:error on EVERY pod start,
+# permanently polluting Log Management and the finance error-rate monitor.
+# logging_config.json routes uvicorn's loggers through the same JSON formatter
+# main.py already uses for the app's own "gateway-api" logger.
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080", "--log-config", "logging_config.json"]

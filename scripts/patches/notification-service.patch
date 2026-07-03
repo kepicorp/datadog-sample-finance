@@ -1,6 +1,12 @@
 --- a/notification-service/main.go
 +++ b/notification-service/main.go
-@@ -13,23 +13,14 @@
+@@ -10,26 +10,15 @@
+ 	"syscall"
+ 	"time"
+ 
++	"github.com/DataDog/datadog-go/v5/statsd"
++	"github.com/DataDog/dd-trace-go/v2/ddtrace/tracer"
++	"github.com/DataDog/dd-trace-go/v2/profiler"
  	"github.com/go-stomp/stomp/v3"
  )
  
@@ -21,15 +27,10 @@
 -//	"github.com/DataDog/dd-trace-go/v2/profiler"
 -// )
 -// ─────────────────────────────────────────────────────────────────────────────
-+import (
-+	"github.com/DataDog/datadog-go/v5/statsd"
-+	"github.com/DataDog/dd-trace-go/v2/ddtrace/tracer"
-+	"github.com/DataDog/dd-trace-go/v2/profiler"
-+)
  
  const (
  	alertQueue       = "/queue/alert.queue"
-@@ -57,41 +48,30 @@
+@@ -57,41 +46,30 @@
  	}))
  	slog.SetDefault(logger)
  
@@ -52,7 +53,7 @@
 +		tracer.WithService(getEnv("DD_SERVICE", "notification-service")),
 +		tracer.WithEnv(getEnv("DD_ENV", "local")),
 +		tracer.WithServiceVersion(getEnv("DD_VERSION", "dev")),
-+		tracer.WithAgentAddr(getEnv("DD_AGENT_HOST", "datadog-agent") + ":8126"),
++		tracer.WithAgentAddr(getEnv("DD_AGENT_HOST", "datadog-agent")+":8126"),
 +		tracer.WithRuntimeMetrics(),
 +	)
 +	defer tracer.Stop()
@@ -92,7 +93,7 @@
  
  	brokerURL := getEnv("ACTIVEMQ_URL", defaultBrokerURL)
  
-@@ -176,22 +156,16 @@
+@@ -176,23 +154,17 @@
  // sendNotification stubs the email / SMS dispatch logic.
  // In production this would call an SMTP relay or SMS gateway API.
  func sendNotification(alert AlertMessage) {
@@ -102,7 +103,7 @@
 -	// auto-instrumented STOMP/JMS integration.
 -	// Docs: https://docs.datadoghq.com/tracing/trace_collection/custom_instrumentation/go/
  	//
--	// tracer.StartSpanFromContext(
+-	// span, _ := tracer.StartSpanFromContext(
 -	//	context.Background(), "alert.send",
 -	//	tracer.ResourceName(alert.EventType),
 -	//	tracer.Tag("notification.channel", alert.Channel),
@@ -111,8 +112,9 @@
 -	//	tracer.Tag("jms.correlation_id", alert.CorrelationID),
 -	//	tracer.Tag("messaging.destination", "alert.queue"),
 -	// )
+-	// defer span.Finish()
 -	// ─────────────────────────────────────────────────────────────────────────────
-+	tracer.StartSpanFromContext(
++	span, _ := tracer.StartSpanFromContext(
 +		context.Background(), "alert.send",
 +		tracer.ResourceName(alert.EventType),
 +		tracer.Tag("notification.channel", alert.Channel),
@@ -121,10 +123,11 @@
 +		tracer.Tag("jms.correlation_id", alert.CorrelationID),
 +		tracer.Tag("messaging.destination", "alert.queue"),
 +	)
++	defer span.Finish()
  
  	start := time.Now()
  
-@@ -229,18 +203,12 @@
+@@ -230,18 +202,12 @@
  		"correlation_id", alert.CorrelationID,
  	)
  

@@ -10,8 +10,6 @@ import os
 
 import stomp
 
-from scorer import score
-
 # ── DATADOG APM — CUSTOM SPANS ────────────────────────────────────────
 # Uncomment to create a manual span around each fraud.score operation.
 # This gives you a dedicated span in the APM Trace view that you can
@@ -19,7 +17,9 @@ from scorer import score
 # Requires: ddtrace installed + patch_all() called in main.py first.
 # Docs: https://docs.datadoghq.com/tracing/trace_collection/custom_instrumentation/python/
 #
-# from ddtrace import tracer
+from ddtrace import tracer
+from scorer import score
+
 # ─────────────────────────────────────────────────────────────────────
 
 # ── DATADOG DATA STREAMS MONITORING ──────────────────────────────────
@@ -66,6 +66,18 @@ class FraudScoreListener(stomp.ConnectionListener):
       }
     """
 
+    def __init__(self, conn: stomp.Connection) -> None:
+        # stomp.py's Frame object does NOT carry a reference back to the
+        # connection (there is no frame.connection attribute in this
+        # library version) — acking must go through the Connection object
+        # itself. Without this, every on_message() call raised
+        # AttributeError: 'Frame' object has no attribute 'connection',
+        # which killed the STOMP receiver background thread on the very
+        # first message and silently broke consumption (no more frames
+        # were ever processed on that connection again).
+        super().__init__()
+        self.conn = conn
+
     def on_error(self, frame: stomp.utils.Frame) -> None:
         logger.error(
             "Received STOMP error frame",
@@ -110,7 +122,7 @@ class FraudScoreListener(stomp.ConnectionListener):
                 },
             )
             # ACK even on parse failure to avoid poison-pill infinite redelivery.
-            frame.connection.ack(message_id, subscription_id)
+            self.conn.ack(message_id, subscription_id)
             return
 
         transaction_id = body.get("transaction_id", "unknown")
@@ -129,21 +141,20 @@ class FraudScoreListener(stomp.ConnectionListener):
         # Use correlation_id only if your broker reuses a bounded set.
         # Docs: https://docs.datadoghq.com/tracing/trace_collection/custom_instrumentation/python/
         #
-        # with tracer.trace("fraud.score", service="fraud-detection", resource=transaction_type) as span:
-        #     result = score({"transaction_id": transaction_id, "amount": amount})
-        #     span.set_tag("transaction.type", transaction_type)
-        #     span.set_tag("payment.currency", currency)
-        #     span.set_tag("fraud.score_bucket", result["bucket"])
-        #     span.set_tag("messaging.destination", "fraud.score.queue")
-        #     # HIGH-CARDINALITY WARNING: messaging.message_id is per-message —
-        #     # tag only when debugging a specific incident, not in production.
-        #     # span.set_tag("messaging.message_id", message_id)
-        #     if result["bucket"] == "high":
-        #         span.error = 1
-        #         span.set_tag("error.message", "High-risk transaction flagged")
-        # ─────────────────────────────────────────────────────────────
-
-        result = score({"transaction_id": transaction_id, "amount": amount})
+        with tracer.trace(
+            "fraud.score", service="fraud-detection", resource=transaction_type
+        ) as span:
+            result = score({"transaction_id": transaction_id, "amount": amount})
+            span.set_tag("transaction.type", transaction_type)
+            span.set_tag("payment.currency", currency)
+            span.set_tag("fraud.score_bucket", result["bucket"])
+            span.set_tag("messaging.destination", "fraud.score.queue")
+            # HIGH-CARDINALITY WARNING: messaging.message_id is per-message —
+            # tag only when debugging a specific incident, not in production.
+            # span.set_tag("messaging.message_id", message_id)
+            if result["bucket"] == "high":
+                span.error = 1
+                span.set_tag("error.message", "High-risk transaction flagged")
 
         # ── DATADOG DOGSTATSD — GAUGE ─────────────────────────────────
         # Emit a gauge for each scored message. The value is the raw
@@ -183,4 +194,4 @@ class FraudScoreListener(stomp.ConnectionListener):
             },
         )
 
-        frame.connection.ack(message_id, subscription_id)
+        self.conn.ack(message_id, subscription_id)

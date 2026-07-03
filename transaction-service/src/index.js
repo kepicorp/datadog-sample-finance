@@ -1,42 +1,22 @@
-// ── DATADOG INSTRUMENTATION ──────────────────────────────────────────
-// Step 3 — APM initialisation. dd-trace MUST be required before any
-// other module — including express, pino, or your own files.
-// Requiring it later will miss auto-instrumentation of already-loaded
-// modules (e.g. http, net) and produce incomplete traces.
 //
-// Prerequisites:
-//   npm install dd-trace --save
-//   Set DD_ENV, DD_SERVICE, DD_VERSION, DD_AGENT_HOST in your environment.
 //
-// const tracer = require('dd-trace').init({
-//   service:  process.env.DD_SERVICE  || 'transaction-service',
-//   env:      process.env.DD_ENV      || 'development',
-//   version:  process.env.DD_VERSION  || '0.0.0',
-//   hostname: process.env.DD_AGENT_HOST || 'datadog-agent',
-//
-//   // ── Log injection ────────────────────────────────────────────────
-//   // Injects dd.trace_id and dd.span_id into every pino log record.
-//   // Step 4 — verify trace_id appears in Datadog Log Management.
-//   // logInjection: true,
-//
-//   // ── Runtime metrics ──────────────────────────────────────────────
-//   // Step 6 — emit Node.js V8/GC/event-loop metrics to DogStatsD.
-//   // runtimeMetrics: true,
-//
-//   // ── Profiler ─────────────────────────────────────────────────────
-//   // Step 7 — continuous CPU + heap profiling. Correlate flame graphs
-//   // with slow payment traces in APM > Profiling.
-//   // profiling: true,
-// });
-// ─────────────────────────────────────────────────────────────────────
+const tracer = require("dd-trace").init({
+  service: process.env.DD_SERVICE || "transaction-service",
+  env: process.env.DD_ENV || "development",
+  version: process.env.DD_VERSION || "0.0.0",
+  hostname: process.env.DD_AGENT_HOST || "datadog-agent",
+  //
+  //
+  //
+});
 
-'use strict';
+("use strict");
 
-const express = require('express');
-const pino    = require('pino');
-const pinoHttp = require('pino-http');
+const express = require("express");
+const pino = require("pino");
+const pinoHttp = require("pino-http");
 
-const paymentsRouter = require('./routes/payments');
+const paymentsRouter = require("./routes/payments");
 
 // ── STRUCTURED LOGGING ───────────────────────────────────────────────
 // Always use structured JSON logs — raw console.log is never acceptable
@@ -46,16 +26,39 @@ const paymentsRouter = require('./routes/payments');
 // the "View in APM" button inside Datadog Log Management.
 // ─────────────────────────────────────────────────────────────────────
 const logger = pino({
-  level: process.env.LOG_LEVEL || 'info',
+  level: process.env.LOG_LEVEL || "info",
   base: {
-    service: process.env.DD_SERVICE  || 'transaction-service',
-    env:     process.env.DD_ENV      || 'development',
-    version: process.env.DD_VERSION  || '0.0.0',
+    service: process.env.DD_SERVICE || "transaction-service",
+    env: process.env.DD_ENV || "development",
+    version: process.env.DD_VERSION || "0.0.0",
   },
 });
 
-const app  = express();
-const PORT = parseInt(process.env.PORT || '8082', 10);
+// ── Safety net for the fire-and-forget STOMP producer ──────────────────
+// src/messaging/producer.js opens a fresh STOMP connection per message and
+// intentionally treats JMS publish failures as best-effort (a payment must
+// never be lost just because ActiveMQ is briefly unavailable). However the
+// `stompit` client library can emit an async 'error' event on its internal
+// frame stream (e.g. a broker-side protocol/auth hiccup on a racing
+// connect/disconnect) that is NOT reachable via a normal try/catch or a
+// listener on the client object. Left unhandled, this crashes the whole
+// Node process. Catch it here so a transient broker error degrades to a
+// logged warning instead of taking down the service.
+process.on("uncaughtException", (err) => {
+  logger.error(
+    { err },
+    "uncaughtException — continuing (see producer.js best-effort JMS publish)",
+  );
+});
+process.on("unhandledRejection", (err) => {
+  logger.error(
+    { err },
+    "unhandledRejection — continuing (see producer.js best-effort JMS publish)",
+  );
+});
+
+const app = express();
+const PORT = parseInt(process.env.PORT || "8082", 10);
 
 // Parse JSON request bodies
 app.use(express.json());
@@ -67,25 +70,28 @@ app.use(pinoHttp({ logger }));
 // Step 12 — target this endpoint with a Datadog Synthetic API test.
 // Docs: https://docs.datadoghq.com/synthetics/
 // ─────────────────────────────────────────────────────────────────────
-app.get('/health', (_req, res) => {
+app.get("/health", (_req, res) => {
   res.json({
-    status:  'ok',
-    service: process.env.DD_SERVICE || 'transaction-service',
-    version: process.env.DD_VERSION || '0.0.0',
+    status: "ok",
+    service: process.env.DD_SERVICE || "transaction-service",
+    version: process.env.DD_VERSION || "0.0.0",
   });
 });
 
 // Mount the payments router under the versioned prefix
-app.use('/v1/payments', paymentsRouter);
+app.use("/v1/payments", paymentsRouter);
 
 // Global error handler — always log with structured fields
 app.use((err, req, res, _next) => {
-  req.log.error({ err, route: req.path }, 'Unhandled error in transaction-service');
-  res.status(500).json({ error: 'internal_server_error' });
+  req.log.error(
+    { err, route: req.path },
+    "Unhandled error in transaction-service",
+  );
+  res.status(500).json({ error: "internal_server_error" });
 });
 
 app.listen(PORT, () => {
-  logger.info({ port: PORT }, 'transaction-service listening');
+  logger.info({ port: PORT }, "transaction-service listening");
 });
 
 module.exports = app; // exported for testing

@@ -3,35 +3,21 @@ fraud-detection — main entry point
 Connects to ActiveMQ Artemis via STOMP and listens on fraud.score.queue.
 """
 
+import logging
 import os
 import time
-import logging
 
+#
+from ddtrace import patch_all
+from ddtrace.contrib.logging import patch as patch_logging
 from pythonjsonlogger import jsonlogger
 
-# ── DATADOG APM ───────────────────────────────────────────────────────
-# Uncomment to enable auto-instrumentation. Must be the FIRST import
-# before any other library is imported.
-# Requires: ddtrace installed, DD_API_KEY / DD_ENV / DD_SERVICE / DD_VERSION set.
-# Docs: https://docs.datadoghq.com/tracing/trace_collection/dd_libraries/python/
-#
-# from ddtrace import patch_all
-# from ddtrace.contrib.logging import patch as patch_logging
-# patch_all()
-# patch_logging()
-# ─────────────────────────────────────────────────────────────────────
+patch_all()
+patch_logging()
 
-# ── DATADOG CONTINUOUS PROFILER ───────────────────────────────────────
-# Uncomment to start the Continuous Profiler. It runs as a background
-# thread and captures CPU / wall-time / memory profiles every 60 s.
-# Correlates with APM traces to identify which span is burning CPU.
-# Docs: https://docs.datadoghq.com/profiler/enabling/python/
 #
-# import ddtrace.profiling.auto  # noqa: F401  — side-effect import, keep at top
-# ─────────────────────────────────────────────────────────────────────
-
+import ddtrace.profiling.auto  # noqa: F401  — side-effect import, keep at top
 import stomp
-
 from listener import FraudScoreListener
 
 # ── LOGGING SETUP ─────────────────────────────────────────────────────
@@ -82,7 +68,7 @@ def main() -> None:
     )
 
     conn = stomp.Connection(host_and_ports=[(host, port)])
-    conn.set_listener("fraud_score_listener", FraudScoreListener())
+    conn.set_listener("fraud_score_listener", FraudScoreListener(conn))
 
     while True:
         try:

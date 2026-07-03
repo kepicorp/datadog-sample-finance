@@ -1,23 +1,26 @@
-'use strict';
+"use strict";
 
-const stompit = require('stompit');
-const pino    = require('pino');
+const stompit = require("stompit");
+const pino = require("pino");
 
 const logger = pino({
-  level: process.env.LOG_LEVEL || 'info',
+  level: process.env.LOG_LEVEL || "info",
   base: {
-    service:   process.env.DD_SERVICE || 'transaction-service',
-    env:       process.env.DD_ENV     || 'development',
-    version:   process.env.DD_VERSION || '0.0.0',
-    component: 'messaging.producer',
+    service: process.env.DD_SERVICE || "transaction-service",
+    env: process.env.DD_ENV || "development",
+    version: process.env.DD_VERSION || "0.0.0",
+    component: "messaging.producer",
   },
 });
 
 // ActiveMQ Artemis connection parameters.
-// ACTIVEMQ_URL format: stomp://host:61613
-const ACTIVEMQ_URL  = process.env.ACTIVEMQ_URL || 'stomp://localhost:61613';
-const [host, portStr] = ACTIVEMQ_URL.replace('stomp://', '').split(':');
-const BROKER_PORT   = parseInt(portStr || '61613', 10);
+// ACTIVEMQ_STOMP_URL format: stomp://host:61613 (set via app-config ConfigMap,
+// matching the key used in deploy/kubernetes/base/01-config.yaml and the
+// transaction-service Deployment env block).
+const ACTIVEMQ_URL =
+  process.env.ACTIVEMQ_STOMP_URL || "stomp://localhost:61613";
+const [host, portStr] = ACTIVEMQ_URL.replace("stomp://", "").split(":");
+const BROKER_PORT = parseInt(portStr || "61613", 10);
 
 // ── DATADOG DATA STREAMS MONITORING ──────────────────────────────────
 // Step 10 — enable DSM to get end-to-end pipeline visibility across
@@ -62,22 +65,50 @@ const BROKER_PORT   = parseInt(portStr || '61613', 10);
 function send(destination, payload) {
   return new Promise((resolve, reject) => {
     const connectOptions = {
-      host:     host || 'localhost',
-      port:     BROKER_PORT,
-      login:    process.env.ACTIVEMQ_USER     || 'guest',
-      passcode: process.env.ACTIVEMQ_PASSWORD || 'guest',
-      // STOMP v1.2 — required by ActiveMQ Artemis
-      'heart-beat': '0,0',
+      host: host || "localhost",
+      port: BROKER_PORT,
+      // stompit requires login/passcode/heart-beat nested under
+      // connectHeaders (NOT top-level) — see node_modules/stompit/README.md.
+      // Sending them top-level is silently ignored by the client, which
+      // then connects with an empty username and Artemis rejects it with
+      // "Security Error occurred: User name [null] or password is invalid".
+      connectHeaders: {
+        host: "/",
+        login: process.env.ACTIVEMQ_USER || "guest",
+        passcode: process.env.ACTIVEMQ_PASSWORD || "guest",
+        // STOMP v1.2 — required by ActiveMQ Artemis
+        "heart-beat": "0,0",
+      },
     };
 
     stompit.connect(connectOptions, (connectErr, client) => {
       if (connectErr) {
         logger.error(
-          { err: connectErr, destination, 'messaging.destination': destination },
-          'jms.produce.connect_failed'
+          {
+            err: connectErr,
+            destination,
+            "messaging.destination": destination,
+          },
+          "jms.produce.connect_failed",
         );
         return reject(connectErr);
       }
+
+      // Guard against uncaught 'error' events on the connection after
+      // connect (e.g. broker-side protocol errors, idle disconnects raced
+      // with our own client.disconnect() below). stompit's Client extends
+      // EventEmitter — an unhandled 'error' event crashes the whole Node
+      // process, which previously caused this service to crash-loop.
+      client.on("error", (err) => {
+        logger.error(
+          {
+            err,
+            destination,
+            "messaging.destination": destination,
+          },
+          "jms.produce.connection_error",
+        );
+      });
 
       const body = JSON.stringify(payload);
 
@@ -91,10 +122,10 @@ function send(destination, payload) {
       // originating payment without querying a database.
       // ─────────────────────────────────────────────────────────────────
       const headers = {
-        destination:          `/queue/${destination}`,
-        'content-type':       'application/json',
-        'content-length':     Buffer.byteLength(body),
-        'jms-correlation-id': payload.payment_id || '',
+        destination: `/queue/${destination}`,
+        "content-type": "application/json",
+        "content-length": Buffer.byteLength(body),
+        "jms-correlation-id": payload.payment_id || "",
         // DSM context is injected here automatically by dd-trace when
         // DD_DATA_STREAMS_ENABLED=true (Step 10).
       };
@@ -106,13 +137,13 @@ function send(destination, payload) {
       logger.info(
         {
           destination,
-          payment_id:               payload.payment_id,
-          'messaging.destination':  destination,
-          'jms.correlation_id':     payload.payment_id,
+          payment_id: payload.payment_id,
+          "messaging.destination": destination,
+          "jms.correlation_id": payload.payment_id,
           // messaging.message_id is set by the broker after send —
           // log it from the consumer ACK if needed, not here.
         },
-        'jms.produce'
+        "jms.produce",
       );
 
       client.disconnect();

@@ -1,6 +1,6 @@
 --- a/transaction-service/src/index.js
 +++ b/transaction-service/src/index.js
-@@ -1,34 +1,14 @@
+@@ -1,42 +1,22 @@
 -// ── DATADOG INSTRUMENTATION ──────────────────────────────────────────
 -// Step 3 — APM initialisation. dd-trace MUST be required before any
 -// other module — including express, pino, or your own files.
@@ -16,31 +16,128 @@
 -//   env:      process.env.DD_ENV      || 'development',
 -//   version:  process.env.DD_VERSION  || '0.0.0',
 -//   hostname: process.env.DD_AGENT_HOST || 'datadog-agent',
-+const tracer = require('dd-trace').init({
-+  service:  process.env.DD_SERVICE  || 'transaction-service',
-+  env:      process.env.DD_ENV      || 'development',
-+  version:  process.env.DD_VERSION  || '0.0.0',
-+  hostname: process.env.DD_AGENT_HOST || 'datadog-agent',
- //
+-//
 -//   // ── Log injection ────────────────────────────────────────────────
 -//   // Injects dd.trace_id and dd.span_id into every pino log record.
 -//   // Step 4 — verify trace_id appears in Datadog Log Management.
 -//   // logInjection: true,
- //
+-//
 -//   // ── Runtime metrics ──────────────────────────────────────────────
 -//   // Step 6 — emit Node.js V8/GC/event-loop metrics to DogStatsD.
 -//   // runtimeMetrics: true,
- //
+-//
 -//   // ── Profiler ─────────────────────────────────────────────────────
 -//   // Step 7 — continuous CPU + heap profiling. Correlate flame graphs
 -//   // with slow payment traces in APM > Profiling.
 -//   // profiling: true,
 -// });
 -// ─────────────────────────────────────────────────────────────────────
++const tracer = require("dd-trace").init({
++  service: process.env.DD_SERVICE || "transaction-service",
++  env: process.env.DD_ENV || "development",
++  version: process.env.DD_VERSION || "0.0.0",
++  hostname: process.env.DD_AGENT_HOST || "datadog-agent",
++  //
++  //
++  //
 +});
  
- 'use strict';
+-'use strict';
++("use strict");
  
+-const express = require('express');
+-const pino    = require('pino');
+-const pinoHttp = require('pino-http');
++const express = require("express");
++const pino = require("pino");
++const pinoHttp = require("pino-http");
+ 
+-const paymentsRouter = require('./routes/payments');
++const paymentsRouter = require("./routes/payments");
+ 
+ // ── STRUCTURED LOGGING ───────────────────────────────────────────────
+ // Always use structured JSON logs — raw console.log is never acceptable
+@@ -46,11 +26,11 @@
+ // the "View in APM" button inside Datadog Log Management.
+ // ─────────────────────────────────────────────────────────────────────
+ const logger = pino({
+-  level: process.env.LOG_LEVEL || 'info',
++  level: process.env.LOG_LEVEL || "info",
+   base: {
+-    service: process.env.DD_SERVICE  || 'transaction-service',
+-    env:     process.env.DD_ENV      || 'development',
+-    version: process.env.DD_VERSION  || '0.0.0',
++    service: process.env.DD_SERVICE || "transaction-service",
++    env: process.env.DD_ENV || "development",
++    version: process.env.DD_VERSION || "0.0.0",
+   },
+ });
+ 
+@@ -64,15 +44,21 @@
+ // listener on the client object. Left unhandled, this crashes the whole
+ // Node process. Catch it here so a transient broker error degrades to a
+ // logged warning instead of taking down the service.
+-process.on('uncaughtException', (err) => {
+-  logger.error({ err }, 'uncaughtException — continuing (see producer.js best-effort JMS publish)');
++process.on("uncaughtException", (err) => {
++  logger.error(
++    { err },
++    "uncaughtException — continuing (see producer.js best-effort JMS publish)",
++  );
+ });
+-process.on('unhandledRejection', (err) => {
+-  logger.error({ err }, 'unhandledRejection — continuing (see producer.js best-effort JMS publish)');
++process.on("unhandledRejection", (err) => {
++  logger.error(
++    { err },
++    "unhandledRejection — continuing (see producer.js best-effort JMS publish)",
++  );
+ });
+ 
+-const app  = express();
+-const PORT = parseInt(process.env.PORT || '8082', 10);
++const app = express();
++const PORT = parseInt(process.env.PORT || "8082", 10);
+ 
+ // Parse JSON request bodies
+ app.use(express.json());
+@@ -84,25 +70,28 @@
+ // Step 12 — target this endpoint with a Datadog Synthetic API test.
+ // Docs: https://docs.datadoghq.com/synthetics/
+ // ─────────────────────────────────────────────────────────────────────
+-app.get('/health', (_req, res) => {
++app.get("/health", (_req, res) => {
+   res.json({
+-    status:  'ok',
+-    service: process.env.DD_SERVICE || 'transaction-service',
+-    version: process.env.DD_VERSION || '0.0.0',
++    status: "ok",
++    service: process.env.DD_SERVICE || "transaction-service",
++    version: process.env.DD_VERSION || "0.0.0",
+   });
+ });
+ 
+ // Mount the payments router under the versioned prefix
+-app.use('/v1/payments', paymentsRouter);
++app.use("/v1/payments", paymentsRouter);
+ 
+ // Global error handler — always log with structured fields
+ app.use((err, req, res, _next) => {
+-  req.log.error({ err, route: req.path }, 'Unhandled error in transaction-service');
+-  res.status(500).json({ error: 'internal_server_error' });
++  req.log.error(
++    { err, route: req.path },
++    "Unhandled error in transaction-service",
++  );
++  res.status(500).json({ error: "internal_server_error" });
+ });
+ 
+ app.listen(PORT, () => {
+-  logger.info({ port: PORT }, 'transaction-service listening');
++  logger.info({ port: PORT }, "transaction-service listening");
+ });
+ 
+ module.exports = app; // exported for testing
 --- a/transaction-service/package.json
 +++ b/transaction-service/package.json
 @@ -1,34 +1,35 @@
@@ -89,3 +186,114 @@
 +    "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
    ]
  }
+--- a/transaction-service/src/services/ledger.js
++++ b/transaction-service/src/services/ledger.js
+@@ -1,14 +1,14 @@
+-'use strict';
++"use strict";
+ 
+-const pino = require('pino');
++const pino = require("pino");
+ 
+ const logger = pino({
+-  level: process.env.LOG_LEVEL || 'info',
++  level: process.env.LOG_LEVEL || "info",
+   base: {
+-    service:   process.env.DD_SERVICE || 'transaction-service',
+-    env:       process.env.DD_ENV     || 'development',
+-    version:   process.env.DD_VERSION || '0.0.0',
+-    component: 'ledger',
++    service: process.env.DD_SERVICE || "transaction-service",
++    env: process.env.DD_ENV || "development",
++    version: process.env.DD_VERSION || "0.0.0",
++    component: "ledger",
+   },
+ });
+ 
+@@ -19,7 +19,7 @@
+ // both operations are folded into the parent payment.authorize span
+ // and you cannot distinguish DB slowness from broker slowness.
+ //
+-// const tracer = require('dd-trace');
++const tracer = require("dd-trace");
+ // ─────────────────────────────────────────────────────────────────────
+ 
+ /**
+@@ -47,16 +47,17 @@
+   //
+   // Docs: https://docs.datadoghq.com/database_monitoring/connect_dbm_and_apm/
+   //
+-  // const span = tracer.startSpan('ledger.commit', {
+-  //   childOf: tracer.scope().active(),
+-  //   tags: {
+-  //     'db.instance':   'postgres-ledger',
+-  //     'db.type':       'postgresql',
+-  //     'db.statement':  'INSERT INTO transactions (id, amount, currency, account_id, status) VALUES ($1,$2,$3,$4,$5)',
+-  //     'resource.name': 'ledger.commit',
+-  //     'payment.currency': currency,
+-  //   },
+-  // });
++  const span = tracer.startSpan("ledger.commit", {
++    childOf: tracer.scope().active(),
++    tags: {
++      "db.instance": "postgres-ledger",
++      "db.type": "postgresql",
++      "db.statement":
++        "INSERT INTO transactions (id, amount, currency, account_id, status) VALUES ($1,$2,$3,$4,$5)",
++      "resource.name": "ledger.commit",
++      "payment.currency": currency,
++    },
++  });
+   // ─────────────────────────────────────────────────────────────────────
+ 
+   try {
+@@ -76,22 +77,19 @@
+         amount,
+         currency,
+         account_id,
+-        'db.instance': 'postgres-ledger',
+-        'db.operation': 'INSERT',
++        "db.instance": "postgres-ledger",
++        "db.operation": "INSERT",
+       },
+-      'ledger.commit'
++      "ledger.commit",
+     );
+ 
+-    // ── DATADOG INSTRUMENTATION ──────────────────────────────────────
+-    // Step 5 — close the span on success.
+-    // span.finish();
+-    // ─────────────────────────────────────────────────────────────────
++    span.finish();
+ 
+     return { committed: true };
+   } catch (err) {
+     logger.error(
+-      { err, payment_id, 'db.instance': 'postgres-ledger' },
+-      'ledger.commit.failed'
++      { err, payment_id, "db.instance": "postgres-ledger" },
++      "ledger.commit.failed",
+     );
+ 
+     // ── DATADOG INSTRUMENTATION ──────────────────────────────────────
+@@ -100,11 +98,15 @@
+     //           and dashboards can alert before the on-call engineer
+     //           notices via logs.
+     //
+-    // const { ERROR_MESSAGE, ERROR_TYPE, ERROR_STACK } = require('dd-trace/ext/tags');
+-    // span.setTag(ERROR_TYPE,    err.constructor.name);
+-    // span.setTag(ERROR_MESSAGE, err.message);
+-    // span.setTag(ERROR_STACK,   err.stack);
+-    // span.finish();
++    const {
++      ERROR_MESSAGE,
++      ERROR_TYPE,
++      ERROR_STACK,
++    } = require("dd-trace/ext/tags");
++    span.setTag(ERROR_TYPE, err.constructor.name);
++    span.setTag(ERROR_MESSAGE, err.message);
++    span.setTag(ERROR_STACK, err.stack);
++    span.finish();
+     //
+     // dogstatsd.increment('ledger.commit.errors', 1, {
+     //   'db.instance': 'postgres-ledger',

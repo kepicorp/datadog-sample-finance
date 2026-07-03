@@ -1,3 +1,6 @@
+server:
+  port: ${SERVER_PORT:8083}
+
 spring:
   application:
     name: batch-processor
@@ -37,8 +40,15 @@ spring:
     job:
       enabled: false # Disable auto-launch on startup; use @Scheduled triggers
     jdbc:
-      initialize-schema: always # Auto-create Spring Batch metadata tables on first run
-      # Note: set to 'never' once tables exist in production to avoid schema checks on startup
+      # BUG FIX: 'always' re-runs Spring Batch's schema-postgresql.sql (which has
+      # no "IF NOT EXISTS" guards) on every pod start/restart, not just the first
+      # one -- every subsequent restart logged 9 real Postgres "ERROR: relation
+      # ... already exists" lines, polluting Log Management and the error-rate
+      # monitor with noise. The BATCH_JOB_*/BATCH_STEP_* tables are now created
+      # exactly once via deploy/kubernetes/base/infrastructure/postgres-init.yaml
+      # (same idempotent-on-fresh-PVC pattern as the transactions/ledger schema),
+      # so Spring Batch itself must never attempt to (re)create them.
+      initialize-schema: never
 
 # ── LOGGING ─────────────────────────────────────────────────────────────────
 # Logback configuration is in logback-spring.xml (structured JSON via logstash-logback-encoder).
