@@ -95,7 +95,7 @@ output "log_metrics" {
 
 output "rum_application_id" {
   description = "RUM application ID for the finance-frontend dashboard. Used by 'make instrument' to populate the RUM SDK snippet."
-  value       = datadog_rum_application.finance_frontend.app_id
+  value       = datadog_rum_application.finance_frontend.id
 }
 
 output "rum_client_token" {

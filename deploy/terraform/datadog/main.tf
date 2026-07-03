@@ -32,6 +32,13 @@ terraform {
       source  = "DataDog/datadog"
       version = "~> 3.0"
     }
+    # Used only to generate a random suffix for the log index name (see
+    # random_id.log_index_suffix below) so destroy/recreate cycles never hit
+    # Datadog's permanent index-name reservation.
+    random = {
+      source  = "hashicorp/random"
+      version = "~> 3.6"
+    }
   }
 }
 
@@ -62,6 +69,40 @@ locals {
     "managed-by:terraform",
     "app:finance-sample-app",
   ]
+
+  # ── Synthetic test target URLs ────────────────────────────────────────
+  # Datadog's public testing locations (e.g. aws:eu-west-1) cannot resolve
+  # in-cluster Kubernetes DNS. When synthetic_target_base_url is set (to the
+  # frontend nginx LoadBalancer hostname), tests go through nginx's public
+  # reverse proxy instead of internal *.svc.cluster.local addresses — see
+  # deploy/kubernetes/base/services/frontend.yaml for the routing table.
+  # When unset, tests fall back to internal DNS, which only works if you
+  # additionally deploy a Datadog Synthetics Private Location in-cluster.
+  synthetic_use_public_proxy = var.synthetic_target_base_url != ""
+
+  synthetic_gateway_base = local.synthetic_use_public_proxy ? var.synthetic_target_base_url : "http://gateway-api.finance.svc.cluster.local:8080"
+
+  synthetic_account_base = local.synthetic_use_public_proxy ? "${var.synthetic_target_base_url}/internal/accounts" : "http://account-service.finance.svc.cluster.local:8081/v1/accounts"
+
+  synthetic_account_health_url = local.synthetic_use_public_proxy ? "${var.synthetic_target_base_url}/internal/account-service/health" : "http://account-service.finance.svc.cluster.local:8081/health"
+
+  synthetic_transaction_health_url = local.synthetic_use_public_proxy ? "${var.synthetic_target_base_url}/internal/transaction-service/health" : "http://transaction-service.finance.svc.cluster.local:8082/health"
+
+  synthetic_transactions_base = local.synthetic_use_public_proxy ? "${var.synthetic_target_base_url}/internal/transactions" : "http://transaction-service.finance.svc.cluster.local:8082/v1/payments"
+
+  # Keycloak's token endpoint is exposed on the SAME frontend nginx
+  # LoadBalancer over plain HTTP at /auth/ (see
+  # deploy/kubernetes/base/services/frontend.yaml). There is also a :8443
+  # HTTPS route to Keycloak, but it uses a self-signed cert, and Datadog's
+  # multistep API tests do not reliably honour accept_self_signed/
+  # allow_insecure for individual steps — verified empirically (the step
+  # failed with "SSL: Self-signed certificate" even with
+  # accept_self_signed = true set). The plain-HTTP /auth/ route sidesteps
+  # that entirely. Auth-dependent synthetic tests log in here as their
+  # first step to get a fresh, short-lived JWT (Keycloak's default access
+  # token lifetime is 5 minutes) rather than relying on a static bearer
+  # token that goes stale.
+  synthetic_keycloak_token_url = "${local.synthetic_gateway_base}/auth/realms/finance/protocol/openid-connect/token"
 }
 
 # =============================================================================
@@ -74,8 +115,20 @@ locals {
 #
 # Docs: https://docs.datadoghq.com/logs/log_configuration/indexes/
 
+# Datadog never truly deletes a log index name once used — it just becomes
+# permanently reserved (a 409 Conflict on any future attempt to reuse it).
+# Appending a random suffix means `terraform destroy` + `terraform apply`
+# (or a full teardown/rebuild cycle) can never collide with a previously
+# used name. The random value lives only in Terraform state: destroying the
+# index resource removes it from state too, so the next apply generates a
+# brand-new suffix automatically — no manual version-bumping (v2, v3, v4...)
+# ever needed again.
+resource "random_id" "log_index_suffix" {
+  byte_length = 3
+}
+
 resource "datadog_logs_index" "finance_app" {
-  name           = "finance-logs"
+  name           = "finance-logs-${random_id.log_index_suffix.hex}"
   retention_days = var.log_retention_days
 
   # Only index logs from the finance namespace on the finance-app cluster.
@@ -85,8 +138,13 @@ resource "datadog_logs_index" "finance_app" {
   }
 
   # Daily quota — prevent runaway log ingestion from crashing the budget.
-  # Set to 500 MB/day for staging; increase for production.
-  daily_limit                              = 500
+  # NOTE: the Datadog API's daily_limit is denominated in BYTES, not MB.
+  # 500 MB/day for staging == 500,000,000 bytes. A previous value of
+  # literal `500` (500 bytes — about one log line) silently exhausted the
+  # quota within seconds of pod startup, making every subsequent finance
+  # namespace log invisible in Log Explorer even though the Agent reported
+  # successful HTTP delivery (the index enforces the quota after intake).
+  daily_limit                              = 500000000
   daily_limit_warning_threshold_percentage = 80
 
   # Note: flex_retention_days requires Flex Logs to be enabled on the org.
@@ -141,14 +199,93 @@ resource "datadog_logs_custom_pipeline" "finance_app" {
     }
   }
 
-  # ── Processor 2: Status remapper ─────────────────────────────────────────
-  # Map the application-level 'level' / 'severity' field to the Datadog
-  # official log status so logs appear with the right colour in Log Explorer.
+  # ── Processor 1b: PostgreSQL native log level category ────────────
+  # BUG FIX: postgres emits plain-text logs (e.g.
+  # "2026-07-02 14:17:25 UTC [26] LOG:  checkpoint complete: ...") rather
+  # than the JSON our other services emit. The JSON parser above doesn't
+  # match these lines, so no 'level' attribute is ever extracted, and
+  # Datadog's fallback automatic status detection flags them as
+  # status:error — routine checkpoint/autovacuum LOG lines were showing up
+  # as errors, polluting error-rate dashboards and monitors, and even a
+  # real "FATAL" auth error was indistinguishable from routine "LOG" noise
+  # once both were mis-bucketed the same way. Categorise by the actual
+  # PostgreSQL severity keyword so the status remapper below has something
+  # correct to source from.
+  processor {
+    category_processor {
+      name       = "Map PostgreSQL native severity to a status category"
+      is_enabled = true
+      target     = "pg_status"
+      category {
+        name = "info"
+        filter {
+          query = "service:postgres (\"LOG:\" OR \"NOTICE:\" OR \"INFO:\" OR \"STATEMENT:\" OR \"DEBUG:\")"
+        }
+      }
+      category {
+        name = "warning"
+        filter {
+          query = "service:postgres \"WARNING:\""
+        }
+      }
+      category {
+        name = "error"
+        filter {
+          query = "service:postgres (\"ERROR:\" OR \"FATAL:\" OR \"PANIC:\")"
+        }
+      }
+    }
+  }
+
+  # ── Processor 1c: dd-java-agent startup banner status category ────
+  # BUG FIX: account-service and batch-processor's dd-java-agent prints its
+  # own startup diagnostics straight to stderr as plain text (e.g.
+  # "[dd.trace 2026-07-03 08:23:18:379 +0000] [dd-task-scheduler] INFO
+  # datadog.trace.agent.core.StatusLogger - DATADOG TRACER CONFIGURATION
+  # ..."), plus a couple of bare JVM lines ("Picked up JAVA_TOOL_OPTIONS: ...",
+  # "OpenJDK 64-Bit Server VM warning: ..."). None of these are JSON, so (same
+  # root cause as Processor 1b above) they carry no 'level' attribute and
+  # Datadog's automatic status detection defaulted every single one of them to
+  # status:error -- meaning both Java services logged a burst of ~8 fake
+  # errors on every single pod start/restart, which is indistinguishable from
+  # a real problem in the error-rate monitor and dashboards.
+  processor {
+    category_processor {
+      name       = "Map dd-java-agent startup banner to a status category"
+      is_enabled = true
+      target     = "jvm_status"
+      category {
+        name = "info"
+        filter {
+          query = "service:(account-service OR batch-processor) ((\"[dd.trace\" AND \"INFO\") OR \"Picked up JAVA_TOOL_OPTIONS\")"
+        }
+      }
+      category {
+        name = "warning"
+        filter {
+          query = "service:(account-service OR batch-processor) ((\"[dd.trace\" AND \"WARN\") OR \"VM warning\")"
+        }
+      }
+      category {
+        name = "error"
+        filter {
+          query = "service:(account-service OR batch-processor) \"[dd.trace\" AND \"ERROR\""
+        }
+      }
+    }
+  }
+
+  # ── Processor 2: Status remapper ─────────────────────────────────
+  # Map the application-level 'level' / 'severity' field (for JSON-emitting
+  # services), 'pg_status' (for postgres's plain-text logs, see Processor 1b),
+  # or 'jvm_status' (for the dd-java-agent startup banner, see Processor 1c)
+  # to the Datadog official log status so logs appear with the right colour
+  # in Log Explorer.
   processor {
     status_remapper {
       name       = "Map log level to Datadog status"
       is_enabled = true
-      sources    = ["level", "severity", "msg.level", "msg.severity"]
+      sources    = ["level", "severity", "msg.level", "msg.severity", "pg_status", "jvm_status"]
     }
   }
 
@@ -619,7 +756,7 @@ resource "datadog_dashboard" "finance_overview" {
 
           request {
             log_query {
-              index        = "finance-logs"
+              index        = datadog_logs_index.finance_app.name
               search_query = local.finance_log_filter
               compute_query {
                 aggregation = "count"
@@ -647,7 +784,7 @@ resource "datadog_dashboard" "finance_overview" {
 
           request {
             log_query {
-              index        = "finance-logs"
+              index        = datadog_logs_index.finance_app.name
               search_query = "${local.finance_log_filter} status:error"
               compute_query {
                 aggregation = "count"
@@ -1177,6 +1314,25 @@ resource "datadog_service_level_objective" "fraud_consumer_availability" {
 # Terraform resource: https://registry.terraform.io/providers/DataDog/datadog/latest/docs/resources/synthetics_test
 # =============================================================================
 
+# ── Auth strategy for the authenticated tests below ───────────────
+# payment_happy_path, balance_check, and payment_bad_payload each start with
+# a "Login" api_step that authenticates against Keycloak directly (password
+# grant, finance-trader test user) and extracts a fresh access token into
+# {{ACCESS_TOKEN}} for use by later steps in the SAME test run. This avoids
+# a static SYNTHETIC_BEARER_TOKEN global variable, which would need manual
+# rotation every ~5 minutes (Keycloak's default access token lifetime) and
+# would otherwise fail permanently between rotations.
+#
+# Similarly, balance_check and payment_happy_path each create their own
+# fresh account (POST /internal/accounts) as an early step and extract its
+# id into {{ACCOUNT_ID}}, instead of depending on a static account ID.
+# account-service currently stores accounts in an in-memory map (see
+# AccountService.java) that is wiped on every pod restart, so any
+# hardcoded/static account ID would eventually 404 — creating a fresh one
+# per test run makes these tests immune to that restart behaviour.
+#
+# Requires TF_VAR_keycloak_client_secret to be set (see variables.tf).
+
 # ── 1. Health checks ─────────────────────────────────────────────────────────
 # Most frequent route (500+ hits/h). One test per service entry point.
 # Fast canary — if any of these fail, the service is down.
@@ -1189,7 +1345,7 @@ resource "datadog_synthetics_test" "health_gateway" {
 
   request_definition {
     method = "GET"
-    url    = "http://gateway-api.finance.svc.cluster.local:8080/health"
+    url    = "${local.synthetic_gateway_base}/health"
   }
 
   request_headers = {
@@ -1238,7 +1394,7 @@ resource "datadog_synthetics_test" "health_account_service" {
 
   request_definition {
     method = "GET"
-    url    = "http://account-service.finance.svc.cluster.local:8081/health"
+    url    = local.synthetic_account_health_url
   }
 
   request_headers = {
@@ -1282,7 +1438,7 @@ resource "datadog_synthetics_test" "health_transaction_service" {
 
   request_definition {
     method = "GET"
-    url    = "http://transaction-service.finance.svc.cluster.local:8082/health"
+    url    = local.synthetic_transaction_health_url
   }
 
   request_headers = {
@@ -1318,9 +1474,9 @@ resource "datadog_synthetics_test" "health_transaction_service" {
   tags = concat(local.common_tags, ["service:transaction-service", "synthetic_type:health"])
 }
 
-# ── 2. Payment happy path ─────────────────────────────────────────────────────
+# ── 2. Payment happy path ──────────────────────────────────────────────────
 # Most business-critical route. 93 hits/h, observed p95=24ms on gateway-api.
-# Multi-step: POST /v1/payments → extract payment_id → GET /v1/payments/{id}
+# Multi-step: Login → create test account → POST /v1/payments → GET /v1/payments/{id}
 
 resource "datadog_synthetics_test" "payment_happy_path" {
   name    = "Finance Payment Flow — Happy Path (POST → GET)"
@@ -1329,14 +1485,84 @@ resource "datadog_synthetics_test" "payment_happy_path" {
   status  = "live"
 
   api_step {
+    name    = "Login — obtain access token"
+    subtype = "http"
+
+    request_definition {
+      method             = "POST"
+      url                = local.synthetic_keycloak_token_url
+      body_type          = "application/x-www-form-urlencoded"
+      body               = "grant_type=password&client_id=finance-gateway&username=bob.trader&password=${urlencode("Finance@2025!")}&client_secret=${urlencode(var.keycloak_client_secret)}"
+      accept_self_signed = true
+    }
+
+    request_headers = {
+      Content-Type = "application/x-www-form-urlencoded"
+    }
+
+    assertion {
+      type     = "statusCode"
+      operator = "is"
+      target   = "200"
+    }
+
+    extracted_value {
+      name = "ACCESS_TOKEN"
+      type = "http_body"
+
+      parser {
+        type  = "json_path"
+        value = "$.access_token"
+      }
+    }
+  }
+
+  api_step {
+    name    = "Create test account"
+    subtype = "http"
+
+    request_definition {
+      method = "POST"
+      url    = local.synthetic_account_base
+      body = jsonencode({
+        ownerId  = "synthetic-payment-flow"
+        tier     = "retail"
+        currency = "EUR"
+        balance  = 100.00
+      })
+    }
+
+    request_headers = {
+      Content-Type = "application/json"
+      Accept       = "application/json"
+    }
+
+    assertion {
+      type     = "statusCode"
+      operator = "is"
+      target   = "201"
+    }
+
+    extracted_value {
+      name = "ACCOUNT_ID"
+      type = "http_body"
+
+      parser {
+        type  = "json_path"
+        value = "$.id"
+      }
+    }
+  }
+
+  api_step {
     name    = "POST /v1/payments — Initiate payment"
     subtype = "http"
 
     request_definition {
       method = "POST"
-      url    = "http://gateway-api.finance.svc.cluster.local:8080/v1/payments"
+      url    = "${local.synthetic_gateway_base}/v1/payments"
       body = jsonencode({
-        account_id       = "acc-synthetic-001"
+        account_id       = "{{ACCOUNT_ID}}"
         amount           = 1.00
         currency         = "EUR"
         transaction_type = "payment"
@@ -1346,7 +1572,7 @@ resource "datadog_synthetics_test" "payment_happy_path" {
     request_headers = {
       Content-Type  = "application/json"
       Accept        = "application/json"
-      Authorization = "Bearer {{SYNTHETIC_BEARER_TOKEN}}"
+      Authorization = "Bearer {{ACCESS_TOKEN}}"
     }
 
     assertion {
@@ -1361,9 +1587,13 @@ resource "datadog_synthetics_test" "payment_happy_path" {
     }
 
     extracted_value {
-      name  = "PAYMENT_ID"
-      type  = "http_body"
-      field = "$.payment_id"
+      name = "PAYMENT_ID"
+      type = "http_body"
+
+      parser {
+        type  = "json_path"
+        value = "$.payment_id"
+      }
     }
   }
 
@@ -1373,7 +1603,7 @@ resource "datadog_synthetics_test" "payment_happy_path" {
 
     request_definition {
       method = "GET"
-      url    = "http://transaction-service.finance.svc.cluster.local:8082/v1/payments/{{PAYMENT_ID}}"
+      url    = "${local.synthetic_transactions_base}/{{PAYMENT_ID}}"
     }
 
     request_headers = {
@@ -1416,28 +1646,103 @@ resource "datadog_synthetics_test" "payment_happy_path" {
 resource "datadog_synthetics_test" "balance_check" {
   name    = "Finance Balance Check — Authenticated GET"
   type    = "api"
-  subtype = "http"
+  subtype = "multi"
   status  = "live"
 
-  request_definition {
-    method = "GET"
-    url    = "http://gateway-api.finance.svc.cluster.local:8080/v1/accounts/{{SYNTHETIC_ACCOUNT_ID}}/balance"
+  api_step {
+    name    = "Login — obtain access token"
+    subtype = "http"
+
+    request_definition {
+      method             = "POST"
+      url                = local.synthetic_keycloak_token_url
+      body_type          = "application/x-www-form-urlencoded"
+      body               = "grant_type=password&client_id=finance-gateway&username=bob.trader&password=${urlencode("Finance@2025!")}&client_secret=${urlencode(var.keycloak_client_secret)}"
+      accept_self_signed = true
+    }
+
+    request_headers = {
+      Content-Type = "application/x-www-form-urlencoded"
+    }
+
+    assertion {
+      type     = "statusCode"
+      operator = "is"
+      target   = "200"
+    }
+
+    extracted_value {
+      name = "ACCESS_TOKEN"
+      type = "http_body"
+
+      parser {
+        type  = "json_path"
+        value = "$.access_token"
+      }
+    }
   }
 
-  request_headers = {
-    Accept        = "application/json"
-    Authorization = "Bearer {{SYNTHETIC_BEARER_TOKEN}}"
+  api_step {
+    name    = "Create test account"
+    subtype = "http"
+
+    request_definition {
+      method = "POST"
+      url    = local.synthetic_account_base
+      body = jsonencode({
+        ownerId  = "synthetic-balance-check"
+        tier     = "retail"
+        currency = "EUR"
+        balance  = 250.00
+      })
+    }
+
+    request_headers = {
+      Content-Type = "application/json"
+      Accept       = "application/json"
+    }
+
+    assertion {
+      type     = "statusCode"
+      operator = "is"
+      target   = "201"
+    }
+
+    extracted_value {
+      name = "ACCOUNT_ID"
+      type = "http_body"
+
+      parser {
+        type  = "json_path"
+        value = "$.id"
+      }
+    }
   }
 
-  assertion {
-    type     = "statusCode"
-    operator = "is"
-    target   = "200"
-  }
-  assertion {
-    type     = "responseTime"
-    operator = "lessThan"
-    target   = "200"
+  api_step {
+    name    = "GET /v1/accounts/{{ACCOUNT_ID}}/balance"
+    subtype = "http"
+
+    request_definition {
+      method = "GET"
+      url    = "${local.synthetic_gateway_base}/v1/accounts/{{ACCOUNT_ID}}/balance"
+    }
+
+    request_headers = {
+      Accept        = "application/json"
+      Authorization = "Bearer {{ACCESS_TOKEN}}"
+    }
+
+    assertion {
+      type     = "statusCode"
+      operator = "is"
+      target   = "200"
+    }
+    assertion {
+      type     = "responseTime"
+      operator = "lessThan"
+      target   = "200"
+    }
   }
 
   locations = ["aws:eu-west-1"]
@@ -1469,7 +1774,7 @@ resource "datadog_synthetics_test" "unauthenticated_rejection" {
 
   request_definition {
     method = "GET"
-    url    = "http://gateway-api.finance.svc.cluster.local:8080/v1/accounts/acc-synthetic-test/balance"
+    url    = "${local.synthetic_gateway_base}/v1/accounts/acc-synthetic-test/balance"
   }
 
   request_headers = {
@@ -1512,35 +1817,73 @@ resource "datadog_synthetics_test" "unauthenticated_rejection" {
 resource "datadog_synthetics_test" "payment_bad_payload" {
   name    = "Finance Payment — Bad Payload Rejected (422)"
   type    = "api"
-  subtype = "http"
+  subtype = "multi"
   status  = "live"
 
-  request_definition {
-    method = "POST"
-    url    = "http://gateway-api.finance.svc.cluster.local:8080/v1/payments"
-    body   = jsonencode({ not_a_valid_field = "synthetic-test" })
+  api_step {
+    name    = "Login — obtain access token"
+    subtype = "http"
+
+    request_definition {
+      method             = "POST"
+      url                = local.synthetic_keycloak_token_url
+      body_type          = "application/x-www-form-urlencoded"
+      body               = "grant_type=password&client_id=finance-gateway&username=bob.trader&password=${urlencode("Finance@2025!")}&client_secret=${urlencode(var.keycloak_client_secret)}"
+      accept_self_signed = true
+    }
+
+    request_headers = {
+      Content-Type = "application/x-www-form-urlencoded"
+    }
+
+    assertion {
+      type     = "statusCode"
+      operator = "is"
+      target   = "200"
+    }
+
+    extracted_value {
+      name = "ACCESS_TOKEN"
+      type = "http_body"
+
+      parser {
+        type  = "json_path"
+        value = "$.access_token"
+      }
+    }
   }
 
-  request_headers = {
-    Content-Type  = "application/json"
-    Accept        = "application/json"
-    Authorization = "Bearer {{SYNTHETIC_BEARER_TOKEN}}"
-  }
+  api_step {
+    name    = "POST /v1/payments — Bad payload"
+    subtype = "http"
 
-  assertion {
-    type     = "statusCode"
-    operator = "is"
-    target   = "422"
-  }
-  assertion {
-    type     = "statusCode"
-    operator = "isNot"
-    target   = "500"
-  }
-  assertion {
-    type     = "responseTime"
-    operator = "lessThan"
-    target   = "500"
+    request_definition {
+      method = "POST"
+      url    = "${local.synthetic_gateway_base}/v1/payments"
+      body   = jsonencode({ not_a_valid_field = "synthetic-test" })
+    }
+
+    request_headers = {
+      Content-Type  = "application/json"
+      Accept        = "application/json"
+      Authorization = "Bearer {{ACCESS_TOKEN}}"
+    }
+
+    assertion {
+      type     = "statusCode"
+      operator = "is"
+      target   = "422"
+    }
+    assertion {
+      type     = "statusCode"
+      operator = "isNot"
+      target   = "500"
+    }
+    assertion {
+      type     = "responseTime"
+      operator = "lessThan"
+      target   = "500"
+    }
   }
 
   locations = ["aws:eu-west-1"]
@@ -1572,7 +1915,7 @@ resource "datadog_synthetics_test" "account_not_found" {
 
   request_definition {
     method = "GET"
-    url    = "http://account-service.finance.svc.cluster.local:8081/v1/accounts/acc-does-not-exist-synthetic"
+    url    = "${local.synthetic_account_base}/acc-does-not-exist-synthetic"
   }
 
   request_headers = {
@@ -1624,14 +1967,19 @@ resource "datadog_synthetics_test" "account_creation_latency" {
   subtype = "http"
   status  = "live"
 
+  # NOTE: field names must match account-service's Account model exactly
+  # (ownerId/tier/currency/balance) — Jackson silently ignores unknown
+  # fields and fills the rest with nulls/defaults instead of erroring, so a
+  # mismatched body here would still return 201 while creating a malformed
+  # record with a null ownerId and tier.
   request_definition {
     method = "POST"
-    url    = "http://account-service.finance.svc.cluster.local:8081/v1/accounts"
+    url    = local.synthetic_account_base
     body = jsonencode({
-      owner           = "synthetic-test-user"
-      account_type    = "retail"
-      currency        = "EUR"
-      initial_balance = 0.00
+      ownerId  = "synthetic-test-user"
+      tier     = "retail"
+      currency = "EUR"
+      balance  = 0.00
     })
   }
 
