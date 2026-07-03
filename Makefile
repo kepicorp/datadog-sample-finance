@@ -241,8 +241,10 @@ deploy-k8s:
 	@echo "Applying config, secrets and infrastructure..."
 	kubectl apply -f deploy/kubernetes/base/01-config.yaml
 	kubectl apply -f deploy/kubernetes/base/02-secrets.yaml
+	kubectl apply -f deploy/kubernetes/base/infrastructure/activemq-broker-config.yaml
 	kubectl apply -f deploy/kubernetes/base/infrastructure/activemq.yaml
 	kubectl apply -f deploy/kubernetes/base/infrastructure/keycloak.yaml
+	kubectl apply -f deploy/kubernetes/base/infrastructure/postgres-init.yaml
 	kubectl apply -f deploy/kubernetes/base/infrastructure/postgres.yaml
 	kubectl apply -f deploy/kubernetes/base/infrastructure/redis.yaml
 	@echo "Waiting for PostgreSQL to be ready..."
@@ -288,6 +290,34 @@ deploy-k8s-eks:
 	@echo "Applying config and secrets..."
 	kubectl apply -f deploy/kubernetes/base/01-config.yaml
 	kubectl apply -f deploy/kubernetes/base/02-secrets.yaml
+	@echo "Creating traffic-generator script ConfigMap..."
+	kubectl create configmap traffic-generator-script \
+		--from-file=generate-traffic.py=scripts/generate-traffic.py \
+		-n finance --dry-run=client -o yaml | kubectl apply -f -
+	@echo "Creating TLS secret for nginx Keycloak HTTPS proxy (idempotent)..."
+	@if ! kubectl get secret keycloak-tls -n finance >/dev/null 2>&1; then \
+		openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
+			-keyout /tmp/keycloak-tls.key \
+			-out /tmp/keycloak-tls.crt \
+			-subj "/CN=localhost/O=finance-sample-app" \
+			-addext "subjectAltName=DNS:localhost,DNS:keycloak,IP:127.0.0.1" \
+			2>/dev/null; \
+		kubectl create secret tls keycloak-tls \
+			--cert=/tmp/keycloak-tls.crt \
+			--key=/tmp/keycloak-tls.key \
+			-n finance; \
+		rm -f /tmp/keycloak-tls.crt /tmp/keycloak-tls.key; \
+		echo "  ✓ keycloak-tls Secret created"; \
+	else \
+		echo "  keycloak-tls Secret already exists — skipping"; \
+	fi
+	@echo "Creating frontend dashboard ConfigMap (injecting current KEYCLOAK_PUBLIC_URL)..."
+	@KEYCLOAK_URL=$$(grep 'KEYCLOAK_PUBLIC_URL' deploy/kubernetes/base/01-config.yaml | sed 's/.*: *"\(.*\)"/\1/'); \
+	sed "s|https://localhost:30443|$$KEYCLOAK_URL|g" frontend-stub/index.html > /tmp/finance-index.html; \
+	kubectl create configmap frontend-dashboard \
+		--from-file=index.html=/tmp/finance-index.html \
+		-n finance --dry-run=client -o yaml | kubectl apply -f -; \
+	rm -f /tmp/finance-index.html
 	@echo "Applying EKS overlay (ECR images + gp3 StorageClass + infrastructure + services)..."
 	kubectl apply -k deploy/kubernetes/overlays/eks
 	@echo "Waiting for PostgreSQL to be ready..."
@@ -296,9 +326,14 @@ deploy-k8s-eks:
 	@echo "✓  Deployed. Check pod status:"
 	@echo "     kubectl get pods -n finance"
 	@echo ""
-	@echo "⚠  Keycloak public URL: wait for Keycloak NLB then run:"
-	@echo "     KC_HOST=\$$(kubectl get svc keycloak -n finance -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')"
-	@echo "     kubectl patch configmap app-config -n finance --type=merge -p '{\"data\":{\"KEYCLOAK_PUBLIC_URL\":\"http://\$$KC_HOST\"}}'"
+	@echo "⚠  Keycloak public URL: the frontend Service (nginx) sits behind the"
+	@echo "   Terraform-managed NLB and proxies Keycloak — the keycloak Service"
+	@echo "   itself is ClusterIP-only. The NLB hostname is already known (it was"
+	@echo "   created by 'make tf-apply-aws', not by this Service), so run:"
+	@echo "     FE_URL=\$$(cd deploy/terraform/aws && terraform output -raw frontend_url)"
+	@echo "     kubectl patch configmap app-config -n finance --type=merge -p \"{\\\"data\\\":{\\\"KEYCLOAK_PUBLIC_URL\\\":\\\"\$$FE_URL\\\"}}\""
+	@echo "     sed \"s|https://localhost:30443|\$$FE_URL|g\" frontend-stub/index.html > /tmp/finance-index.html"
+	@echo "     kubectl create configmap frontend-dashboard --from-file=index.html=/tmp/finance-index.html -n finance --dry-run=client -o yaml | kubectl apply -f -"
 	@echo "     kubectl rollout restart deployment/keycloak deployment/frontend -n finance"
 
 ## deploy-k8s-dd: Deploy the Datadog Agent. Auto-detects local vs EKS.
@@ -323,6 +358,7 @@ deploy-k8s-dd:
 		helm upgrade --install datadog-operator datadog/datadog-operator \
 			--namespace datadog --create-namespace \
 			--set watchNamespaces="{datadog,finance}" \
+			--set maximumGoroutines=800 \
 			--wait --timeout 120s; \
 		echo "==> Fetching DD_API_KEY from AWS Secrets Manager..."; \
 		SECRET_ARN=$$(cd deploy/terraform/aws && terraform output -raw dd_api_key_secret_arn 2>/dev/null); \
@@ -356,15 +392,30 @@ deploy-k8s-dd:
 			| kubectl apply -f -; \
 	else \
 		echo "    Detected: local cluster"; \
-		echo "==> Checking Datadog Operator is installed..."; \
+		echo "==> Checking Datadog Operator is installed and running..."; \
 		if ! kubectl get crd datadogagents.datadoghq.com >/dev/null 2>&1; then \
-			echo "ERROR: Datadog Operator CRD not found."; \
-			echo "       Install it first:"; \
-			echo "         helm repo add datadog https://helm.datadoghq.com"; \
-			echo "         helm install datadog-operator datadog/datadog-operator \\"; \
-			echo "           --namespace datadog --create-namespace \\"; \
-			echo "           --set watchNamespaces='{datadog,finance}'"; \
-			exit 1; \
+			echo "    CRD not found — installing Datadog Operator via Helm..."; \
+			helm repo add datadog https://helm.datadoghq.com 2>/dev/null || true; \
+			helm repo update datadog 2>/dev/null; \
+			helm upgrade --install datadog-operator datadog/datadog-operator \
+				--namespace datadog --create-namespace \
+				--set watchNamespaces="{datadog,finance}" \
+				--set maximumGoroutines=800 \
+				--wait --timeout 120s; \
+		elif ! kubectl get deployment datadog-operator -n datadog >/dev/null 2>&1 || \
+			[ "$$(kubectl get deployment datadog-operator -n datadog -o jsonpath='{.status.availableReplicas}' 2>/dev/null)" != "1" ]; then \
+			echo "    CRD exists but Operator Deployment is missing or not available"; \
+			echo "    (this happens after 'make teardown', which removes the Helm release"; \
+			echo "     but not the cluster-scoped CRD) — (re)installing via Helm..."; \
+			helm repo add datadog https://helm.datadoghq.com 2>/dev/null || true; \
+			helm repo update datadog 2>/dev/null; \
+			helm upgrade --install datadog-operator datadog/datadog-operator \
+				--namespace datadog --create-namespace \
+				--set watchNamespaces="{datadog,finance}" \
+				--set maximumGoroutines=800 \
+				--wait --timeout 120s; \
+		else \
+			echo "    Datadog Operator already installed and running — skipping"; \
 		fi; \
 		echo "==> Creating datadog-secret from .env..."; \
 		$(MAKE) create-dd-secret; \
@@ -437,11 +488,12 @@ tf-configure-kubectl:
 	eval "$$(cd deploy/terraform/aws && terraform output -raw kubeconfig_command)"
 
 ## frontend-url: Print the public URL of the Finance app frontend on EKS.
-##               Only works after make deploy-k8s-eks (requires LoadBalancer to be provisioned).
+##               Available as soon as make tf-apply-aws completes (Terraform-managed
+##               NLB, not a Kubernetes LoadBalancer Service) — no need to deploy the
+##               app first.
 frontend-url:
-	@kubectl get svc frontend -n finance \
-		-o jsonpath='http://{.status.loadBalancer.ingress[0].hostname}{"\n"}' 2>/dev/null \
-		|| echo "No LoadBalancer yet — run 'make deploy-k8s-eks' first."
+	@cd deploy/terraform/aws && terraform output -raw frontend_url 2>/dev/null && echo "" \
+		|| echo "No NLB yet — run 'make tf-apply-aws' first."
 
 ## tf-destroy-aws: Safely destroy all AWS resources created by Terraform.
 ##                 Automatically handles the dependency ordering that plain

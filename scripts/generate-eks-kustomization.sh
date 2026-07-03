@@ -6,6 +6,24 @@
 #
 # Called automatically by: make deploy-k8s-eks
 # Requires: terraform apply (make tf-apply-aws) to have completed.
+#
+# NOTE: the frontend Service is intentionally left as `type: NodePort` here
+# (same as local) — it is NOT patched to `type: LoadBalancer`. Exposure to
+# the internet is handled entirely by a Terraform-managed NLB
+# (aws_lb.frontend in deploy/terraform/aws/main.tf) that targets the fixed
+# NodePorts (30080 HTTP, 30443 HTTPS) across the EKS managed node group's
+# Auto Scaling Group.
+#
+# This used to work the other way around (Kubernetes provisioned a Classic
+# ELB dynamically via `type: LoadBalancer`), but that ELB — and its
+# auto-created security group — lived entirely outside Terraform state. If
+# the EKS cluster was ever deleted before that Service was cleaned up, the
+# controller that would release the ELB was gone, and it became a
+# permanently orphaned resource blocking VPC/subnet deletion. Moving the
+# load balancer into Terraform (as a first-class resource with the cluster
+# as an implicit dependency) means `terraform destroy` always tears it down
+# in the correct order — see deploy/terraform/aws/main.tf's "FRONTEND LOAD
+# BALANCER" section for the full explanation.
 # =============================================================================
 set -euo pipefail
 
@@ -32,29 +50,17 @@ FD=$(get_url "fraud-detection")
 NS=$(get_url "notification-service")
 BP=$(get_url "batch-processor")
 
-# Read ACM certificate ARN (empty string if domain_name not set)
+# Read ACM certificate ARN / domain / NLB hostname (may be empty if not yet applied)
 ACM_CERT_ARN=$(cd "$TF_DIR" && terraform output -raw acm_certificate_arn 2>/dev/null || echo "")
 DOMAIN_NAME=$(cd "$TF_DIR" && terraform output -raw domain_name 2>/dev/null || echo "")
+FRONTEND_URL=$(cd "$TF_DIR" && terraform output -raw frontend_url 2>/dev/null || echo "")
 
 if [ -n "$ACM_CERT_ARN" ]; then
   echo "    ACM certificate ARN: $ACM_CERT_ARN"
-  echo "    HTTPS NLB will be provisioned on port 443"
-  FRONTEND_PATCH_ANNOTATIONS="
-      annotations:
-        service.beta.kubernetes.io/aws-load-balancer-type: \"nlb\"
-        service.beta.kubernetes.io/aws-load-balancer-ssl-cert: \"${ACM_CERT_ARN}\"
-        service.beta.kubernetes.io/aws-load-balancer-ssl-ports: \"443\"
-        service.beta.kubernetes.io/aws-load-balancer-backend-protocol: \"http\"
-        service.beta.kubernetes.io/aws-load-balancer-cross-zone-load-balancing-enabled: \"true\""
-  FRONTEND_PORT_PATCH="
-      - port: 443
-        targetPort: 80
-        protocol: TCP"
+  echo "    NLB (Terraform-managed) serves HTTPS on :443 using this certificate"
 else
-  echo "    No ACM certificate — NLB will use HTTP only"
+  echo "    No ACM certificate — NLB (Terraform-managed) serves HTTP only on :80"
   echo "    Set domain_name in staging.tfvars and re-run make tf-apply-aws for HTTPS"
-  FRONTEND_PATCH_ANNOTATIONS=""
-  FRONTEND_PORT_PATCH=""
 fi
 
 ECR_REGISTRY=$(echo "$GW" | sed 's|/finance-app/gateway-api||')
@@ -70,6 +76,11 @@ cat > "$OUT" << HEREDOC
 # ECR registry: ${ECR_REGISTRY}
 # ACM cert:     ${ACM_CERT_ARN:-none}
 # Domain:       ${DOMAIN_NAME:-<nlb-hostname>}
+#
+# NOTE: the frontend Service stays 'type: NodePort' here — public exposure
+# is handled by the Terraform-managed NLB (aws_lb.frontend), not by
+# Kubernetes' own LoadBalancer Service provisioning. See
+# scripts/generate-eks-kustomization.sh for why.
 # =============================================================================
 
 apiVersion: kustomize.config.k8s.io/v1beta1
@@ -101,45 +112,6 @@ images:
     newTag: latest
 
 patches:
-  # ── Frontend: LoadBalancer (NLB) ──────────────────────────────────────────────
-  # Exposes the Finance app via an AWS NLB.
-  # With ACM cert: NLB terminates TLS on :443, forwards HTTP to nginx :80.
-  # Without cert:  NLB exposes HTTP :80 only.
-HEREDOC
-
-# Emit the frontend Service patch — with or without ACM HTTPS annotations
-if [ -n "$ACM_CERT_ARN" ]; then
-  cat >> "$OUT" << HEREDOC
-  - patch: |-
-      - op: replace
-        path: /spec/type
-        value: LoadBalancer
-      - op: add
-        path: /metadata/annotations
-        value:
-          service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
-          service.beta.kubernetes.io/aws-load-balancer-ssl-cert: "${ACM_CERT_ARN}"
-          service.beta.kubernetes.io/aws-load-balancer-ssl-ports: "443"
-          service.beta.kubernetes.io/aws-load-balancer-backend-protocol: "http"
-          service.beta.kubernetes.io/aws-load-balancer-cross-zone-load-balancing-enabled: "true"
-    target:
-      kind: Service
-      name: frontend
-HEREDOC
-else
-  cat >> "$OUT" << HEREDOC
-  - patch: |-
-      - op: replace
-        path: /spec/type
-        value: LoadBalancer
-    target:
-      kind: Service
-      name: frontend
-HEREDOC
-fi
-
-cat >> "$OUT" << HEREDOC
-
   # imagePullPolicy: Always — EKS nodes have no local image cache.
   # Applied per-service; frontend (nginx) is excluded as it uses a public image.
   - patch: |-
@@ -190,36 +162,29 @@ echo "    Written: $OUT"
 echo "    ECR base: ${ECR_REGISTRY}"
 
 # ── Update KEYCLOAK_PUBLIC_URL in the base ConfigMap ──────────────────────────────
-# On EKS, Keycloak is exposed via a dedicated NLB (LoadBalancer service).
-# We get its hostname after the first 'kubectl apply -k' by waiting for the
-# service to be assigned an external IP, then patch the ConfigMap.
-# The make deploy-k8s-eks target calls this script BEFORE applying the overlay,
-# so the NLB hostname isn't known yet. Instead we print instructions.
+# The NLB (aws_lb.frontend) is created by 'make tf-apply-aws', so its hostname
+# is already known before the app is even deployed — no more "wait ~2 min for
+# the Service to get an external IP" step like the old LoadBalancer Service
+# required.
 echo ""
-echo "NOTE: After 'kubectl apply -k deploy/kubernetes/overlays/eks', wait for"
-echo "      the NLB hostname (~2 min) and patch KEYCLOAK_PUBLIC_URL:"
-echo ""
-if [ -n "$ACM_CERT_ARN" ]; then
-  if [ -n "$DOMAIN_NAME" ]; then
-    echo "  # Using custom domain: $DOMAIN_NAME"
-    echo "  KC_URL=\"https://$DOMAIN_NAME\""
+if [ -n "$FRONTEND_URL" ]; then
+  echo "NOTE: After 'kubectl apply -k deploy/kubernetes/overlays/eks', set"
+  echo "      KEYCLOAK_PUBLIC_URL to the (already-known) NLB URL:"
+  echo ""
+  echo "  kubectl patch configmap app-config -n finance --type=merge \\"
+  echo "    -p \"{\\\"data\\\":{\\\"KEYCLOAK_PUBLIC_URL\\\":\\\"${FRONTEND_URL}\\\"}}\""
+  echo "  kubectl rollout restart deployment/keycloak deployment/frontend -n finance"
+  echo ""
+  if [ -n "$ACM_CERT_ARN" ]; then
+    echo "  HTTPS is handled by the NLB using your ACM certificate."
+    echo "  The nginx :8443 self-signed HTTPS listener is not needed for the main"
+    echo "  domain on EKS, but stays available at:"
+    echo "    $(cd "$TF_DIR" && terraform output -raw frontend_keycloak_https_url 2>/dev/null || echo '<see terraform output frontend_keycloak_https_url>')"
   else
-    echo "  # Using NLB hostname (add your domain as a CNAME to this)"
-    echo "  KC_HOST=\$(kubectl get svc frontend -n finance -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')"
-    echo "  KC_URL=\"https://\$KC_HOST\""
+    echo "  ⚠  No ACM certificate configured — dashboard is HTTP-only at ${FRONTEND_URL}."
+    echo "  Set domain_name in staging.tfvars + make tf-apply-aws to enable HTTPS."
   fi
-  echo "  kubectl patch configmap app-config -n finance --type=merge \\"
-  echo "    -p \"{\\\"data\\\":{\\\"KEYCLOAK_PUBLIC_URL\\\":\\\"\$KC_URL\\\"}}\""
-  echo "  kubectl rollout restart deployment/keycloak deployment/frontend -n finance"
-  echo ""
-  echo "  HTTPS is handled by the NLB using your ACM certificate."
-  echo "  The nginx :8443 HTTPS listener is NOT needed on EKS — the NLB terminates TLS."
 else
-  echo "  ⚠  No ACM certificate configured. NLB exposes HTTP only."
-  echo "  Set domain_name in staging.tfvars + make tf-apply-aws to enable HTTPS."
-  echo ""
-  echo "  KC_HOST=\$(kubectl get svc frontend -n finance -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')"
-  echo "  kubectl patch configmap app-config -n finance --type=merge \\"
-  echo "    -p \"{\\\"data\\\":{\\\"KEYCLOAK_PUBLIC_URL\\\":\\\"http://\$KC_HOST\\\"}}\""
-  echo "  kubectl rollout restart deployment/keycloak deployment/frontend -n finance"
+  echo "NOTE: frontend_url not yet available from Terraform output."
+  echo "      Run 'make tf-apply-aws' first, then re-run this script."
 fi

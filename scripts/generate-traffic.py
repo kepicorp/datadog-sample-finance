@@ -44,13 +44,17 @@ import urllib.parse
 import urllib.request
 from datetime import datetime
 
-GATEWAY  = os.environ.get("GATEWAY_URL",  "http://gateway-api:8080")
+GATEWAY = os.environ.get("GATEWAY_URL", "http://gateway-api:8080")
 ACCOUNTS = os.environ.get("ACCOUNTS_URL", "http://account-service:8081")
-TXNS     = os.environ.get("TXNS_URL",     "http://transaction-service:8082")
+TXNS = os.environ.get("TXNS_URL", "http://transaction-service:8082")
+BATCH = os.environ.get("BATCH_URL", "http://batch-processor:8083")
 KEYCLOAK = os.environ.get("KEYCLOAK_URL", "http://keycloak:8080")
 REALM = "finance"
 CLIENT_ID = "finance-gateway"
-CLIENT_SECRET = "REPLACE_WITH_SECRET"
+# Must match the `secret` field of the `finance-gateway` client in
+# identity-provider/realm-export/finance-realm.json, which is seeded from
+# the `keycloak-client-secret` key of the `app-secrets` K8s Secret.
+CLIENT_SECRET = os.environ.get("KEYCLOAK_CLIENT_SECRET", "REPLACE_WITH_SECRET")
 
 KEYCLOAK_USERS = [
     {"username": "alice.analyst", "password": "Finance@2025!", "role": "analyst"},
@@ -165,9 +169,32 @@ def auth_header(user):
 
 _account_ids = []
 
+# account-service currently keeps accounts in an in-memory ConcurrentHashMap
+# (see AccountService.java — "When PostgreSQL is wired up..."). That means
+# every account-service pod restart/rollout wipes all previously seeded
+# accounts. If this script only seeded once at startup and cached the IDs
+# forever, every account-service restart would silently turn all
+# balance-check/payment/payment-alert traffic into permanent 404s
+# ("account_not_found") for the rest of this script's lifetime — including
+# the payment-alert -> alert.queue JMS publish, which is best-effort and
+# fails *silently* server-side, making it look like a broker/consumer bug
+# rather than stale test data. Reseeding periodically keeps the account
+# pool valid across account-service restarts without needing to manually
+# restart the traffic generator too.
+RESEED_INTERVAL_SECONDS = 120
+_last_seed_time = 0.0
+
 
 def seed_accounts():
-    """Create a handful of accounts directly on account-service (no auth needed)."""
+    """Create a handful of accounts directly on account-service (no auth needed).
+
+    Clears any previously cached IDs first so stale accounts (e.g. from
+    before an account-service restart wiped its in-memory store) are
+    dropped rather than accumulated forever.
+    """
+    global _last_seed_time
+    _account_ids.clear()
+    _last_seed_time = time.time()
     print(f"\n{BOLD}[seed] Creating test accounts on account-service…{RESET}")
     seeds = [
         {
@@ -318,6 +345,20 @@ def scenario_not_found():
     http("GET", f"{TXNS}/v1/payments/pay-does-not-exist-999")
 
 
+def scenario_batch_job():
+    """
+    Trigger the end-of-day reconciliation batch job on-demand.
+
+    In production this job only runs on a nightly cron (disabled by default
+    in this sample). Triggering it here periodically — low weight, since
+    each run reads/writes the ledger DB — produces a steady stream of
+    batch.job / batch.step spans for Data Jobs Monitoring without waiting
+    for midnight. See batch-processor's BatchJobController.
+    """
+    print(f"\n{BOLD}── batch job trigger  (reconciliation){RESET}")
+    http("POST", f"{BATCH}/jobs/reconciliation", body={}, expected=(200, 201, 202))
+
+
 # Weighted scenario table: (weight, callable)
 SCENARIOS = [
     (30, scenario_balance_check),
@@ -327,6 +368,7 @@ SCENARIOS = [
     (7, scenario_not_found),
     (5, scenario_unauthorized),
     (3, scenario_bad_payload),
+    (2, scenario_batch_job),
 ]
 
 _weights = [w for w, _ in SCENARIOS]
@@ -429,6 +471,12 @@ def main():
         while True:
             if deadline and time.time() >= deadline:
                 break
+            # Periodically refresh the seeded account pool. This is what makes
+            # the generator resilient to account-service restarts (in-memory
+            # store gets wiped) instead of hammering it with 404s forever —
+            # see the comment above seed_accounts() for the full story.
+            if time.time() - _last_seed_time >= RESEED_INTERVAL_SECONDS:
+                seed_accounts()
             t0 = time.time()
             pick_scenario()()
             stats.tick()
