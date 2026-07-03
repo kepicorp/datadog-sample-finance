@@ -25,7 +25,8 @@ base/
     ├── fraud-detection.yaml   # Python async fraud scorer (JMS consumer, no HTTP)
     ├── notification-service.yaml # Go async notifier (JMS consumer, no HTTP)
     ├── batch-processor.yaml   # Java/Spring Batch nightly reconciliation (no HTTP)
-    └── frontend.yaml          # nginx dashboard — NodePort :30080
+    ├── frontend.yaml          # nginx dashboard — NodePort :30080
+    └── traffic-generator.yaml # In-cluster continuous load generator (no Datadog injection)
 ```
 
 ---
@@ -95,7 +96,7 @@ make deploy-k8s
 kubectl get pods -n finance
 ```
 
-Expected output (~2 minutes after deploy):
+Expected output (~2 minutes after deploy, 12 pods total):
 
 ```
 NAME                                   READY   STATUS    RESTARTS
@@ -109,6 +110,7 @@ keycloak-...                           1/1     Running   0
 notification-service-...               1/1     Running   0
 postgres-ledger-0                      1/1     Running   0
 redis-...                              1/1     Running   0
+traffic-generator-...                  1/1     Running   0
 transaction-service-...                1/1     Running   0
 ```
 

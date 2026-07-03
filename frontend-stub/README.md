@@ -16,13 +16,16 @@ The page runs without any Datadog configuration. All RUM SDK code is commented o
 
 | Step | Action |
 |------|--------|
-| 8a | Create a RUM application in Datadog UI: UX Monitoring > RUM Applications > New Application |
-| 8b | Copy `applicationId` and `clientToken` into the `DD_RUM.init()` block in `index.html` |
-| 8c | Uncomment the `<script src="...datadog-rum.js">` tag and the `DD_RUM.init({...})` block |
-| 8d | Open the page, trigger a payment, and verify the session appears in RUM > Sessions |
-| 8e | Uncomment `DD_RUM.startSessionReplayRecording()` and verify the replay appears |
-| 8f | Replace `console.log` calls with `DD_RUM.addAction(...)` calls (examples are inline) |
-| 8g | In APM > Traces, click a `gateway-api` trace and verify the RUM session link appears |
+| 8a | Run `make tf-apply-dd` to create the RUM application via Terraform (`datadog_rum_application.finance_frontend`) |
+| 8b | Run `make instrument` — it uncomments the `<script src="...datadog-rum.js">` tag and `DD_RUM.init({...})` block in `index.html`, and injects the real `applicationId`/`clientToken` from the Terraform output automatically (no manual copy/paste) |
+| 8c | Rebuild the frontend ConfigMap and `kubectl rollout restart deployment/frontend -n finance` so the updated `index.html` is served |
+| 8d | Open the page and confirm the injected `applicationId`/`clientToken` values in `index.html` are real (not `REPLACE_WITH_APPLICATION_ID`/`REPLACE_WITH_CLIENT_TOKEN` placeholders) |
+| 8e | Trigger a payment and verify the session appears in RUM > Sessions |
+| 8f | Verify Session Replay recording appears for that session (`sessionReplaySampleRate: 100` is already set) |
+| 8g | Replace `console.log` / `appLog()` calls with `DD_RUM.addAction(...)` calls (examples are inline) and verify the actions appear on the RUM session timeline |
+| 8h | In APM > Traces, click a `gateway-api` trace and verify the RUM session link appears |
+
+See `../INSTRUMENTATION.md` (Step 8) for the full `make tf-apply-dd && make instrument` workflow, including the ConfigMap rebuild command and troubleshooting if credentials are left as placeholders.
 
 Docs: https://docs.datadoghq.com/real_user_monitoring/browser/
 
@@ -66,4 +69,4 @@ python3 -m http.server 3000 --directory frontend-stub/
 npx serve frontend-stub/ -l 3000
 ```
 
-The JS fetch calls expect the backend APIs to be reachable at the same origin (proxied via NGINX in Docker Compose). When running outside Docker, update the fetch URLs or configure a local reverse proxy.
+The JS fetch calls expect the backend APIs to be reachable at the same origin, proxied via the **NGINX Kubernetes Service** (`deploy/kubernetes/base/services/frontend.yaml`), exposed on `http://localhost:30080` after `make deploy-k8s`. When serving this file standalone (outside the cluster), update the fetch URLs or configure a local reverse proxy to point at `http://localhost:30080`.

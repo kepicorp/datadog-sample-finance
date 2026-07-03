@@ -85,15 +85,7 @@ kubectl patch secret app-secrets -n finance \
 
 ### Finance realm users
 
-Pre-imported into the Keycloak `finance` realm. Log in at the Finance dashboard: `http://localhost:30080`.
-
-| Username | Password | Role | Permissions |
-|---|---|---|---|
-| `alice.analyst` | `Finance@2025!` | `finance-analyst` | Read-only: view accounts and balances |
-| `bob.trader` | `Finance@2025!` | `finance-trader` | Initiate payments and transfers |
-| `carol.admin` | `Finance@2025!` | `finance-admin` | Full access: deposits, transfers, payments |
-| `dave.auditor` | `Finance@2025!` | `finance-auditor` | Read-only: view accounts and payments |
-| `eve.compliance` | `Finance@2025!` | `finance-compliance` | Approve or reject pending payments |
+Pre-imported into the Keycloak `finance` realm. Log in at the Finance dashboard: `http://localhost:30080`. See root [README.md's "Finance realm users and roles"](../README.md#finance-realm-users-and-roles) for the full table of usernames, passwords, roles, and per-dashboard-card permissions — all 5 users share the password `Finance@2025!`.
 
 ---
 
@@ -766,7 +758,7 @@ kubectl logs -n finance deploy/traffic-generator --tail=20
 
 ## Validated state
 
-Last validated: Docker Desktop with Kubernetes enabled (single-node, Apple Silicon)
+Last validated: local Kubernetes (Colima + k3s, single-node, Apple Silicon) and AWS EKS (Bottlerocket nodes, Terraform-provisioned)
 
 | Signal | Layer | Status |
 |---|---|---|

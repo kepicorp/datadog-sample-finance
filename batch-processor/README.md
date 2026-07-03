@@ -23,8 +23,10 @@ cp .env.example .env
 # Run (requires a PostgreSQL instance — see kubectl get pods -n finance # postgres-ledger runs in the finance namespace)
 java -jar build/libs/batch-processor-*.jar
 
-# Trigger reconciliation job manually via Actuator (when spring.batch.job.enabled=false)
-curl -X POST http://localhost:8080/actuator/batch/jobs/end-of-day-reconciliation
+# Trigger a job manually (spring.batch.job.enabled=false disables auto-launch on startup —
+# see BatchJobController.java for the real endpoints; there is no /actuator/batch/jobs/... path)
+curl -X POST http://localhost:8083/jobs/reconciliation
+curl -X POST http://localhost:8083/jobs/statement
 ```
 
 ---
@@ -70,14 +72,12 @@ Verify: every log line should contain `"service":"batch-processor"` (from `logba
 
 #### Step 3 — Enable APM auto-instrumentation
 
-In `Dockerfile`, uncomment the two lines:
-```dockerfile
-ADD https://dtdg.co/latest-java-tracer /dd-java-agent.jar
-RUN chmod 444 /dd-java-agent.jar
-```
+The `dd-java-agent.jar` is already baked into the image — `Dockerfile` downloads it
+unconditionally at build time (`ADD https://dtdg.co/latest-java-tracer /dd-java-agent.jar`)
+so later steps (Data Jobs Monitoring, Continuous Profiler) don't require a rebuild.
 
-In `.env`, uncomment the `JAVA_TOOL_OPTIONS` block.
-Rebuild the image and restart the container.
+All that's needed to actually attach it: in `.env`, uncomment the `JAVA_TOOL_OPTIONS`
+block, then rebuild the image and restart the container.
 
 What you see in APM:
 - A `batch-processor` service entry appears under APM > Services
@@ -225,7 +225,7 @@ Docs: https://docs.datadoghq.com/data_jobs/java/
 #### Step 12 — Add Synthetic API tests
 
 Add a Synthetic monitor for the Actuator health endpoint:
-- `GET http://batch-processor:8080/actuator/health` — assert HTTP 200 and `status: UP`
+- `GET http://batch-processor:8083/actuator/health` — assert HTTP 200 and `status: UP`
 
 See `synthetics/` in the root of the project for the Datadog Synthetic test definition.
 

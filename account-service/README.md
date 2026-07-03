@@ -139,19 +139,14 @@ Docs: https://docs.datadoghq.com/real_user_monitoring/browser/
 
 ### Step 9 — Enable Database Monitoring (DBM) for PostgreSQL
 
-DBM is configured entirely on the Agent side — no application code changes.
+DBM is Agent-side — see [INSTRUMENTATION.md's Step 9](../INSTRUMENTATION.md#step-9--database-monitoring-postgresql)
+for the full setup (monitoring user, `pg_stat_statements`, Agent check config).
 
-1. Run the PostgreSQL prerequisites SQL (see `deploy/kubernetes/datadog/checks/postgres-check.yaml`):
-   - Create a read-only `datadog` monitoring user
-   - Enable `pg_stat_statements`
-
-2. Add `conf.d/postgres.d/conf.yaml` to the Agent (see `deploy/kubernetes/datadog/checks/` for the template).
-
-3. Set `dbm: true` in the Agent config.
+`account-service` is the primary JDBC writer to `postgres-ledger`. `dd-trace-java` automatically
+sets `db.instance` and `peer.hostname` on its JDBC spans to match the DBM Agent config, so no
+extra tagging is required here.
 
 In Datadog: Databases > `postgres-ledger`. Click any query sample → "View Explain Plan". Click any `db.query` span in APM → "View in DBM".
-
-Docs: https://docs.datadoghq.com/database_monitoring/setup_postgres/selfhosted/
 
 ### Step 10 — Enable Data Streams Monitoring (DSM) for JMS
 

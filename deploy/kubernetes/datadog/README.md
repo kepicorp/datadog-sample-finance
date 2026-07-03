@@ -1,13 +1,24 @@
 # Adding Datadog to the Kubernetes Deployment
 
-This directory contains everything needed to instrument the Finance sample app
-with the full Datadog observability stack on Kubernetes.
+This directory contains the Datadog Agent/Operator resources for the Finance
+sample app on Kubernetes. **In practice, `make deploy-k8s-dd` runs everything
+in this doc for you** (Operator install, secret creation, Agent CRD, and the
+two check ConfigMaps) — read on if you want to understand or customize what
+it does, or to use Helm directly instead of the Operator.
 
 **Prerequisite:** the base application must already be running:
 ```bash
 make deploy-k8s
-kubectl get pods -n finance   # all 11 pods should be Running
+kubectl get pods -n finance   # all 12 pods should be Running (incl. traffic-generator)
 ```
+
+> **Layer 1 instrumentation ships on by default.** Unlike an older design this
+> project used, `admission.datadoghq.com/enabled: "true"`, the
+> `tags.datadoghq.com/*` Unified Service Tagging labels, and the `DD_ENV` /
+> `DD_SERVICE` / `DD_VERSION` env vars are already present in every base
+> Deployment under `../base/services/` — there is no separate "patched"
+> manifest to apply. Once the Agent (below) is running, APM traces start
+> flowing immediately with zero further changes.
 
 ---
 
@@ -17,10 +28,10 @@ kubectl get pods -n finance   # all 11 pods should be Running
 |---|---|
 | `agent/datadog-agent.yaml` | `DatadogAgent` CRD — Operator installs Node Agent DaemonSet + Cluster Agent |
 | `agent/helm-values.yaml` | Alternative Helm chart values (if not using the Operator) |
-| `checks/postgres-check.yaml` | DBM Agent check ConfigMap (all commented out) |
-| `checks/activemq-check.yaml` | ActiveMQ JMX Agent check ConfigMap (all commented out) |
-| `secrets/datadog-secrets.yaml` | Secret template for the Datadog API key |
-| `services/gateway-api-with-datadog.yaml` | gateway-api Deployment with DD_ env vars and Admission Controller annotations |
+| `checks/postgres-check.yaml` | DBM Agent check ConfigMap (commented out — see Step 4) |
+| `checks/activemq-check.yaml` | ActiveMQ JMX Agent check ConfigMap (commented out — see Step 4) |
+| `secrets/datadog-secrets.yaml` | Secret template documenting GitOps alternatives (Sealed Secrets, SOPS, External Secrets Operator) |
+| `services/catalog-sync.yaml` | Optional Service Catalog entity-file scanner — not wired into any `make` target; apply manually if you want it |
 
 ---
 
@@ -36,8 +47,12 @@ helm repo update
 helm install datadog-operator datadog/datadog-operator \
   --namespace datadog \
   --create-namespace \
-  --set watchNamespaces="{datadog,finance}"
+  --set watchNamespaces="{datadog,finance}" \
+  --set maximumGoroutines=800
 ```
+
+> `maximumGoroutines=800` avoids a crash-loop on the Operator's internal
+> goroutine health check — without it the Operator pod restarts continuously.
 
 Verify the Operator is running:
 ```bash
@@ -45,25 +60,28 @@ kubectl get pods -n datadog
 ```
 
 > **Helm alternative:** skip the Operator and use `agent/helm-values.yaml` directly.
-> See the [Helm alternative](#helm-alternative-without-the-operator) section below.
+> See [Helm alternative](#helm-alternative-without-the-operator) below.
 
 ---
 
-## Step 2 — Create the Datadog API Key Secret
+## Step 2 — Create the Datadog Secret
 
-**Never pass the API key as a plain value.** Create a Kubernetes Secret:
+**Never pass API/App keys as plain values.** Create a Kubernetes Secret with
+all three keys the Agent needs (`api-key`, `app-key`, `dbm-password`):
 
 ```bash
-# Replace <YOUR_DATADOG_API_KEY> with a real key from:
-# https://app.datadoghq.com/organization-settings/api-keys
 kubectl create secret generic datadog-secret \
+  --namespace datadog \
   --from-literal api-key=<YOUR_DATADOG_API_KEY> \
-  --namespace datadog
+  --from-literal app-key=<YOUR_DATADOG_APP_KEY> \
+  --from-literal dbm-password=<YOUR_DBM_MONITORING_PASSWORD>
 ```
 
-For GitOps environments, use Sealed Secrets, SOPS, or the External Secrets
-Operator to manage this value. See `secrets/datadog-secrets.yaml` for a
-documented template with all three options.
+Or let `make create-dd-secret` do this for you — it auto-detects local (reads
+`.env`) vs EKS (reads AWS Secrets Manager). See `INSTRUMENTATION.md`'s
+[Datadog secrets section](../../../INSTRUMENTATION.md#datadog-secrets--datadog-secret-k8s-secret)
+for the full explanation and GitOps alternatives (`secrets/datadog-secrets.yaml`
+documents Sealed Secrets / SOPS / External Secrets Operator templates).
 
 ---
 
@@ -83,7 +101,8 @@ kubectl get daemonset datadog -n datadog
 kubectl get deployment datadog-cluster-agent -n datadog
 ```
 
-Or use the Makefile shortcut:
+Or use the Makefile shortcut, which also runs Steps 1, 2, and 4 automatically
+and patches the config for EKS/Bottlerocket when needed:
 ```bash
 make deploy-k8s-dd
 ```
@@ -106,29 +125,12 @@ override block to add).
 
 ---
 
-## Step 5 — Patch gateway-api with Datadog annotations
-
-`services/gateway-api-with-datadog.yaml` is a reference version of the gateway-api
-Deployment that adds:
-
-- `tags.datadoghq.com/*` pod labels (Unified Service Tagging)
-- `admission.datadoghq.com/enabled: "true"` annotation (auto-injection by Cluster Agent)
-- `DD_ENV`, `DD_SERVICE`, `DD_VERSION` env vars (fallback for environments without Admission Controller)
-- `DD_AGENT_HOST` via Downward API (hostIP fallback)
-
-Apply it to replace the base Deployment:
-```bash
-kubectl apply -f deploy/kubernetes/datadog/services/gateway-api-with-datadog.yaml
-```
-
----
-
 ## Helm alternative (without the Operator)
 
 If you prefer Helm directly over the Operator:
 
 ```bash
-# Create the namespace and API key Secret first (see Step 2 above)
+# Create the namespace and Secret first (see Step 2 above)
 kubectl create namespace datadog
 
 helm install datadog datadog/datadog \
@@ -143,31 +145,26 @@ includes the same commented-out options for security, profiler, and CSPM.
 
 ## Unified Service Tagging
 
-All pods must carry these three labels for Datadog to correlate telemetry across
-traces, logs, metrics, and profiles:
+Already applied to every service in `../base/services/`. All pods carry these
+three labels so Datadog can correlate telemetry across traces, logs, metrics,
+and profiles:
 
 ```yaml
 labels:
   tags.datadoghq.com/env:     staging
   tags.datadoghq.com/service: gateway-api
-  tags.datadoghq.com/version: "1.0.0"
+  tags.datadoghq.com/version: "latest"
 ```
 
-And matching env vars inside the container:
+And the matching env vars inside the container:
 ```yaml
 env:
   - name: DD_ENV
-    valueFrom:
-      configMapKeyRef:
-        name: finance-app-config
-        key: DD_ENV
+    value: "staging"
   - name: DD_SERVICE
-    value: gateway-api
+    value: "gateway-api"
   - name: DD_VERSION
-    valueFrom:
-      configMapKeyRef:
-        name: finance-app-config
-        key: APP_VERSION
+    value: "latest"
 ```
 
 Reference: https://docs.datadoghq.com/getting_started/tagging/unified_service_tagging/
@@ -176,22 +173,18 @@ Reference: https://docs.datadoghq.com/getting_started/tagging/unified_service_ta
 
 ## Admission Controller
 
-When the Cluster Agent's Admission Controller is enabled (it is, by default in
-`datadog-agent.yaml`), annotating a pod with:
+The Cluster Agent's Admission Controller is enabled by default in
+`datadog-agent.yaml`. Every base Deployment under `../base/services/` already
+carries:
 
 ```yaml
 annotations:
   admission.datadoghq.com/enabled: "true"
 ```
 
-causes the Admission Controller to **automatically inject**:
-- `DD_AGENT_HOST`
-- `DD_TRACE_AGENT_URL`
-- `DD_ENTITY_ID`
-
-into the pod at admission time. The base Deployments in `../base/services/` do
-**not** carry this annotation — it is added only in the patched versions under
-`services/`.
+which causes the Admission Controller to **automatically inject** the tracer
+library, `DD_AGENT_HOST`, `DD_TRACE_AGENT_URL`, and `DD_ENTITY_ID` into the pod
+at admission time — no manual patching of any service manifest is needed.
 
 Reference: https://docs.datadoghq.com/containers/cluster_agent/admission_controller/
 
@@ -200,34 +193,33 @@ Reference: https://docs.datadoghq.com/containers/cluster_agent/admission_control
 ## Learning Progression
 
 Follow these steps in order to progressively enable observability on the K8s
-deployment. The Learning Progression mirrors the one in each service's own README.
+deployment. Numbering matches `INSTRUMENTATION.md`'s step-by-step breakdown and
+each service's own README.
 
 | Step | Action | Datadog product |
 |---|---|---|
 | 1 | Complete Steps 1–3 above (Operator + Agent) | Infrastructure List, Container Map |
-| 2 | Apply Unified Service Tags to all Deployments | APM, Logs, Metrics correlation |
-| 3 | Uncomment APM init in each service's code; verify traces | APM > Services |
-| 4 | Uncomment log annotation on each Deployment; verify `trace_id` | Log Management |
-| 5 | Uncomment custom spans in business-critical code paths | APM flame graphs |
-| 6 | Uncomment DogStatsD metric calls | Metrics Explorer |
+| 2 | Confirm Unified Service Tags on all Deployments (already applied) | APM, Logs, Metrics correlation |
+| 3 | Verify APM traces appear (automatic — Admission Controller injection) | APM > Services |
+| 4 | Verify `trace_id` appears in logs (automatic with Layer 1) | Log Management |
+| 5 | `make instrument` — custom spans in business-critical code paths | APM flame graphs |
+| 6 | `make instrument` — DogStatsD metric calls | Metrics Explorer |
 | 7 | Enable Continuous Profiler (`DD_PROFILING_ENABLED=true`) | Continuous Profiler |
-| 8 | Apply DBM ConfigMap + PostgreSQL prerequisites | Databases > Query Metrics |
-| 9 | Apply ActiveMQ ConfigMap + enable DSM | Data Streams |
-| 10 | Enable Data Jobs Monitoring for `batch-processor` | Data Jobs |
-| 11 | Add Synthetic API tests for `/health` and `/v1/payments` | Synthetics |
+| 8 | `make instrument` — Browser RUM + Session Replay | RUM |
+| 9 | Apply DBM ConfigMap + PostgreSQL prerequisites (Step 4 above) | Databases > Query Metrics |
+| 10 | Apply ActiveMQ ConfigMap + enable DSM (Step 4 above) | Data Streams |
+| 11 | `make tf-apply-dd` — monitors, SLOs, dashboard, synthetics | Monitors, Dashboards |
+| 12 | Synthetic API tests (included in `make tf-apply-dd`) | Synthetics |
+| 13 | ASM + CWS + CSPM (already enabled — see `agent/datadog-agent.yaml`) | Security |
 
 ---
 
 ## Key References
 
+See [INSTRUMENTATION.md's Key references](../../../INSTRUMENTATION.md#key-references)
+for the full Datadog documentation table. Links unique to this file:
+
 | Topic | URL |
 |---|---|
-| Datadog Operator | https://github.com/DataDog/datadog-operator |
-| Helm chart | https://github.com/DataDog/helm-charts |
-| Admission Controller | https://docs.datadoghq.com/containers/cluster_agent/admission_controller/ |
-| Unified Service Tagging | https://docs.datadoghq.com/getting_started/tagging/unified_service_tagging/ |
 | APM on Kubernetes | https://docs.datadoghq.com/containers/kubernetes/apm/ |
-| Log collection | https://docs.datadoghq.com/containers/kubernetes/log/ |
-| Database Monitoring | https://docs.datadoghq.com/database_monitoring/ |
-| Data Streams Monitoring | https://docs.datadoghq.com/data_streams/ |
-| Data Jobs Monitoring | https://docs.datadoghq.com/data_jobs/ |
+| Log collection (Kubernetes) | https://docs.datadoghq.com/containers/kubernetes/log/ |

@@ -26,22 +26,12 @@ the Learning Progression below to enable each layer one at a time.
 
 ### Step 1 — Enable the Datadog Agent
 
-Start the Datadog Agent alongside this service.
+Run `make deploy-k8s-dd` to deploy the Agent; the Admission Controller injects the tracer
+automatically — see [INSTRUMENTATION.md's Layer 1](../INSTRUMENTATION.md#layer-1--single-step-instrumentation-admission-controller)
+for the full mechanism. For `transaction-service`, expect a `datadog-lib-js-init` init container
+(injecting `dd-trace` via `NODE_OPTIONS=--require dd-trace/init`).
 
-Apply the `DatadogAgent` CRD from `deploy/kubernetes/datadog/agent/datadog-agent.yaml`.
-The Admission Controller will inject the Agent sidecar automatically.
-
-```bash
-make deploy-k8s-dd
-```
-
-Verify the Agent is running and can reach Datadog:
-
-```bash
-kubectl get pods -n finance
-```
-
-Reference: https://docs.datadoghq.com/containers/kubernetes/
+Verify: `kubectl get pods -n finance`
 
 ---
 
@@ -56,44 +46,33 @@ DD_VERSION=1.0.0
 DD_AGENT_HOST=datadog-agent
 ```
 
-These tags propagate to every telemetry signal — traces, logs, metrics,
-and RUM — and power the correlation links in the Datadog UI (Deployment
-Tracking, Service Catalog SLOs, "View in APM" from a log line).
-
 In CI, automate the version: `DD_VERSION=$(git rev-parse --short HEAD)`
 
-Reference: https://docs.datadoghq.com/getting_started/tagging/unified_service_tagging/
+See [INSTRUMENTATION.md's Step 2](../INSTRUMENTATION.md#step-2--unified-service-tags-always-active) for why these tags matter.
 
 ---
 
 ### Step 3 — Enable APM Tracing
 
-1. Install `dd-trace`:
+Run `make instrument` from the repository root. It applies `scripts/patches/transaction-service.patch`,
+which requires `dd-trace` at the very **top** of `src/index.js` (before any other `require`) and
+initialises the tracer with `DD_SERVICE` / `DD_ENV` / `DD_VERSION` / `DD_AGENT_HOST`, and adds
+`dd-trace` to `package.json`. Run `make uninstrument` to reverse.
 
-   ```bash
-   npm install dd-trace --save
-   ```
+In Kubernetes, the Admission Controller (Step 1) already injects `dd-trace` automatically via
+`NODE_OPTIONS=--require dd-trace/init` — `make instrument` is mainly useful for local/non-k8s runs,
+or when you want the extra `tracer.init()` options (log injection, runtime metrics, profiling).
 
-2. Uncomment the tracer initialisation block at the **top** of
-   `src/index.js` (before any other `require`).
+After rebuilding (`make build`) and restarting, trigger a payment:
 
-   Alternatively, use the `--require` flag in the Dockerfile CMD so
-   source code is not modified:
+```bash
+curl -X POST http://localhost:8082/v1/payments \
+  -H 'Content-Type: application/json' \
+  -d '{"amount":100,"currency":"EUR","account_id":"acc-001"}'
+```
 
-   ```dockerfile
-   CMD ["node", "--require", "dd-trace/init", "src/index.js"]
-   ```
-
-3. Rebuild and restart the service, then trigger a payment:
-
-   ```bash
-   curl -X POST http://localhost:8082/v1/payments \
-     -H 'Content-Type: application/json' \
-     -d '{"amount":100,"currency":"EUR","account_id":"acc-001"}'
-   ```
-
-4. Open **APM > Services** in Datadog and verify `transaction-service`
-   appears with `payment.authorize` and `ledger.commit` spans.
+Open **APM > Services** in Datadog and verify `transaction-service` appears with a `ledger.commit`
+span (see Step 5).
 
 Reference: https://docs.datadoghq.com/tracing/trace_collection/dd_libraries/nodejs/
 
@@ -115,17 +94,17 @@ Reference: https://docs.datadoghq.com/tracing/other_telemetry/connect_logs_and_t
 
 ---
 
-### Step 5 — Uncomment Custom Spans
+### Step 5 — Custom Spans
 
-Search for `// ── DATADOG INSTRUMENTATION` blocks in:
+Run `make instrument` (see Step 3) — it uncomments the `tracer.startSpan(...)` / `span.finish()`
+calls for the `ledger.commit` span in `src/services/ledger.js`, tagged with `db.instance`,
+`db.type`, and `payment.currency` (enables the "View in DBM" button). Restart and verify the span
+appears in the flame graph.
 
-- `src/routes/payments.js` — `payment.authorize` span with
-  `transaction.type` and `payment.currency` tags
-- `src/services/ledger.js` — `ledger.commit` span with `db.instance`
-  tag (enables the "View in DBM" button)
-
-Uncomment the `tracer.startSpan(...)` and `span.finish()` calls.
-Restart and verify the spans appear nested in the flame graph.
+`src/routes/payments.js` also contains a commented-out `payment.authorize` span for reference
+(mirroring the equivalent span implemented in `gateway-api`); it documents the intended
+`transaction.type` and `http.route` tags but is not part of the automated patch — uncomment it by
+hand if you want that span too.
 
 Finance span tags to apply:
 
@@ -148,6 +127,9 @@ Reference: https://docs.datadoghq.com/tracing/trace_collection/custom_instrument
 ---
 
 ### Step 6 — Uncomment DogStatsD Custom Metrics
+
+Unlike the tracer/span layer in Steps 3 and 5, DogStatsD metrics for this service are **not**
+part of the `make instrument` patch yet — wire them up by hand:
 
 1. Install `hot-shots` (Datadog's recommended Node.js DogStatsD client):
 
@@ -199,11 +181,7 @@ Finance-specific RUM actions to instrument:
 - `payment_form.submit` — track conversion funnel drop-off
 - `account_dashboard.load` — measure Time to Interactive for premium users
 
-Enable Session Replay with privacy mode to protect financial data:
-
-```javascript
-// defaultPrivacyLevel: 'mask-user-input'  // masks card numbers, IBANs
-```
+See `frontend-stub/README.md` for RUM/PII masking details.
 
 Reference: https://docs.datadoghq.com/real_user_monitoring/browser/
 

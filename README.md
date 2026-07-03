@@ -240,34 +240,13 @@ Watch traces flowing:
 kubectl exec -n datadog daemonset/datadog-agent -c trace-agent -- agent status | grep "Traces received"
 ```
 
-> **Note:** `make test` and `make test-traffic` connect to services from your laptop and require active port-forwards. Since `scripts/port-forward.sh` was removed, run these manually first:
-> ```bash
-> kubectl port-forward svc/gateway-api 8080:8080 -n finance &
-> kubectl port-forward svc/account-service 8081:8081 -n finance &
-> kubectl port-forward svc/transaction-service 8082:8082 -n finance &
-> kubectl port-forward svc/keycloak 8089:8080 -n finance &
-> ```
-> Alternatively, the in-cluster `traffic-generator` pod generates continuous traffic automatically — no port-forward needed.
+> **Note:** `make test` / `make test-traffic` run from your laptop and need manual port-forwards first — see [INSTRUMENTATION.md's Makefile targets](./INSTRUMENTATION.md#makefile-targets) for the commands. You normally don't need either: the in-cluster `traffic-generator` pod already generates continuous traffic with no port-forward required.
 
 ---
 
 ## Traffic Generator
 
-Traffic is generated **automatically** by the `traffic-generator` Deployment running inside the cluster. It starts with the app and runs continuously — no scripts needed from your laptop.
-
-```bash
-# Watch live traffic
-kubectl logs -n finance deploy/traffic-generator -f
-
-# Pause traffic
-kubectl scale deployment traffic-generator --replicas=0 -n finance
-
-# Resume
-kubectl scale deployment traffic-generator --replicas=1 -n finance
-
-# Tune rate (edit the TRAFFIC_RATE env var)
-kubectl set env deployment/traffic-generator TRAFFIC_RATE=5 -n finance
-```
+Traffic is generated **automatically** by the `traffic-generator` Deployment running inside the cluster. It starts with the app and runs continuously — no scripts needed from your laptop. See [INSTRUMENTATION.md's Traffic Generator section](./INSTRUMENTATION.md#traffic-generator) for the watch/pause/resume/tune-rate commands.
 
 Traffic mix:
 
@@ -287,6 +266,8 @@ See **[INSTRUMENTATION.md](./INSTRUMENTATION.md)** for the complete step-by-step
 
 Summary of what gets enabled:
 
+This numbering matches `INSTRUMENTATION.md`'s step-by-step breakdown exactly — use whichever doc you're reading, the step numbers are interchangeable.
+
 | Step | Signal | How |
 |---|---|---|
 | 1 | Structured JSON logs | Always active — `ad.datadoghq.com/*.logs` annotations |
@@ -296,11 +277,12 @@ Summary of what gets enabled:
 | 5 | Custom business spans | `make instrument` — uncomments span code in each service |
 | 6 | DogStatsD metrics | `make instrument` — `finance.payment.initiated` etc. |
 | 7 | Continuous Profiler | `DD_PROFILING_ENABLED=true` per service |
-| 8 | Database Monitoring | Agent check — `deploy/kubernetes/datadog/checks/postgres-check.yaml` |
-| 9 | ActiveMQ JMX | Agent check — `deploy/kubernetes/datadog/checks/activemq-check.yaml` |
-| 10 | Terraform resources | `make tf-apply-dd` — monitors, SLOs, dashboard, synthetics |
-| 11 | Synthetic tests | Included in Terraform — 7 tests from real APM traffic |
-| 12 | ASM + CWS + CSPM | Agent-side — enabled in `datadog-agent.yaml` |
+| 8 | Browser RUM + Session Replay | `make instrument` — injects RUM credentials into the frontend dashboard |
+| 9 | Database Monitoring | Agent check — `deploy/kubernetes/datadog/checks/postgres-check.yaml` |
+| 10 | ActiveMQ JMX | Agent check — `deploy/kubernetes/datadog/checks/activemq-check.yaml` |
+| 11 | Terraform resources | `make tf-apply-dd` — monitors, SLOs, dashboard, synthetics |
+| 12 | Synthetic tests | Included in Terraform — tests from real APM traffic |
+| 13 | ASM + CWS + CSPM | Agent-side — enabled in `datadog-agent.yaml` |
 
 ---
 
@@ -351,66 +333,66 @@ kubectl get nodes   # verify cluster is reachable
 eval "$(cd deploy/terraform/aws && terraform output -raw ecr_login_command)"
 make build-ecr
 
-# 6a. (Recommended) Configure a custom domain + ACM certificate for HTTPS
-#     Without this, the NLB uses HTTP only and Keycloak admin console may have
-#     cookie issues. See deploy/terraform/aws/variables.tf for domain_name.
-#     Edit staging.tfvars:
-#       domain_name = "finance.example.com"
-#     Then re-apply:
-#       make tf-apply-aws
-#     Then add a CNAME in your DNS: finance.example.com → <nlb-hostname>
+# 6. (Optional) Configure a custom domain + ACM certificate for HTTPS on the NLB.
+#    Without this, the dashboard is HTTP-only at the NLB hostname (fine for a demo).
+#    Edit staging.tfvars: domain_name = "finance.example.com", then make tf-apply-aws,
+#    then add a CNAME in your DNS: finance.example.com → <nlb-hostname>.
+#    See deploy/terraform/aws/variables.tf for domain_name.
 
-# 6b. Deploy the app (generates EKS overlay with ACM cert annotations if configured)
+# 7. Deploy the app to EKS (generates the Kustomize overlay from live Terraform
+#    output — ECR image URLs, ACM cert annotations if domain_name is set)
 make deploy-k8s-eks
 
-# 6c. Set the Keycloak public URL once the NLB hostname is assigned (~2 min)
-#     With ACM cert + custom domain:
-# KC_URL="https://finance.example.com"
-#     With ACM cert + NLB hostname (no custom domain):
-# KC_HOST=$(kubectl get svc frontend -n finance -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
-# KC_URL="https://$KC_HOST"
-#     Without ACM cert (HTTP only — Keycloak admin console has cookie limitations):
-# KC_HOST=$(kubectl get svc frontend -n finance -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
-# KC_URL="http://$KC_HOST"
+# 8. Point Keycloak's public URL at the Terraform-managed NLB.
+#    The NLB (aws_lb.frontend) was already created in step 3, so its hostname is
+#    known immediately — no waiting for AWS to assign a LoadBalancer hostname like
+#    the old Kubernetes-provisioned ELB required.
+FE_URL=$(cd deploy/terraform/aws && terraform output -raw frontend_url)
 kubectl patch configmap app-config -n finance --type=merge \
-  -p "{\"data\":{\"KEYCLOAK_PUBLIC_URL\":\"$KC_URL\"}}"
+  -p "{\"data\":{\"KEYCLOAK_PUBLIC_URL\":\"$FE_URL\"}}"
+sed "s|https://localhost:30443|$FE_URL|g" frontend-stub/index.html > /tmp/finance-index.html
+kubectl create configmap frontend-dashboard --from-file=index.html=/tmp/finance-index.html \
+  -n finance --dry-run=client -o yaml | kubectl apply -f -
 kubectl rollout restart deployment/keycloak deployment/frontend -n finance
-# Dashboard: https://finance.example.com (or http://<nlb-hostname> without cert)
-# Keycloak:  $KC_URL/admin/master/console/#/finance
+# Dashboard: terraform output -raw frontend_url
+# Keycloak (self-signed passthrough, always available): terraform output -raw frontend_keycloak_https_url
 
-# 7. Add Datadog (auto-fetches keys from Secrets Manager)
+# 9. Add Datadog (auto-fetches keys from Secrets Manager)
 #    Prerequisites: deploy/terraform/aws/staging.tfvars must have aws_region + aws_profile.
 #    Populate secrets first if not done:
 #    aws secretsmanager put-secret-value --secret-id finance-app/staging/dd-api-key \
 #      --secret-string "<key>" --profile <profile> --region <region>
 make deploy-k8s-dd
 
-# 8. Apply Datadog Terraform resources
+# 10. Apply Datadog Terraform resources
 eval "$(make dd-secrets)"
 make tf-apply-dd
 
-# 9. Enable Layer 2 instrumentation
+# 11. Enable Layer 2 instrumentation
 make instrument
 make build-ecr
 make deploy-k8s-eks
 kubectl rollout restart deployment -n finance
 
-# 10. Tear down when done
-make tf-destroy-aws   # handles ELB release, node groups, ECR, VPC in correct order
+# 12. Tear down when done
+make tf-destroy-aws   # single-pass terraform destroy — see below for why this is now reliable
 ```
 
-#### Teardown order matters on EKS
+#### Teardown is reliable — no manual ELB cleanup needed
 
-`make tf-destroy-aws` handles dependency ordering automatically:
+`make tf-destroy-aws` (→ `scripts/aws-force-destroy.sh`) handles dependency ordering automatically:
 
 | Step | Action | Why |
 |---|---|---|
-| 0 | Delete `finance` namespace | Releases AWS ELB — without this, VPC deletion fails |
+| 0 | Best-effort ELB/security-group safety net | Defense-in-depth only — normally a no-op (see below) |
 | 1 | Delete EKS node groups via CLI | Avoids `ResourceInUseException` |
 | 2 | Delete EKS add-ons via CLI | Required before cluster deletion |
 | 3 | Delete EKS cluster | |
 | 4 | Force-delete Secrets Manager secrets | Avoids re-apply failures |
-| 5 | `terraform destroy` | VPC, subnets, IAM, KMS, CloudWatch |
+| 5 | Delete ECR repositories | |
+| 6 | `terraform destroy` | VPC, subnets, IAM, KMS, CloudWatch, the frontend NLB, target groups |
+
+> **Why teardown no longer needs manual ELB cleanup:** the `frontend` Service is `type: NodePort` on both local and EKS — it never calls the AWS API. Public exposure is handled entirely by `aws_lb.frontend`, a first-class Terraform resource, so `terraform destroy` always finds and removes it in the correct dependency order. This replaced an older design where `type: LoadBalancer` let Kubernetes' cloud-controller-manager silently create a Classic ELB that Terraform never tracked — if the EKS cluster was deleted first, that ELB (and its security group) became permanently orphaned and blocked VPC/subnet deletion. Step 0 above is kept purely as a defense-in-depth safety net in case a future change reintroduces a `LoadBalancer` Service elsewhere.
 
 ### GCP GKE *(coming soon)*
 
@@ -468,24 +450,11 @@ Full guide: `identity-provider/README.md`
 
 ## Key Datadog Documentation
 
+For the full reference table (APM, DogStatsD, Profiler, DBM, DSM, Data Jobs, RUM, Synthetics, ASM/CWS/CSPM, and more), see [INSTRUMENTATION.md's Key references](./INSTRUMENTATION.md#key-references). Quick links to get started:
+
 | Topic | URL |
 |---|---|
 | Unified Service Tagging | https://docs.datadoghq.com/getting_started/tagging/unified_service_tagging/ |
 | Single-step instrumentation | https://docs.datadoghq.com/tracing/trace_collection/automatic_instrumentation/single-step-apm/ |
 | APM setup | https://docs.datadoghq.com/tracing/trace_collection/ |
-| Log correlation | https://docs.datadoghq.com/tracing/other_telemetry/connect_logs_and_traces/ |
-| DogStatsD custom metrics | https://docs.datadoghq.com/developers/dogstatsd/ |
-| Continuous Profiler | https://docs.datadoghq.com/profiler/ |
-| Database Monitoring | https://docs.datadoghq.com/database_monitoring/ |
-| DBM — PostgreSQL self-hosted | https://docs.datadoghq.com/database_monitoring/setup_postgres/selfhosted/ |
-| Data Streams Monitoring | https://docs.datadoghq.com/data_streams/ |
-| Data Jobs Monitoring | https://docs.datadoghq.com/data_jobs/ |
-| Synthetic Monitoring | https://docs.datadoghq.com/synthetics/ |
-| Application Security (ASM) | https://docs.datadoghq.com/security/application_security/ |
-| Cloud Workload Security (CWS) | https://docs.datadoghq.com/security/cloud_workload_security/ |
-| Cloud Security Management | https://docs.datadoghq.com/security/cloud_security_management/ |
-| ActiveMQ integration | https://docs.datadoghq.com/integrations/activemq/ |
-| Datadog Operator | https://github.com/DataDog/datadog-operator |
-| Tagging best practices | https://docs.datadoghq.com/tagging/assigning_tags/ |
-| Trace data security (PII) | https://docs.datadoghq.com/tracing/configure_data_security/ |
 | Datadog SAML SSO | https://docs.datadoghq.com/account_management/saml/ |

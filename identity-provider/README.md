@@ -4,7 +4,7 @@
 
 This service adds:
 
-- A pre-configured **`finance` realm** with four roles (`finance-analyst`, `finance-trader`, `finance-admin`, `finance-auditor`) and four sample users
+- A pre-configured **`finance` realm** with five roles (`finance-analyst`, `finance-trader`, `finance-admin`, `finance-auditor`, `finance-compliance`) and five sample users
 - An **OIDC client** (`finance-gateway`) so `gateway-api` can validate Bearer tokens and inject user identity into APM traces and logs
 - A **SAML 2.0 client** (`datadog-saml`) pre-wired for Datadog Organization SSO — you supply the ACS URL for your Datadog site
 
@@ -20,7 +20,24 @@ make deploy-k8s
 
 | Endpoint | URL | Credentials |
 |---|---|---|
-| Admin console | http://localhost:8089 | `admin` / value of `KEYCLOAK_ADMIN_PASSWORD` in `.env` |
+| **Admin console (primary)** | `https://localhost:30443/admin/master/console/#/finance` | `admin` / `Finance@Admin2025!` (dev default — `keycloak-admin-password` key in the `app-secrets` K8s Secret, not an `.env` var) |
+| **Realm account page** | `https://localhost:30443/realms/finance/account/` | any finance realm user |
+
+The primary URLs above go through the **nginx HTTPS proxy** (self-signed certificate, accept the browser warning
+once) on NodePort `30443` — no extra setup required after `make deploy-k8s`. This matches the canonical access URL
+documented in the root [`README.md`](../README.md#identity-provider).
+
+The `localhost:8089` endpoints below are **not** exposed automatically — they require a manual port-forward, and
+are intended for local `curl`/token-testing workflows (see [Part 2](#part-2--oidc-integration-with-gateway-api)),
+not for primary browser access:
+
+```bash
+kubectl port-forward svc/keycloak 8089:8080 -n finance
+```
+
+| Endpoint (after port-forward) | URL | Credentials |
+|---|---|---|
+| Admin console | http://localhost:8089 | `admin` / `Finance@Admin2025!` (dev default — `keycloak-admin-password` key in the `app-secrets` K8s Secret) |
 | Finance realm | http://localhost:8089/realms/finance | — |
 | OIDC discovery | http://localhost:8089/realms/finance/.well-known/openid-configuration | — |
 | SAML IdP metadata | http://localhost:8089/realms/finance/protocol/saml/descriptor | — |
@@ -39,6 +56,7 @@ The `finance` realm is imported automatically from `realm-export/finance-realm.j
 | `finance-trader` | Initiate payments and transfers; view own history |
 | `finance-admin` | Full access: manage accounts, approve high-value transactions |
 | `finance-auditor` | Compliance / read-only: full history for audit trail |
+| `finance-compliance` | View accounts · approve or reject pending payments |
 
 ### Sample Users
 
@@ -48,6 +66,7 @@ The `finance` realm is imported automatically from `realm-export/finance-realm.j
 | `bob.trader` | bob.trader@finance.local | `finance-trader` | `Finance@2025!` |
 | `carol.admin` | carol.admin@finance.local | `finance-admin` | `Finance@2025!` |
 | `dave.auditor` | dave.auditor@finance.local | `finance-auditor` | `Finance@2025!` |
+| `eve.compliance` | eve.compliance@finance.local | `finance-compliance` | `Finance@2025!` |
 
 > **Security note:** These passwords are for local development only. In any non-local environment, replace them via the Keycloak admin console or the `kcadm.sh` CLI before deployment.
 
@@ -102,7 +121,7 @@ Alternatively, update `realm-export/finance-realm.json` before first import:
 
 #### Step C — Export the Keycloak IdP metadata
 
-Retrieve the Keycloak IdP metadata XML:
+Retrieve the Keycloak IdP metadata XML (requires `kubectl port-forward svc/keycloak 8089:8080 -n finance` first — see [Quick Start](#quick-start)):
 
 ```bash
 curl -s http://localhost:8089/realms/finance/protocol/saml/descriptor -o keycloak-idp-metadata.xml
@@ -159,6 +178,8 @@ Only the **Datadog APM span tag injection** for user identity (`span.set_tag("us
 
 ### Obtaining a token for testing
 
+Requires `kubectl port-forward svc/keycloak 8089:8080 -n finance` first — see [Quick Start](#quick-start).
+
 ```bash
 # Exchange username + password for an access token (Resource Owner Password grant)
 TOKEN=$(curl -s -X POST \
@@ -192,7 +213,7 @@ curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/v1/accounts/acc-001
 - **SAML signing:** The `datadog-saml` client is configured with `saml.server.signature: true` — Keycloak signs the SAML response. Datadog validates the signature using the certificate in the IdP metadata. Never disable this in production.
 - **OIDC secrets:** The `finance-gateway` client secret is `REPLACE_WITH_SECRET` in the realm export. Rotate this before any non-local deployment via the Keycloak admin console and update `KEYCLOAK_CLIENT_SECRET` in your `.env` / secrets manager.
 - **User passwords:** The sample user passwords in `finance-realm.json` are for local development only. Do not import this realm directly into a production Keycloak instance.
-- **Network access:** Expose Keycloak externally (beyond `localhost:8089`) only over HTTPS. In Kubernetes, use an Ingress with TLS termination; in Terraform (AWS/GCP), use a load balancer with an ACM/GCP-managed certificate.
+- **Network access:** Primary access already goes through the nginx HTTPS proxy (`https://localhost:30443`, self-signed cert). Only expose Keycloak beyond that over HTTPS as well — in Kubernetes, use an Ingress with TLS termination; in Terraform (AWS/GCP), use a load balancer with an ACM/GCP-managed certificate. The `localhost:8089` port-forward is for local `curl`/token-testing only and should never be exposed externally.
 - **PII in traces:** When the OIDC middleware is enabled, `user.email` appears in APM span tags. If this constitutes PII under your data-handling policy, use `user.sub` (the opaque UUID subject) instead, and resolve the email only in your identity service.
   - Datadog `replace_tags` config: https://docs.datadoghq.com/tracing/configure_data_security/
 

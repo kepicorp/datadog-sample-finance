@@ -146,13 +146,14 @@ Work through these steps in order. Each step builds on the previous one.
    automatically mask card numbers and account IDs.
    Docs: https://docs.datadoghq.com/real_user_monitoring/browser/
 
-9. **Configure Database Monitoring for PostgreSQL (DBM)**
-   DBM is Agent-side — no code changes needed in gateway-api.
-   Follow the SQL prerequisites in `deploy/kubernetes/datadog/checks/postgres-check.yaml`
-   and the Agent config at `deploy/kubernetes/datadog/checks/postgres-check.yaml`.
-   Once enabled, APM `db.query` spans in gateway-api traces will show a
+9. **Database Monitoring for PostgreSQL (DBM)**
+   `gateway-api` does not query PostgreSQL directly — DBM is configured entirely on the Agent
+   side against `postgres-ledger`. See [INSTRUMENTATION.md's Step 9](../INSTRUMENTATION.md#step-9--database-monitoring-postgresql)
+   for the full setup. Note that `deploy/kubernetes/datadog/checks/postgres-check.yaml` serves two
+   purposes in one file: the SQL prerequisites (monitoring user, `pg_stat_statements`) live in its
+   **header comments**, while the Agent check config (`postgres.d/conf.yaml`) is the file's **body**.
+   Once enabled, APM `db.query` spans from `account-service`/`transaction-service` will show a
    "View in DBM" button linking to the exact query plan.
-   Docs: https://docs.datadoghq.com/database_monitoring/setup_postgres/selfhosted/
 
 10. **Enable Data Streams Monitoring (DSM) for the JMS/ActiveMQ pipeline**
     DSM is instrumented in transaction-service (producer) and fraud-detection
@@ -194,10 +195,8 @@ Work through these steps in order. Each step builds on the previous one.
 
 | Topic | URL |
 |-------|-----|
-| Unified Service Tagging | https://docs.datadoghq.com/getting_started/tagging/unified_service_tagging/ |
 | APM — Python | https://docs.datadoghq.com/tracing/trace_collection/dd_libraries/python/ |
-| Custom instrumentation | https://docs.datadoghq.com/tracing/trace_collection/custom_instrumentation/python/ |
-| Log correlation | https://docs.datadoghq.com/tracing/other_telemetry/connect_logs_and_traces/ |
-| DogStatsD | https://docs.datadoghq.com/developers/dogstatsd/ |
-| Continuous Profiler | https://docs.datadoghq.com/profiler/enabling/python/ |
-| Tagging best practices | https://docs.datadoghq.com/tagging/assigning_tags/ |
+| Custom instrumentation — Python | https://docs.datadoghq.com/tracing/trace_collection/custom_instrumentation/python/ |
+| Continuous Profiler — Python | https://docs.datadoghq.com/profiler/enabling/python/ |
+
+For general Datadog docs, see [INSTRUMENTATION.md's Key references](../INSTRUMENTATION.md#key-references).

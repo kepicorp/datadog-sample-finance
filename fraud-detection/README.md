@@ -50,6 +50,13 @@ The service connects to `activemq-artemis:61613` and waits for messages on `frau
 
 Use the ActiveMQ Artemis web console (`http://localhost:8161`) or the STOMP CLI:
 
+> **Credentials note:** `admin` / `admin` below only works against a standalone local broker running with
+> default auth (e.g. `docker run activemq/artemis`). The actual deployed cluster uses the `artemis-password`
+> secret from the `app-secrets` K8s Secret (`deploy/kubernetes/base/02-secrets.yaml`), which defaults to
+> `artemis_dev_password`. To test against the deployed cluster, run
+> `kubectl port-forward svc/activemq-artemis 8161:8161 -n finance` first and swap in that password
+> (or read it via `kubectl get secret app-secrets -n finance -o jsonpath='{.data.artemis-password}' | base64 -d`).
+
 ```bash
 # Install stomp CLI
 pip install stomp.py
@@ -58,7 +65,7 @@ python - <<'EOF'
 import stomp, json, time
 
 conn = stomp.Connection([("localhost", 61613)])
-conn.connect("admin", "admin", wait=True)
+conn.connect("admin", "admin", wait=True)  # local standalone broker only — see note above for the deployed cluster
 conn.send(
     destination="/queue/fraud.score.queue",
     body=json.dumps({

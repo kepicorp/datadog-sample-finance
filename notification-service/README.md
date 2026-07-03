@@ -21,19 +21,14 @@ Datadog configuration. Follow the steps below to progressively enable each obser
 
 ## Learning Progression
 
-### Step 1 — Enable the Datadog Agent
+### Step 1 — Enable the Datadog Agent (Admission Controller)
 
-Deploy the Datadog Agent via the Datadog Operator. Add the admission controller annotation to the pod spec:
-```yaml
-annotations:
-  admission.datadoghq.com/enabled: "true"
-```
-Reference: https://docs.datadoghq.com/containers/kubernetes/
+The Admission Controller auto-injects the tracer library — see
+[INSTRUMENTATION.md's Layer 1](../INSTRUMENTATION.md#layer-1--single-step-instrumentation-admission-controller)
+for the full mechanism. For `notification-service`, expect a `datadog-lib-go-init` init container
+(injecting `dd-trace-go` via Orchestrion) once the Agent and Admission Controller are deployed.
 
-Set your API key (never hardcode — use a K8s Secret or Secrets Manager):
-```bash
-DD_API_KEY=<your-api-key>
-```
+Set your API key (never hardcode — use a K8s Secret or Secrets Manager): `DD_API_KEY=<your-api-key>`
 
 ### Step 2 — Set Unified Service Tags
 
@@ -45,9 +40,7 @@ DD_VERSION=1.0.0
 DD_AGENT_HOST=datadog-agent
 ```
 
-These tags propagate to all telemetry (traces, logs, metrics, profiles). Without them, signals
-cannot be correlated across the Finance service mesh.
-Reference: https://docs.datadoghq.com/getting_started/tagging/unified_service_tagging/
+See [INSTRUMENTATION.md's Step 2](../INSTRUMENTATION.md#step-2--unified-service-tags-always-active) for why these tags matter.
 
 ### Step 3 — Enable APM Tracing
 
@@ -65,12 +58,11 @@ orchestrion go build ./...
 The `Dockerfile` includes a commented-out alternative `RUN` step that uses Orchestrion. Swap it in
 and rebuild the image.
 
-**Option B — Manual tracer:** Uncomment the `tracer.Start()` / `defer tracer.Stop()` block in
-`main.go` and add the dependency:
-```bash
-go get go.datadoghq.com/dd-trace-go/v2/ddtrace/tracer
-go mod tidy
-```
+**Option B — Manual tracer (via `make instrument`):** Run `make instrument` from the repo root.
+It applies `scripts/patches/notification-service.patch`, which starts the tracer
+(`tracer.Start()` / `defer tracer.Stop()`) in `main.go` and adds the `dd-trace-go` dependency to
+`go.mod`. The same patch also uncomments the Step 5 custom span, Step 6 DogStatsD metrics, and
+Step 7 profiler blocks in one pass — run `make uninstrument` to reverse all of them.
 
 Verify: navigate to **APM > Services** in Datadog — `notification-service` should appear within
 60 seconds of the first message being processed.
@@ -86,10 +78,10 @@ Verify: in **Log Management**, filter by `service:notification-service` and conf
 appears in log attributes.
 Reference: https://docs.datadoghq.com/tracing/other_telemetry/connect_logs_and_traces/go/
 
-### Step 5 — Uncomment the Custom `alert.send` Span
+### Step 5 — the Custom `alert.send` Span
 
-In `main.go`, find the `// ── DATADOG INSTRUMENTATION — custom span: alert.send ──` block inside
-`sendNotification()` and uncomment it. This creates a child span under the JMS consumer span,
+`make instrument` (see Step 3) uncomments the `// ── DATADOG INSTRUMENTATION — custom span: alert.send ──`
+block inside `sendNotification()` in `main.go`. This creates a child span under the JMS consumer span,
 tagged with:
 - `notification.channel` (email / sms)
 - `notification.event_type` (fraud_detected, payment_failed, etc.)
@@ -100,14 +92,10 @@ Verify: in **APM > Traces**, expand a `jms.consume` trace — you should see `al
 child span with the Finance domain tags.
 Reference: https://docs.datadoghq.com/tracing/trace_collection/custom_instrumentation/go/
 
-### Step 6 — Enable DogStatsD Custom Metrics
+### Step 6 — DogStatsD Custom Metrics
 
-Add the DogStatsD client dependency:
-```bash
-go get github.com/DataDog/datadog-go/v5/statsd
-```
-
-Uncomment the `statsdClient.Histogram` and `statsdClient.Incr` blocks in `sendNotification()`.
+`make instrument` (see Step 3) adds the `github.com/DataDog/datadog-go/v5/statsd` dependency and
+uncomments the `statsdClient.Histogram` and `statsdClient.Incr` calls in `sendNotification()`.
 This emits:
 - `finance.notification.dispatch_time` — histogram of dispatch latency, tagged by channel and event type
 - `finance.notification.sent` — counter of notifications sent
@@ -117,12 +105,8 @@ Reference: https://docs.datadoghq.com/developers/dogstatsd/
 
 ### Step 7 — Enable the Continuous Profiler
 
-Add the profiler dependency:
-```bash
-go get gopkg.in/DataDog/dd-trace-go.v1/profiler
-```
-
-Uncomment the `profiler.Start()` / `defer profiler.Stop()` block in `main.go`. The profiler
+`make instrument` (see Step 3) adds the profiler dependency and uncomments the
+`profiler.Start()` / `defer profiler.Stop()` block in `main.go`. The profiler
 captures CPU, heap, goroutine, and mutex profiles every 60 seconds.
 
 Verify: in **Continuous Profiler**, select `service:notification-service` — flame graphs should
@@ -205,15 +189,12 @@ Reference: https://docs.datadoghq.com/synthetics/
 
 | Topic | URL |
 |---|---|
-| Unified Service Tagging | https://docs.datadoghq.com/getting_started/tagging/unified_service_tagging/ |
 | APM — Go | https://docs.datadoghq.com/tracing/trace_collection/dd_libraries/go/ |
-| Orchestrion (auto-instrumentation) | https://docs.datadoghq.com/tracing/trace_collection/automatic_instrumentation/dd_libraries/go/ |
+| Orchestrion (auto-instrumentation) — Go | https://docs.datadoghq.com/tracing/trace_collection/automatic_instrumentation/dd_libraries/go/ |
 | Custom instrumentation — Go | https://docs.datadoghq.com/tracing/trace_collection/custom_instrumentation/go/ |
 | Log correlation — Go | https://docs.datadoghq.com/tracing/other_telemetry/connect_logs_and_traces/go/ |
-| DogStatsD — Go | https://docs.datadoghq.com/developers/dogstatsd/?tab=go |
 | Continuous Profiler — Go | https://docs.datadoghq.com/profiler/enabling/go/ |
 | Data Streams Monitoring — Go | https://docs.datadoghq.com/data_streams/go/ |
-| ActiveMQ integration | https://docs.datadoghq.com/integrations/activemq/ |
 | Runtime metrics — Go | https://docs.datadoghq.com/tracing/metrics/runtime_metrics/go/ |
-| Tagging best practices | https://docs.datadoghq.com/tagging/assigning_tags/ |
-| Cardinality guidance | https://docs.datadoghq.com/tagging/assigning_tags/#defining-tags |
+
+For general Datadog docs, see [INSTRUMENTATION.md's Key references](../INSTRUMENTATION.md#key-references).

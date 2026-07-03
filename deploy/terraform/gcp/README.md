@@ -171,13 +171,17 @@ in `main.tf` (requires the datadog provider — see comments in the file).
 make deploy-k8s-dd
 ```
 
-Follow the 12-step Learning Progression in `deploy/kubernetes/datadog/README.md`.
+Follow the 13-step Learning Progression in `deploy/kubernetes/datadog/README.md`
+(numbering matches `INSTRUMENTATION.md`).
 
 ---
 
 ## Secrets — never hardcode
 
-Terraform creates placeholder secrets in Secret Manager. Populate them out-of-band:
+See `../aws/README.md`'s "Secrets — never hardcode" section for the shared rationale
+(placeholder-only Terraform secrets, out-of-band population, no `TF_VAR_*` for real
+values). Terraform here creates two placeholder secrets in Secret Manager; populate
+them out-of-band:
 
 ```bash
 # Datadog API key
