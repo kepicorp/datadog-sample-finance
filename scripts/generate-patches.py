@@ -130,10 +130,22 @@ def make_patch(orig_rel, tmp_path, patch_name):
     return True
 
 
+def reset_patch(patch_name):
+    """Delete any existing patch file so this run starts from a clean slate.
+    Without this, a service whose primary file has "no diff" (already fully
+    instrumented) would silently keep whatever stale content the file had
+    from a previous run/hand-edit, since append_diff()/make_patch() only
+    write when they find a real diff.
+    """
+    p = ROOT / "scripts" / "patches" / f"{patch_name}.patch"
+    if p.exists():
+        p.unlink()
+
+
 def dry_run(patch_name):
     patch_path = ROOT / "scripts" / "patches" / f"{patch_name}.patch"
     r = subprocess.run(
-        ["patch", "--dry-run", "-p1", "-s", "--input", str(patch_path)],
+        ["patch", "--dry-run", "-p1", "--forward", "-s", "--input", str(patch_path)],
         capture_output=True,
         text=True,
         cwd=ROOT,
@@ -173,6 +185,14 @@ def uncomment_python_block(block):
                     r"^(import |from |with |if |patch_|patch_all|tracer\.|statsd\.|initialize|ddtrace)",
                     rest,
                 )
+                # Generic function-call opener, e.g. "dd_initialize(" or
+                # "foo.bar(" -- catches multi-line calls whose first line
+                # doesn't match any of the specific prefixes above. Without
+                # this, lines like "dd_initialize(" were silently dropped as
+                # "prose" while their indented argument lines (which DO match
+                # the generic indent rule below) were kept -- producing
+                # syntactically invalid Python with orphaned keyword args.
+                or re.match(r"^[a-zA-Z_][a-zA-Z0-9_.]*\(\s*$", stripped)
                 or stripped.startswith(")")
                 or stripped.startswith("}")
                 or stripped.startswith('"')
@@ -216,6 +236,17 @@ def uncomment_js_block(block):
                     r"^(const |'use strict'|require\(|tracer\.|logger\.|logInjection|runtimeMetrics|profiling)",
                     rest,
                 )
+                # Generic function-call opener, e.g. "dogstatsd.increment(" --
+                # catches multi-line calls whose first line doesn't match any
+                # of the specific prefixes above. Without this, lines like
+                # "dogstatsd.increment('x', 1, {" were dropped as "prose"
+                # while their closing "});" was kept, producing invalid JS
+                # with an orphaned closing brace/paren.
+                or re.match(r"^[a-zA-Z_$][a-zA-Z0-9_$.]*\(", stripped_js)
+                # Object-literal key: value lines, e.g. "'db.instance': 'x',"
+                # -- these are argument lines inside a dropped-then-restored
+                # function call and must be kept too.
+                or re.match(r"^['\"][^'\"]*['\"]\s*:", stripped_js)
                 or stripped_js.startswith("}")
                 or stripped_js.startswith(")")
                 or stripped_js == "});"
@@ -332,9 +363,7 @@ def patch_gateway_api():
     content = read(orig)
     patched = process_python(content)
     tmp = write_tmp("gw.py", patched)
-    ok = make_patch(orig, tmp, "gateway-api")
-    if ok:
-        dry_run("gateway-api")
+    make_patch(orig, tmp, "gateway-api")
 
 
 def patch_fraud_detection():
@@ -343,9 +372,20 @@ def patch_fraud_detection():
     content = read(orig)
     patched = process_python(content)
     tmp = write_tmp("fd.py", patched)
-    ok = make_patch(orig, tmp, "fraud-detection")
-    if ok:
-        dry_run("fraud-detection")
+    make_patch(orig, tmp, "fraud-detection")
+
+
+def patch_fraud_detection_listener():
+    """fraud-detection/listener.py has its own remaining DATADOG banners
+    (DSM consume checkpoint, DogStatsD gauge) that main.py's patch never
+    covered -- the custom span banner in this same file is already active
+    by default, so process_python() correctly finds no diff for it.
+    """
+    print("fraud-detection/listener.py")
+    orig = "fraud-detection/listener.py"
+    content = read(orig)
+    patched = process_python(content)
+    append_diff(orig, patched, "fraud-detection")
 
 
 def patch_transaction_service():
@@ -354,9 +394,37 @@ def patch_transaction_service():
     content = read(orig)
     patched = process_js(content)
     tmp = write_tmp("ts.js", patched)
-    ok = make_patch(orig, tmp, "transaction-service")
-    if ok:
-        dry_run("transaction-service")
+    make_patch(orig, tmp, "transaction-service")
+
+
+def patch_transaction_service_ledger():
+    """ledger.js has its own remaining DATADOG banners (custom span, error
+    tagging, DogStatsD counter) not covered by index.js's patch."""
+    print("transaction-service/src/services/ledger.js")
+    orig = "transaction-service/src/services/ledger.js"
+    content = read(orig)
+    patched = process_js(content)
+    append_diff(orig, patched, "transaction-service")
+
+
+def patch_transaction_service_payments():
+    """payments.js has its own remaining DATADOG banners (custom span for
+    payment.authorize, DogStatsD counters) not covered by index.js's patch."""
+    print("transaction-service/src/routes/payments.js")
+    orig = "transaction-service/src/routes/payments.js"
+    content = read(orig)
+    patched = process_js(content)
+    append_diff(orig, patched, "transaction-service")
+
+
+def patch_transaction_service_producer():
+    """producer.js has its own remaining DATADOG banner (Data Streams
+    Monitoring producer checkpoint) not covered by index.js's patch."""
+    print("transaction-service/src/messaging/producer.js")
+    orig = "transaction-service/src/messaging/producer.js"
+    content = read(orig)
+    patched = process_js(content)
+    append_diff(orig, patched, "transaction-service")
 
 
 def patch_notification_service():
@@ -365,9 +433,7 @@ def patch_notification_service():
     content = read(orig)
     patched = process_go(content)
     tmp = write_tmp("ns.go", patched)
-    ok = make_patch(orig, tmp, "notification-service")
-    if ok:
-        dry_run("notification-service")
+    make_patch(orig, tmp, "notification-service")
 
 
 def patch_batch_processor():
@@ -406,7 +472,20 @@ def patch_batch_processor():
         )
         return patch
 
-    combined = _diff(orig_java, tmp_java) + _diff(orig_gradle, tmp_gradle)
+    java_diff = _diff(orig_java, tmp_java)
+    gradle_diff = _diff(orig_gradle, tmp_gradle)
+    if not java_diff.strip():
+        # If there's nothing left to instrument in the actual Java source
+        # (batch-processor's spans are already active by default), skip the
+        # build.gradle diff too even if it's non-empty -- otherwise this
+        # would generate a patch whose only effect is deleting an
+        # explanatory comment banner, with zero functional change. Not
+        # worth an instrument/uninstrument round-trip.
+        print(
+            "  WARNING: no diff generated for batch-processor (already fully instrumented)"
+        )
+        return
+    combined = java_diff + gradle_diff
     if not combined.strip():
         print("  WARNING: no diff generated for batch-processor")
         return
@@ -539,18 +618,37 @@ def patch_batch_processor_dockerfile():
 if __name__ == "__main__":
     (ROOT / "scripts" / "patches").mkdir(parents=True, exist_ok=True)
     print("Generating patches...\n")
+
+    reset_patch("gateway-api")
     patch_gateway_api()
     patch_gateway_api_deps()
+    dry_run("gateway-api")
     print()
+
+    reset_patch("fraud-detection")
     patch_fraud_detection()
+    patch_fraud_detection_listener()
     patch_fraud_detection_deps()
+    dry_run("fraud-detection")
     print()
+
+    reset_patch("transaction-service")
     patch_transaction_service()
+    patch_transaction_service_ledger()
+    patch_transaction_service_payments()
+    patch_transaction_service_producer()
     patch_transaction_service_deps()
+    dry_run("transaction-service")
     print()
+
+    reset_patch("notification-service")
     patch_notification_service()
     patch_notification_service_deps()
+    dry_run("notification-service")
     print()
+
+    reset_patch("batch-processor")
     patch_batch_processor()
     patch_batch_processor_dockerfile()
+    dry_run("batch-processor")
     print("\nDone.")
