@@ -2,6 +2,8 @@
 
 A hands-on observability learning environment built on a realistic financial platform. Six microservices spanning Python, Java, Node.js, and Go — pre-wired for Datadog but shipping with all instrumentation **commented out** so engineers can enable each layer progressively.
 
+> Something not working? See **[TROUBLESHOOTING.md](./TROUBLESHOOTING.md)** for a layer-by-layer diagnostic model (Infrastructure → Application → Identity → Instrumentation → Telemetry → Backend) instead of chasing symptoms.
+
 ---
 
 ## Architecture
@@ -103,18 +105,33 @@ kubectl get nodes   # 1 node Ready
 
 ### Option B — AWS EKS
 
-Requires AWS CLI ≥ 2.x, Terraform ≥ 1.5, and an SSO profile (`aws configure sso`). See [AWS EKS section](#aws--eks-via-terraform).
+Additionally requires AWS CLI ≥ 2.x and an SSO profile (`aws configure sso`). See [AWS EKS section](#aws--eks-via-terraform).
 
 ### Common tools
 
+Required for **both** local and AWS EKS — Terraform isn't just for AWS: it's also
+how you apply the Datadog resources (monitors, dashboard, synthetics, log
+pipeline) via `make tf-apply-dd`, regardless of where the app itself runs.
+
 ```bash
-brew install kubectl helm
-kubectl version --client && helm version
+brew install kubectl helm terraform
+kubectl version --client && helm version && terraform version   # >= 1.5
 ```
 
 You also need a **Datadog account** with:
 - API key: https://app.datadoghq.com/organization-settings/api-keys
 - App key: https://app.datadoghq.com/organization-settings/application-keys
+
+> ⚠️ **Application Key value, not Application Key ID.** The Application Keys page
+> prominently shows the **Key ID** in the main list — that is NOT what you want.
+> Click into the key (or use the "copy" icon next to a *newly created* key) to
+> reveal the actual **key value**, a much longer string. Using the Key ID for
+> `DD_APP_KEY` / `TF_VAR_datadog_app_key` causes `401 Unauthorized` errors on
+> every Terraform apply, with no indication of what's actually wrong.
+> ```
+> DD_APP_KEY=ddapp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx   ✅ correct (key VALUE)
+> DD_APP_KEY=a1b2c3d4-e5f6-7890-abcd-ef1234567890             ❌ wrong (key ID — looks like a UUID)
+> ```
 
 Add both to `.env` (copied from `.env.example` — git-ignored):
 ```bash
@@ -224,6 +241,16 @@ kubectl logs -n finance deploy/traffic-generator -f
 
 See [Credentials](#credentials) for all users, roles, and URLs.
 
+> #### ✅ Verify before continuing
+> - [ ] `kubectl get pods -n finance` — all 12 pods `Running` (incl. `traffic-generator`)
+> - [ ] `kubectl logs -n finance deploy/traffic-generator -f` — shows successful (non-401) requests
+> - [ ] Finance dashboard loads at `http://localhost:30080` and login succeeds
+>
+> If the traffic generator logs show `401` / `invalid_client_credentials`, the
+> `KEYCLOAK_CLIENT_SECRET` env var on the `traffic-generator` Deployment doesn't
+> match the real `app-secrets` secret — check `kubectl get deployment
+> traffic-generator -n finance -o yaml | grep -A3 KEYCLOAK_CLIENT_SECRET`.
+
 ---
 
 ## Adding Datadog
@@ -235,10 +262,22 @@ make deploy-k8s-dd
 
 APM traces, logs, and metrics appear in Datadog within ~2 minutes. No code changes needed — the Admission Controller injects the tracer library automatically via init containers.
 
+> #### ✅ Verify before continuing
+> - [ ] `kubectl get pods -n datadog` — Agent DaemonSet pods and `datadog-cluster-agent` all `Running`
+> - [ ] `kubectl get datadogagent -n datadog` — shows `Running` for both Agent and ClusterAgent
+> - [ ] Admission Controller enabled: `kubectl get pod -n finance -l app=gateway-api -o jsonpath='{.items[0].spec.initContainers[*].name}'` — shows `datadog-lib-python-init` (or the equivalent per-language init container)
+>
+> If init containers are missing, see [INSTRUMENTATION.md's Admission Controller troubleshooting](./INSTRUMENTATION.md#admission-controller-injection-not-working).
+
 Watch traces flowing:
 ```bash
 kubectl exec -n datadog daemonset/datadog-agent -c trace-agent -- agent status | grep "Traces received"
 ```
+
+> #### ✅ Verify before continuing
+> - [ ] `agent status | grep "Traces received"` shows a non-zero count
+> - [ ] APM > Services in Datadog shows all 6 services within ~2 minutes
+> - [ ] Clicking into a trace shows a connected flame graph across services (e.g. `gateway-api` → `account-service`)
 
 > **Note:** `make test` / `make test-traffic` run from your laptop and need manual port-forwards first — see [INSTRUMENTATION.md's Makefile targets](./INSTRUMENTATION.md#makefile-targets) for the commands. You normally don't need either: the in-cluster `traffic-generator` pod already generates continuous traffic with no port-forward required.
 

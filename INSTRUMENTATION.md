@@ -684,6 +684,8 @@ make build && make deploy-k8s && make deploy-k8s-dd
 
 ## Troubleshooting
 
+> For a broader, layer-by-layer diagnostic model (useful when it's unclear which of these sections even applies), see [TROUBLESHOOTING.md](./TROUBLESHOOTING.md).
+
 ### Admission Controller injection not working
 
 ```bash
