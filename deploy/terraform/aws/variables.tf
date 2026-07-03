@@ -105,8 +105,15 @@ variable "datadog_api_key" {
 
 variable "datadog_app_key" {
   description = <<-EOT
-    Datadog Application key — required by the Datadog Terraform provider for
-    creating resources (monitors, dashboards, SLOs).
+    Datadog Application KEY VALUE (not the Key ID!) — required by the Datadog
+    Terraform provider for creating resources (monitors, dashboards, SLOs).
+
+    WARNING: https://app.datadoghq.com/organization-settings/application-keys
+    prominently displays the Key ID in the main list — that is NOT this value.
+    Click into the key to reveal the actual key value (a long string starting
+    with e.g. "ddapp_"), not the shorter UUID-like Key ID. Using the Key ID
+    here causes 401 Unauthorized errors on every apply with no indication of
+    what's actually wrong.
 
     Source from TF_VAR_datadog_app_key in your shell or CI secret store.
     Never commit to version control.

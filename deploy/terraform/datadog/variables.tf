@@ -17,7 +17,18 @@ variable "datadog_api_key" {
 }
 
 variable "datadog_app_key" {
-  description = "Datadog Application key. Required by the Datadog provider for write operations. Source from AWS Secrets Manager. Use TF_VAR_datadog_app_key env var."
+  description = <<-EOT
+    Datadog Application KEY VALUE (not the Key ID!). Required by the Datadog
+    provider for write operations. Source from AWS Secrets Manager (EKS) or
+    .env (local). Use TF_VAR_datadog_app_key env var.
+
+    WARNING: https://app.datadoghq.com/organization-settings/application-keys
+    prominently displays the Key ID in the main list -- that is NOT this value.
+    Click into the key to reveal the actual key value (a long string starting
+    with e.g. "ddapp_"), not the shorter UUID-like Key ID. Using the Key ID
+    here causes 401 Unauthorized errors on every apply with no indication of
+    what's actually wrong.
+  EOT
   type        = string
   sensitive   = true
 }

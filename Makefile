@@ -74,42 +74,49 @@ version:
 
 ## instrument: Uncomment all Datadog instrumentation blocks across all services.
 ##             Applies unified diff patches — fully reversible with make uninstrument.
+##             Idempotent: a second run is a clean no-op (tracked via .instrumentation-applied).
 ##             See INSTRUMENTATION.md for what each patch enables.
 ##
 ##             After patching, redeploy:
 ##               Local:  make build && load images into k3s && kubectl rollout restart deployment -n finance
 ##               EKS:    make build-ecr && make deploy-k8s-eks && kubectl rollout restart deployment -n finance
 instrument:
-	@echo "Applying instrumentation patches..."
-	@for p in scripts/patches/*.patch; do \
-		svc=$$(basename $$p .patch); \
-		echo "  $$svc"; \
-		patch -p1 --forward -s < $$p || true; \
-	done
-	@echo ""
-	@echo "==> Injecting RUM credentials from Terraform output..."
-	@if cd deploy/terraform/datadog && terraform output rum_application_id >/dev/null 2>&1; then \
-		RUM_APP_ID=$$(cd deploy/terraform/datadog && terraform output -raw rum_application_id 2>/dev/null); \
-		RUM_TOKEN=$$(cd deploy/terraform/datadog && terraform output -raw rum_client_token 2>/dev/null); \
-		if [ -n "$$RUM_APP_ID" ] && [ -n "$$RUM_TOKEN" ]; then \
-			sed -i '' \
-				"s|'REPLACE_WITH_APPLICATION_ID'|'$$RUM_APP_ID'|g" \
-				frontend-stub/index.html; \
-			sed -i '' \
-				"s|'REPLACE_WITH_CLIENT_TOKEN'|'$$RUM_TOKEN'|g" \
-				frontend-stub/index.html; \
-			echo "  ✓ RUM credentials injected (app_id: $$RUM_APP_ID)"; \
-		else \
-			echo "  ⚠  RUM output is empty — run 'make tf-apply-dd' first, then re-run 'make instrument'"; \
-		fi; \
+	@if [ -f .instrumentation-applied ]; then \
+		echo "Instrumentation already enabled. Run 'make uninstrument' first to reapply."; \
 	else \
-		echo "  ⚠  Terraform output not available — run 'make tf-apply-dd' first to create the RUM app."; \
-		echo "     RUM block left with placeholders. Re-run 'make instrument' after 'make tf-apply-dd'."; \
+		echo "Applying instrumentation patches..."; \
+		for p in scripts/patches/*.patch; do \
+			svc=$$(basename $$p .patch); \
+			echo "  $$svc"; \
+			patch -p1 --forward -s < $$p || true; \
+		done; \
+		touch .instrumentation-applied; \
+		echo ""; \
+		echo "==> Injecting RUM credentials from Terraform output..."; \
+		TF_DD_DIR="$(CURDIR)/deploy/terraform/datadog"; \
+		if terraform -chdir="$$TF_DD_DIR" output rum_application_id >/dev/null 2>&1; then \
+			RUM_APP_ID=$$(terraform -chdir="$$TF_DD_DIR" output -raw rum_application_id 2>/dev/null); \
+			RUM_TOKEN=$$(terraform -chdir="$$TF_DD_DIR" output -raw rum_client_token 2>/dev/null); \
+			if [ -n "$$RUM_APP_ID" ] && [ -n "$$RUM_TOKEN" ]; then \
+				sed -i '' \
+					"s|'REPLACE_WITH_APPLICATION_ID'|'$$RUM_APP_ID'|g" \
+					frontend-stub/index.html; \
+				sed -i '' \
+					"s|'REPLACE_WITH_CLIENT_TOKEN'|'$$RUM_TOKEN'|g" \
+					frontend-stub/index.html; \
+				echo "  ✓ RUM credentials injected (app_id: $$RUM_APP_ID)"; \
+			else \
+				echo "  ⚠  RUM output is empty — run 'make tf-apply-dd' first, then re-run 'make instrument'"; \
+			fi; \
+		else \
+			echo "  ⚠  Terraform output not available — run 'make tf-apply-dd' first to create the RUM app."; \
+			echo "     RUM block left with placeholders. Re-run 'make instrument' after 'make tf-apply-dd'."; \
+		fi; \
+		echo ""; \
+		echo "✓ Instrumentation enabled. Redeploy to activate:"; \
+		echo "   Local: make build && load images into k3s && kubectl rollout restart deployment -n finance"; \
+		echo "   EKS:   make build-ecr && make deploy-k8s-eks && kubectl rollout restart deployment -n finance"; \
 	fi
-	@echo ""
-	@echo "✓ Instrumentation enabled. Redeploy to activate:"
-	@echo "   Local: make build && load images into k3s && kubectl rollout restart deployment -n finance"
-	@echo "   EKS:   make build-ecr && make deploy-k8s-eks && kubectl rollout restart deployment -n finance"
 
 ## uninstrument: Re-comment all Datadog instrumentation blocks (reverse of make instrument).
 ##               Restores every file to its original commented-out state.
@@ -118,24 +125,29 @@ instrument:
 ##                 Local:  make build && load images into k3s && kubectl rollout restart deployment -n finance
 ##                 EKS:    make build-ecr && make deploy-k8s-eks && kubectl rollout restart deployment -n finance
 uninstrument:
-	@echo "Reversing instrumentation patches..."
-	@for p in scripts/patches/*.patch; do \
-		svc=$$(basename $$p .patch); \
-		echo "  $$svc"; \
-		patch -p1 --reverse -s < $$p || true; \
-	done
-	@echo "==> Restoring RUM credential placeholders..."
-	@sed -i '' \
-		"s|'[a-f0-9]\{8\}-[a-f0-9]\{4\}-[a-f0-9]\{4\}-[a-f0-9]\{4\}-[a-f0-9]\{12\}'|'REPLACE_WITH_APPLICATION_ID'|g" \
-		frontend-stub/index.html
-	@sed -i '' \
-		"s|clientToken:             '[a-z0-9]*'|clientToken:             'REPLACE_WITH_CLIENT_TOKEN'|g" \
-		frontend-stub/index.html
-	@echo "  ✓ RUM placeholders restored"
-	@echo ""
-	@echo "✓ Instrumentation disabled. Redeploy to deactivate:"
-	@echo "   Local: make build && load images into k3s && kubectl rollout restart deployment -n finance"
-	@echo "   EKS:   make build-ecr && make deploy-k8s-eks && kubectl rollout restart deployment -n finance"
+	@if [ ! -f .instrumentation-applied ]; then \
+		echo "Instrumentation is not currently enabled (nothing to reverse)."; \
+	else \
+		echo "Reversing instrumentation patches..."; \
+		for p in scripts/patches/*.patch; do \
+			svc=$$(basename $$p .patch); \
+			echo "  $$svc"; \
+			patch -p1 --reverse -s < $$p || true; \
+		done; \
+		rm -f .instrumentation-applied; \
+		echo "==> Restoring RUM credential placeholders..."; \
+		sed -i '' \
+			"s|'[a-f0-9]\{8\}-[a-f0-9]\{4\}-[a-f0-9]\{4\}-[a-f0-9]\{4\}-[a-f0-9]\{12\}'|'REPLACE_WITH_APPLICATION_ID'|g" \
+			frontend-stub/index.html; \
+		sed -i '' \
+			"s|clientToken:             '[a-z0-9]*'|clientToken:             'REPLACE_WITH_CLIENT_TOKEN'|g" \
+			frontend-stub/index.html; \
+		echo "  ✓ RUM placeholders restored"; \
+		echo ""; \
+		echo "✓ Instrumentation disabled. Redeploy to deactivate:"; \
+		echo "   Local: make build && load images into k3s && kubectl rollout restart deployment -n finance"; \
+		echo "   EKS:   make build-ecr && make deploy-k8s-eks && kubectl rollout restart deployment -n finance"; \
+	fi
 
 ## build: Build all service images for the local platform.
 ##        Images are tagged finance-sample-app-<service>:latest and :<DD_VERSION> (git short SHA).
@@ -470,15 +482,24 @@ teardown:
 	@echo "✓  Teardown complete. Cluster and data are clean."
 	@echo "   Start fresh: make build && make deploy-k8s && make create-dd-secret && make deploy-k8s-dd"
 
+## deploy/terraform/aws/staging.tfvars: auto-created from staging.tfvars.example
+##                                       on first use (self-heals a missing file
+##                                       instead of failing 'terraform plan/apply'
+##                                       with a raw "Failed to read variables file").
+deploy/terraform/aws/staging.tfvars:
+	@cp deploy/terraform/aws/staging.tfvars.example $@
+	@echo "==> Created $@ from staging.tfvars.example"
+	@echo "    Edit it with your aws_profile / aws_region / cluster_name, then re-run."
+
 ## tf-plan-aws: Initialise and plan the Terraform AWS (EKS) target.
 ##              Uses the AWS_PROFILE env var. Override vars: TF_AWS_VARS="-var-file=staging.tfvars -var aws_profile=<name>"
 TF_AWS_VARS ?= -var-file=staging.tfvars
-tf-plan-aws:
+tf-plan-aws: deploy/terraform/aws/staging.tfvars
 	cd deploy/terraform/aws && terraform init && terraform plan $(TF_AWS_VARS)
 
 ## tf-apply-aws: Apply the Terraform AWS plan (creates EKS, ECR, VPC, IAM).
 ##               WARNING: this provisions real AWS resources and incurs cost.
-tf-apply-aws:
+tf-apply-aws: deploy/terraform/aws/staging.tfvars
 	bash scripts/aws-pre-apply.sh
 	cd deploy/terraform/aws && terraform init && terraform apply $(TF_AWS_VARS)
 
@@ -581,43 +602,78 @@ create-dd-secret:
 	echo "   Keys stored: api-key, app-key$$([ -n "$$DBM_PASSWORD" ] && echo ', dbm-password' || echo ' (dbm-password not set)')"; \
 	echo "   Verify: kubectl get secret datadog-secret -n datadog -o jsonpath='{.data}' | python3 -m json.tool"
 
+## dd-secrets: Print eval-ready 'export TF_VAR_datadog_api_key=...' commands for use with
+##             tf-apply-dd / tf-plan-dd. Auto-detects environment:
+##               EKS:   fetches from AWS Secrets Manager (requires SSO login)
+##               Local: falls back to DD_API_KEY / DD_APP_KEY in .env
+##             Usage: eval "$(make dd-secrets)"
 .PHONY: dd-secrets
 dd-secrets:
-	@AWS_REGION=$$(grep '^aws_region' deploy/terraform/aws/staging.tfvars 2>/dev/null | sed 's/.*=[ ]*//' | tr -d '"' | tr -d ' '); \
-	if [ -z "$$AWS_REGION" ]; then AWS_REGION=eu-west-1; fi; \
-	AWS_PROF=$$(grep '^aws_profile' deploy/terraform/aws/staging.tfvars 2>/dev/null | sed 's/.*=[ ]*//' | tr -d '"' | tr -d ' '); \
-	PROFILE_FLAG=$$([ -n "$$AWS_PROF" ] && echo "--profile $$AWS_PROF" || echo ''); \
-	API_KEY=$$(aws secretsmanager get-secret-value \
-		--secret-id finance-app/staging/dd-api-key \
-		--query SecretString --output text \
-		--region $$AWS_REGION $$PROFILE_FLAG 2>/dev/null); \
-	APP_KEY=$$(aws secretsmanager get-secret-value \
-		--secret-id finance-app/staging/dd-app-key \
-		--query SecretString --output text \
-		--region $$AWS_REGION $$PROFILE_FLAG 2>/dev/null); \
-	if [ -z "$$API_KEY" ] || [ -z "$$APP_KEY" ]; then \
-		echo "# ERROR: could not fetch secrets from Secrets Manager (region=$$AWS_REGION profile=$$AWS_PROF)" >&2; \
-		echo "# Make sure your AWS SSO session is valid: aws sso login --profile $$AWS_PROF" >&2; \
-		exit 1; \
+	@AWS_PROF=$$(grep '^aws_profile' deploy/terraform/aws/staging.tfvars 2>/dev/null | sed 's/.*=[ ]*//' | tr -d '"' | tr -d ' '); \
+	AWS_SSO_OK=false; \
+	if [ -n "$$AWS_PROF" ] && aws sts get-caller-identity --profile "$$AWS_PROF" >/dev/null 2>&1; then \
+		AWS_SSO_OK=true; \
 	fi; \
-	echo "export TF_VAR_datadog_api_key=\"$$API_KEY\""; \
-	echo "export TF_VAR_datadog_app_key=\"$$APP_KEY\""
+	if [ "$$AWS_SSO_OK" = true ]; then \
+		AWS_REGION=$$(grep '^aws_region' deploy/terraform/aws/staging.tfvars 2>/dev/null | sed 's/.*=[ ]*//' | tr -d '"' | tr -d ' '); \
+		if [ -z "$$AWS_REGION" ]; then AWS_REGION=eu-west-1; fi; \
+		API_KEY=$$(aws secretsmanager get-secret-value \
+			--secret-id finance-app/staging/dd-api-key \
+			--query SecretString --output text \
+			--region $$AWS_REGION --profile "$$AWS_PROF" 2>/dev/null); \
+		APP_KEY=$$(aws secretsmanager get-secret-value \
+			--secret-id finance-app/staging/dd-app-key \
+			--query SecretString --output text \
+			--region $$AWS_REGION --profile "$$AWS_PROF" 2>/dev/null); \
+		if [ -z "$$API_KEY" ] || [ -z "$$APP_KEY" ]; then \
+			echo "# ERROR: AWS SSO session is valid but could not fetch secrets from Secrets Manager (region=$$AWS_REGION profile=$$AWS_PROF)" >&2; \
+			echo "# Check the secrets exist: aws secretsmanager list-secrets --profile $$AWS_PROF | grep finance-app" >&2; \
+			exit 1; \
+		fi; \
+		echo "export TF_VAR_datadog_api_key=\"$$API_KEY\""; \
+		echo "export TF_VAR_datadog_app_key=\"$$APP_KEY\""; \
+	elif [ -f .env ]; then \
+		echo "# No valid AWS SSO session for profile '$$AWS_PROF' -- falling back to local .env" >&2; \
+		API_KEY=$$(grep '^DD_API_KEY=' .env | head -1 | cut -d= -f2-); \
+		APP_KEY=$$(grep '^DD_APP_KEY=' .env | head -1 | cut -d= -f2-); \
+		if [ -z "$$API_KEY" ] || [ -z "$$APP_KEY" ]; then \
+			echo "# ERROR: DD_API_KEY / DD_APP_KEY not set in .env" >&2; \
+			echo "# Copy .env.example to .env and fill in your Datadog keys, then retry." >&2; \
+			exit 1; \
+		fi; \
+		echo "export TF_VAR_datadog_api_key=\"$$API_KEY\""; \
+		echo "export TF_VAR_datadog_app_key=\"$$APP_KEY\""; \
+	else \
+		echo "# ERROR: no valid AWS SSO session and no .env file found." >&2; \
+		echo "# EKS:   aws sso login --profile $$AWS_PROF" >&2; \
+		echo "# Local: cp .env.example .env && set DD_API_KEY / DD_APP_KEY" >&2; \
+		exit 1; \
+	fi
 
 ## tf-plan-dd: Plan the Datadog observability resources (index, pipeline, monitors, dashboard).
 ##             Requires TF_VAR_datadog_api_key and TF_VAR_datadog_app_key env vars.
 ##             Easiest way to set them: eval "$(make dd-secrets)"
 TF_DD_VARS ?= -var-file=staging.tfvars
-tf-plan-dd:
+## deploy/terraform/datadog/staging.tfvars: auto-created from staging.tfvars.example
+##                                           on first use -- self-heals a missing
+##                                           file instead of failing with a raw
+##                                           "Failed to read variables file" error.
+deploy/terraform/datadog/staging.tfvars:
+	@cp deploy/terraform/datadog/staging.tfvars.example $@
+	@echo "==> Created $@ from staging.tfvars.example"
+	@echo "    Edit it with your datadog_site / cluster_name / synthetic_target_base_url, then re-run."
+
+tf-plan-dd: deploy/terraform/datadog/staging.tfvars
 	cd deploy/terraform/datadog && terraform init && terraform plan $(TF_DD_VARS)
 
 ## tf-apply-dd: Apply the Datadog resources (index, pipeline, monitors, dashboard).
 ##              WARNING: creates/updates live Datadog configuration.
-tf-apply-dd:
+tf-apply-dd: deploy/terraform/datadog/staging.tfvars
 	cd deploy/terraform/datadog && terraform init && terraform apply -auto-approve $(TF_DD_VARS)
 
 ## tf-destroy-dd: Destroy all Datadog resources created by this Terraform module.
 ##                WARNING: deletes the log index (and all indexed logs), monitors, dashboard, SLOs.
-tf-destroy-dd:
+tf-destroy-dd: deploy/terraform/datadog/staging.tfvars
 	cd deploy/terraform/datadog && terraform init && terraform destroy -auto-approve $(TF_DD_VARS)
 
 # ── GCP targets (scaffolded but not yet tested — coming soon) ──────────────────
