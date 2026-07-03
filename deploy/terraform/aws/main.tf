@@ -240,22 +240,64 @@ module "eks" {
   # after creation (EKS module 21.x uses API auth, not aws-auth ConfigMap).
   enable_cluster_creator_admin_permissions = true
 
-  # Allow the EKS cluster to pull from ECR without additional auth
+  # ── NODE SECURITY GROUP — only genuinely custom rules ─────────────────
+  # SIMPLIFICATION: this used to hand-declare ~13 rules, but 10 of them
+  # (self-CoreDNS TCP/UDP, node-to-node ephemeral ports, cluster-to-node 443/
+  # kubelet-10250, and the 4443/6443/8443/9443/10251 "webhook" ports used by
+  # metrics-server/prometheus-adapter/Karpenter/ALB-controller/NGINX) are
+  # EXACT duplicates of rules the terraform-aws-modules/eks/aws module
+  # (pinned ~> 21.0) already creates by default — see node_groups.tf's
+  # `node_security_group_rules` (always on) and `node_security_group_recommended_rules`
+  # (on by default via `node_security_group_enable_recommended_rules = true`,
+  # which we don't even need to set since that IS the default). Likewise the
+  # cluster-side `ingress_nodes_443` rule (removed below) duplicates the
+  # module's own `cluster_security_group_rules.ingress_nodes_443` default.
+  # Only 3 rules here are genuinely new and not covered by module defaults:
+  # the Datadog admission-controller webhook port, and the two NLB NodePorts.
+  # Docs: https://github.com/terraform-aws-modules/terraform-aws-eks (node_groups.tf)
   node_security_group_additional_rules = {
-    ingress_self_all = {
-      description = "Node-to-node traffic"
-      protocol    = "-1"
-      from_port   = 0
-      to_port     = 0
-      type        = "ingress"
-      self        = true
+    # ── DATADOG ADMISSION CONTROLLER — LIBRARY INJECTION WEBHOOK ────────
+    # The Datadog Cluster Agent's admission controller listens on port 8000
+    # and is invoked by the Kubernetes API server (control plane) as a
+    # mutating webhook (`datadog.webhook.lib.injection`, path /injectlib) to
+    # inject language tracer libraries (Java, Python, Node.js, Go, .NET)
+    # into annotated pods. Without this rule the control plane cannot reach
+    # the cluster-agent's webhook endpoint on the node; because the webhook
+    # has failurePolicy: Ignore, requests fail *silently* (pods still get
+    # admitted, but library injection is skipped) rather than erroring out,
+    # which makes this misconfiguration easy to miss. Not part of the
+    # module's built-in webhook list (only 4443/6443/8443/9443/10251 are).
+    # Docs: https://docs.datadoghq.com/containers/cluster_agent/admission_controller/
+    ingress_cluster_8000_datadog_admission_webhook = {
+      description              = "Cluster API to node 8000/tcp - Datadog admission controller (library injection webhook)"
+      protocol                 = "tcp"
+      from_port                = 8000
+      to_port                  = 8000
+      type                     = "ingress"
+      source_security_group_id = module.eks.cluster_security_group_id
     }
-    egress_all = {
-      description = "Allow all outbound"
-      protocol    = "-1"
-      from_port   = 0
-      to_port     = 0
-      type        = "egress"
+
+    # ── Terraform-managed frontend NLB ────────────────────────
+    # The NLB (aws_lb.frontend, target_type=instance) delivers traffic
+    # directly to each node's ENI on the fixed NodePorts — NLBs have no
+    # security group of their own for this target type, so the node SG
+    # itself must allow the public internet in on these two ports. See the
+    # "FRONTEND LOAD BALANCER" section below for why this replaced the
+    # Kubernetes-provisioned Classic ELB.
+    ingress_frontend_nlb_http = {
+      description = "Public HTTP for frontend dashboard NodePort (Terraform-managed NLB)"
+      protocol    = "tcp"
+      from_port   = 30080
+      to_port     = 30080
+      type        = "ingress"
+      cidr_blocks = ["0.0.0.0/0"]
+    }
+    ingress_frontend_nlb_https = {
+      description = "Public HTTPS for Keycloak proxy NodePort (Terraform-managed NLB)"
+      protocol    = "tcp"
+      from_port   = 30443
+      to_port     = 30443
+      type        = "ingress"
       cidr_blocks = ["0.0.0.0/0"]
     }
   }
@@ -640,10 +682,18 @@ resource "aws_route53_record" "acm_validation" {
   ttl             = 60
   records         = [each.value.record]
 
-  # zone_id: set this to your Route 53 hosted zone ID.
-  # If you don't use Route 53, delete this resource and add the CNAMEs manually.
-  # zone_id = var.route53_zone_id  # uncomment and set in staging.tfvars
-  zone_id = "" # placeholder — set to your Route 53 zone ID or delete this resource
+  # zone_id: set var.route53_zone_id to your Route 53 hosted zone ID in
+  # staging.tfvars when domain_name is set and you manage that zone in
+  # Route 53. If you don't use Route 53, delete this resource and add the
+  # CNAMEs manually using the acm_validation_records output.
+  #
+  # NOTE: this must never be a literal empty string — the AWS provider
+  # rejects an empty zone_id during `terraform plan`/`validate` even when
+  # for_each evaluates to zero instances (domain_name unset). The fallback
+  # placeholder below is inert: it's only ever assigned to an instance when
+  # for_each is non-empty, i.e. when domain_name (and therefore normally
+  # route53_zone_id too) is actually set.
+  zone_id = var.domain_name != "" ? var.route53_zone_id : "unused-no-custom-domain"
 }
 
 resource "aws_acm_certificate_validation" "frontend" {
@@ -655,6 +705,158 @@ resource "aws_acm_certificate_validation" "frontend" {
   timeouts {
     create = "10m"
   }
+}
+
+# =============================================================================
+# FRONTEND LOAD BALANCER — Terraform-managed NLB (not Kubernetes-provisioned)
+# =============================================================================
+# BUG FIX / DESIGN CHANGE: the frontend Service used to be `type: LoadBalancer`,
+# which lets Kubernetes' own cloud-controller-manager dynamically create a
+# Classic ELB (+ its own security group) in AWS. Neither of those is tracked
+# in Terraform state at all — they are pure side effects of a Service object.
+# If the EKS cluster is ever deleted before that Service is cleaned up (races
+# during `make tf-destroy-aws`, or simply deleting the cluster first), the
+# controller that would release the ELB no longer exists, and the ELB + its
+# security group become permanently orphaned. In practice this blocked VPC/
+# subnet deletion with DependencyViolation errors that `terraform destroy`
+# could not resolve — the orphaned ELB and SG had to be found and deleted
+# manually via the AWS CLI before the destroy could complete.
+#
+# Fix: the frontend Service stays `type: NodePort` on EKS (same as local —
+# see scripts/generate-eks-kustomization.sh, which no longer patches it to
+# LoadBalancer), on its existing FIXED node ports (30080 HTTP, 30443 HTTPS —
+# see deploy/kubernetes/base/services/frontend.yaml). Terraform owns the
+# load balancer directly instead: an NLB targeting those node ports across
+# every instance in the EKS managed node group's Auto Scaling Group.
+#
+# Because this LB is now a first-class Terraform resource with the EKS
+# cluster/node group as an implicit dependency, `terraform destroy` always
+# tears it down in the correct order automatically — there is no longer any
+# AWS resource in this path that Kubernetes creates behind Terraform's back.
+# As a bonus, the LB's DNS name is now stable across app redeploys (it only
+# changes if this aws_lb resource itself is replaced), instead of changing
+# every time the Kubernetes Service object happened to be recreated.
+# =============================================================================
+
+resource "aws_lb" "frontend" {
+  name               = "${var.cluster_name}-frontend"
+  internal           = false
+  load_balancer_type = "network"
+  subnets            = module.vpc.public_subnets
+
+  tags = {
+    Name = "${var.cluster_name}-frontend"
+  }
+}
+
+# Backs the nginx dashboard + API proxy (nodePort 30080, see frontend.yaml).
+resource "aws_lb_target_group" "frontend_http" {
+  name        = "${var.cluster_name}-fe-http"
+  port        = 30080
+  protocol    = "TCP"
+  vpc_id      = module.vpc.vpc_id
+  target_type = "instance"
+
+  health_check {
+    protocol            = "TCP"
+    port                = "traffic-port"
+    healthy_threshold   = 3
+    unhealthy_threshold = 3
+    interval            = 10
+  }
+
+  tags = {
+    Name = "${var.cluster_name}-fe-http"
+  }
+}
+
+# Backs the self-signed Keycloak HTTPS passthrough (nodePort 30443).
+resource "aws_lb_target_group" "frontend_https" {
+  name        = "${var.cluster_name}-fe-https"
+  port        = 30443
+  protocol    = "TCP"
+  vpc_id      = module.vpc.vpc_id
+  target_type = "instance"
+
+  health_check {
+    protocol            = "TCP"
+    port                = "traffic-port"
+    healthy_threshold   = 3
+    unhealthy_threshold = 3
+    interval            = 10
+  }
+
+  tags = {
+    Name = "${var.cluster_name}-fe-https"
+  }
+}
+
+# Plain HTTP — always present, matches local's http://localhost:30080.
+resource "aws_lb_listener" "frontend_http" {
+  load_balancer_arn = aws_lb.frontend.arn
+  port              = 80
+  protocol          = "TCP"
+
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.frontend_http.arn
+  }
+}
+
+# HTTPS with a publicly-trusted ACM cert — only when domain_name is set.
+# The NLB terminates TLS here and forwards plain HTTP to nginx on :30080
+# (nginx sets X-Forwarded-Proto: https so Keycloak still issues Secure
+# cookies correctly). Without a domain_name, use http:// on port 80, or the
+# self-signed :8443 passthrough below.
+resource "aws_lb_listener" "frontend_https_acm" {
+  count = var.domain_name != "" ? 1 : 0
+
+  load_balancer_arn = aws_lb.frontend.arn
+  port              = 443
+  protocol          = "TLS"
+  certificate_arn   = aws_acm_certificate_validation.frontend[0].certificate_arn
+  ssl_policy        = "ELBSecurityPolicy-TLS13-1-2-2021-06"
+
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.frontend_http.arn
+  }
+}
+
+# Self-signed Keycloak HTTPS passthrough — always present, matches local's
+# https://localhost:30443 (accept the browser security warning once).
+resource "aws_lb_listener" "frontend_keycloak" {
+  load_balancer_arn = aws_lb.frontend.arn
+  port              = 8443
+  protocol          = "TCP"
+
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.frontend_https.arn
+  }
+}
+
+# Automatically registers/deregisters every node in the managed node group's
+# ASG as it scales — no per-instance Terraform resources needed.
+#
+# NOTE: for_each is keyed by module.eks.eks_managed_node_groups (a map whose
+# keys come straight from this file's own `eks_managed_node_groups = { finance_app = ... }`
+# block, so they're known at plan time even on a from-scratch apply). The ASG
+# name itself (each.value.node_group_autoscaling_group_names[0]) is only known
+# after apply, but that's fine for a resource attribute — only for_each *keys*
+# must be statically known. Keying on the flattened list of ASG names directly
+# (eks_managed_node_groups_autoscaling_group_names) fails plan on a brand new
+# cluster because that whole list is unknown until apply.
+resource "aws_autoscaling_attachment" "frontend_http" {
+  for_each               = module.eks.eks_managed_node_groups
+  autoscaling_group_name = each.value.node_group_autoscaling_group_names[0]
+  lb_target_group_arn    = aws_lb_target_group.frontend_http.arn
+}
+
+resource "aws_autoscaling_attachment" "frontend_https" {
+  for_each               = module.eks.eks_managed_node_groups
+  autoscaling_group_name = each.value.node_group_autoscaling_group_names[0]
+  lb_target_group_arn    = aws_lb_target_group.frontend_https.arn
 }
 
 # NOTE: The EKS cluster control-plane log group (/aws/eks/<name>/cluster) is

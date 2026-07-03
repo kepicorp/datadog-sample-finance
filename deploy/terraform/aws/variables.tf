@@ -174,3 +174,17 @@ variable "domain_name" {
   type        = string
   default     = ""
 }
+
+variable "route53_zone_id" {
+  description = <<-EOT
+    Route 53 hosted zone ID for domain_name's DNS zone. Required only when
+    domain_name is set AND you manage that domain's DNS in Route 53 — it is
+    used to create the ACM DNS validation CNAME record automatically.
+
+    If you use another DNS provider, leave this empty, use the
+    acm_validation_records output to add the CNAME manually, and delete
+    the aws_route53_record.acm_validation resource in main.tf.
+  EOT
+  type        = string
+  default     = ""
+}

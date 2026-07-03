@@ -44,6 +44,21 @@ output "kubeconfig_command" {
   )
 }
 
+output "frontend_lb_dns_name" {
+  description = "DNS name of the Terraform-managed NLB fronting the finance app. Stable across app redeploys (unlike the old Kubernetes-provisioned ELB) -- only changes if aws_lb.frontend itself is replaced."
+  value       = aws_lb.frontend.dns_name
+}
+
+output "frontend_url" {
+  description = "Public URL for the finance dashboard. Use this instead of 'kubectl get svc frontend' to find the app -- feed it into deploy/terraform/datadog/staging.tfvars as synthetic_target_base_url, and into KEYCLOAK_PUBLIC_URL."
+  value       = var.domain_name != "" ? "https://${var.domain_name}" : "http://${aws_lb.frontend.dns_name}"
+}
+
+output "frontend_keycloak_https_url" {
+  description = "Self-signed HTTPS URL for the Keycloak proxy passthrough (accept the browser security warning once). Always available regardless of domain_name/ACM cert."
+  value       = "https://${aws_lb.frontend.dns_name}:8443"
+}
+
 output "deploy_command" {
   description = "Run this after configuring kubectl to deploy the Finance app to EKS."
   value       = "make deploy-k8s"
@@ -177,12 +192,11 @@ output "acm_certificate_arn" {
     ARN of the ACM certificate for the Finance frontend NLB.
     Empty string when domain_name is not set.
 
-    Use this ARN in the EKS Kustomize overlay annotation:
-      service.beta.kubernetes.io/aws-load-balancer-ssl-cert: <arn>
-
-    The EKS kustomization generator (scripts/generate-eks-kustomization.sh)
-    reads this output and automatically injects the annotation into the
-    frontend Service when domain_name is configured.
+    Consumed directly by aws_lb_listener.frontend_https_acm (main.tf) to
+    terminate TLS on the Terraform-managed NLB's :443 listener. Also read
+    by scripts/generate-eks-kustomization.sh purely for informational
+    banner output -- it is NOT used to annotate the frontend Service, since
+    that Service stays NodePort/ClusterIP and never talks to AWS APIs.
   EOT
   value       = var.domain_name != "" ? aws_acm_certificate_validation.frontend[0].certificate_arn : ""
 }
