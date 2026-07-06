@@ -351,7 +351,7 @@ make build                     # build the 6 service images
 #   Docker Desktop / Rancher Desktop — automatic, skip this step
 #   Colima (its Kubernetes uses containerd) — import into the k8s.io namespace:
 #     for svc in gateway-api account-service transaction-service fraud-detection notification-service batch-processor; do \
-#       docker save finance-sample-app-$svc:latest | colima ssh -- sudo ctr -n k8s.io image import -; done
+#       docker save "finance-sample-app-${svc}:latest" | colima ssh -- sudo ctr -n k8s.io image import -; done
 #   kind: kind load docker-image …   k3d: k3d image import …   minikube: minikube image load …
 
 make deploy-k8s                # app + in-cluster traffic generator
