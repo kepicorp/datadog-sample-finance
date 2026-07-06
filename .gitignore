@@ -114,3 +114,10 @@ deploy/kubernetes/overlays/eks/kustomization.yaml
 # ── Instrumentation state ────────────────────────────────────────────────────
 # Idempotency marker for make instrument/uninstrument — never committed.
 .instrumentation-applied
+
+# ── AI agent / Claude files ──────────────────────────────────────────────────
+# Local agent instructions and workspace — not committed.
+CLAUDE.md
+CLAUDE.local.md
+.claude/
+.claude
