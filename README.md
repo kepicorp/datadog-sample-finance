@@ -361,7 +361,8 @@ make deploy-k8s-dd             # Datadog Agent (reads DD_API_KEY / DD_APP_KEY fr
 # Datadog Terraform resources — RUM app, monitors, SLOs, dashboard, synthetics.
 # Run this BEFORE 'make instrument' so the RUM credentials exist (see Instrumentation note).
 cp deploy/terraform/datadog/staging.tfvars.example deploy/terraform/datadog/staging.tfvars   # first time only
-eval "$(make dd-secrets)"       # locally, falls back to DD_API_KEY / DD_APP_KEY from .env
+eval "$(make dd-secrets)"       # exports TF_VAR_* keys; locally reads DD_API_KEY / DD_APP_KEY from .env
+                                # (falls back to .env even if you're logged into AWS)
 make tf-apply-dd
 
 # Layer 2 — custom spans, DogStatsD metrics, Browser RUM

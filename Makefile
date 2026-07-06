@@ -550,17 +550,18 @@ create-dd-secret:
 	echo "   Verify: kubectl get secret datadog-secret -n datadog -o jsonpath='{.data}' | python3 -m json.tool"
 
 ## dd-secrets: Print eval-ready 'export TF_VAR_datadog_api_key=...' commands for use with
-##             tf-apply-dd / tf-plan-dd. Auto-detects environment:
-##               EKS:   fetches from AWS Secrets Manager (requires SSO login)
-##               Local: falls back to DD_API_KEY / DD_APP_KEY in .env
+##             tf-apply-dd / tf-plan-dd. Resolves the keys in priority order:
+##               1. AWS Secrets Manager  — if an SSO session for aws_profile is active
+##                                          AND the finance-app/staging secrets exist
+##               2. .env                 — DD_API_KEY / DD_APP_KEY (local fallback)
+##             The .env fallback also kicks in when an AWS session is active but the
+##             secrets aren't in Secrets Manager (the common local case), so this
+##             works locally without needing to 'aws sso logout' first.
 ##             Usage: eval "$(make dd-secrets)"
 dd-secrets:
 	@AWS_PROF=$$(grep '^aws_profile' deploy/terraform/aws/staging.tfvars 2>/dev/null | sed 's/.*=[ ]*//' | tr -d '"' | tr -d ' '); \
-	AWS_SSO_OK=false; \
+	API_KEY=""; APP_KEY=""; SRC=""; \
 	if [ -n "$$AWS_PROF" ] && aws sts get-caller-identity --profile "$$AWS_PROF" >/dev/null 2>&1; then \
-		AWS_SSO_OK=true; \
-	fi; \
-	if [ "$$AWS_SSO_OK" = true ]; then \
 		AWS_REGION=$$(grep '^aws_region' deploy/terraform/aws/staging.tfvars 2>/dev/null | sed 's/.*=[ ]*//' | tr -d '"' | tr -d ' '); \
 		if [ -z "$$AWS_REGION" ]; then AWS_REGION=eu-west-1; fi; \
 		API_KEY=$$(aws secretsmanager get-secret-value \
@@ -571,30 +572,27 @@ dd-secrets:
 			--secret-id finance-app/staging/dd-app-key \
 			--query SecretString --output text \
 			--region $$AWS_REGION --profile "$$AWS_PROF" 2>/dev/null); \
-		if [ -z "$$API_KEY" ] || [ -z "$$APP_KEY" ]; then \
-			echo "# ERROR: AWS SSO session is valid but could not fetch secrets from Secrets Manager (region=$$AWS_REGION profile=$$AWS_PROF)" >&2; \
-			echo "# Check the secrets exist: aws secretsmanager list-secrets --profile $$AWS_PROF | grep finance-app" >&2; \
-			exit 1; \
+		if [ -n "$$API_KEY" ] && [ -n "$$APP_KEY" ]; then \
+			SRC="AWS Secrets Manager (profile $$AWS_PROF, region $$AWS_REGION)"; \
+		else \
+			echo "# dd-secrets: AWS session active but finance-app/staging secrets not found -- falling back to .env" >&2; \
+			API_KEY=""; APP_KEY=""; \
 		fi; \
-		echo "export TF_VAR_datadog_api_key=\"$$API_KEY\""; \
-		echo "export TF_VAR_datadog_app_key=\"$$APP_KEY\""; \
-	elif [ -f .env ]; then \
-		echo "# No valid AWS SSO session for profile '$$AWS_PROF' -- falling back to local .env" >&2; \
-		API_KEY=$$(grep '^DD_API_KEY=' .env | head -1 | cut -d= -f2-); \
-		APP_KEY=$$(grep '^DD_APP_KEY=' .env | head -1 | cut -d= -f2-); \
-		if [ -z "$$API_KEY" ] || [ -z "$$APP_KEY" ]; then \
-			echo "# ERROR: DD_API_KEY / DD_APP_KEY not set in .env" >&2; \
-			echo "# Copy .env.example to .env and fill in your Datadog keys, then retry." >&2; \
-			exit 1; \
-		fi; \
-		echo "export TF_VAR_datadog_api_key=\"$$API_KEY\""; \
-		echo "export TF_VAR_datadog_app_key=\"$$APP_KEY\""; \
-	else \
-		echo "# ERROR: no valid AWS SSO session and no .env file found." >&2; \
-		echo "# EKS:   aws sso login --profile $$AWS_PROF" >&2; \
-		echo "# Local: cp .env.example .env && set DD_API_KEY / DD_APP_KEY" >&2; \
+	fi; \
+	if { [ -z "$$API_KEY" ] || [ -z "$$APP_KEY" ]; } && [ -f .env ]; then \
+		API_KEY=$$(grep '^DD_API_KEY=' .env | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'"); \
+		APP_KEY=$$(grep '^DD_APP_KEY=' .env | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'"); \
+		if [ -n "$$API_KEY" ] && [ -n "$$APP_KEY" ]; then SRC=".env"; fi; \
+	fi; \
+	if [ -z "$$API_KEY" ] || [ -z "$$APP_KEY" ]; then \
+		echo "# ERROR: could not resolve Datadog keys." >&2; \
+		echo "#   Local: cp .env.example .env && set DD_API_KEY / DD_APP_KEY" >&2; \
+		echo "#   EKS:   aws sso login --profile $$AWS_PROF  (and ensure finance-app/staging/dd-*-key secrets exist)" >&2; \
 		exit 1; \
-	fi
+	fi; \
+	echo "# dd-secrets: sourced Datadog keys from $$SRC" >&2; \
+	echo "export TF_VAR_datadog_api_key=\"$$API_KEY\""; \
+	echo "export TF_VAR_datadog_app_key=\"$$APP_KEY\""
 
 ## tf-plan-dd: Plan the Datadog observability resources (index, pipeline, monitors, dashboard).
 ##             Requires TF_VAR_datadog_api_key and TF_VAR_datadog_app_key env vars.

@@ -44,7 +44,7 @@ kubectl rollout restart deployment -n finance
 make uninstrument && make build   # then reload (if needed) + rollout restart
 
 # 6. Apply Terraform resources (monitors, SLOs, dashboard, 7 synthetic tests)
-eval "$(make dd-secrets)"   # EKS only — or export TF_VAR_* manually
+eval "$(make dd-secrets)"   # exports TF_VAR_* keys — Secrets Manager (EKS) or .env (local)
 make tf-apply-dd
 ```
 
@@ -497,10 +497,11 @@ Already applied by `make deploy-k8s-dd`.
 ### Step 11 — Datadog Terraform resources
 
 ```bash
-eval "$(make dd-secrets)"   # EKS: exports TF_VAR_datadog_api_key + TF_VAR_datadog_app_key
-# Local: export manually:
-#   export TF_VAR_datadog_api_key=$(grep DD_API_KEY .env | cut -d= -f2)
-#   export TF_VAR_datadog_app_key=$(grep DD_APP_KEY .env | cut -d= -f2)
+# dd-secrets exports TF_VAR_datadog_api_key + TF_VAR_datadog_app_key.
+# Priority: AWS Secrets Manager (if an SSO session is active AND the secrets exist),
+# otherwise DD_API_KEY / DD_APP_KEY from .env — so this works locally even while
+# logged into AWS.
+eval "$(make dd-secrets)"
 make tf-apply-dd
 ```
 
@@ -688,7 +689,7 @@ make build && make deploy-k8s && make deploy-k8s-dd
 | `make tf-apply-aws` | Provision AWS EKS infrastructure (~15–20 min) |
 | `make tf-configure-kubectl` | Update kubeconfig for EKS |
 | `make tf-destroy-aws` | Destroy all AWS resources (handles ELB, node groups, ECR in order) |
-| `make dd-secrets` | Print `eval`-ready `TF_VAR_*` exports from Secrets Manager (EKS) |
+| `make dd-secrets` | Print `eval`-ready `TF_VAR_*` exports — from AWS Secrets Manager (EKS) or `.env` (local fallback) |
 
 > **Port-forward note:** `make test` and `make test-traffic` connect to services from your laptop. `scripts/port-forward.sh` was removed — start port-forwards manually before running these:
 > ```bash

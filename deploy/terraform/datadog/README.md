@@ -45,8 +45,9 @@ environment variables (never in `staging.tfvars`). `make dd-secrets` prints the 
 # 1. Copy and review variables (first time only). Set datadog_site to match your org.
 cp staging.tfvars.example staging.tfvars
 
-# 2. Export the keys. With no valid AWS SSO session, dd-secrets falls back to
-#    DD_API_KEY / DD_APP_KEY in your .env at the repo root.
+# 2. Export the keys. dd-secrets reads DD_API_KEY / DD_APP_KEY from your .env at
+#    the repo root. It falls back to .env even when you're logged into AWS but the
+#    finance-app/staging secrets aren't in Secrets Manager (the usual local case).
 eval "$(make dd-secrets)"
 
 # 3. Plan and apply
