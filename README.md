@@ -202,7 +202,7 @@ Set in `.env` — read automatically by `make create-dd-secret`:
 |---|---|
 | `DD_API_KEY` | https://app.datadoghq.com/organization-settings/api-keys |
 | `DD_APP_KEY` | https://app.datadoghq.com/organization-settings/application-keys |
-| `DATADOG_DBM_PASSWORD` | Password you set for the PostgreSQL `datadog` monitoring user (Step 8 in INSTRUMENTATION.md) |
+| `DATADOG_DBM_PASSWORD` | Password you set for the PostgreSQL `datadog` monitoring user (Step 9 in INSTRUMENTATION.md) |
 
 > **Security:** `.env` is git-ignored and must never be committed. All values in `02-secrets.yaml` are development-only defaults — rotate everything before any staging or production deployment.
 
@@ -302,36 +302,15 @@ Traffic mix:
 
 ## Instrumentation
 
-See **[INSTRUMENTATION.md](./INSTRUMENTATION.md)** for the complete step-by-step guide.
+Instrumentation is layered. Full guide: **[INSTRUMENTATION.md](./INSTRUMENTATION.md)**.
 
-> ⚠️ **Browser RUM (step 8) requires `make tf-apply-dd` to run before `make instrument`.**
-> The RUM `applicationId` and `clientToken` are created by the Datadog Terraform module
-> (`deploy/terraform/datadog`), and `make instrument` injects them into the frontend by
-> reading its `terraform output`. If you run `make instrument` first, the backend patches
-> (custom spans, DogStatsD metrics, profiler) still apply — but the frontend RUM block keeps
-> its placeholders and prints a `⚠` warning. Just re-run `make instrument` after
-> `make tf-apply-dd` (it's idempotent). See
-> [INSTRUMENTATION.md → Layer 2 workflow](./INSTRUMENTATION.md#workflow).
+- **Layer 1 — automatic.** Deploy the Agent (`make deploy-k8s-dd`) and the Admission Controller injects the tracer into every pod: APM traces, log–trace correlation, and runtime metrics, plus agent-side DBM, ActiveMQ JMX, and ASM/CWS/CSPM. No code changes.
+- **Layer 2 — `make instrument`.** Reversible patches add custom business spans, DogStatsD metrics, and Browser RUM. See [Enabling Layer 2](./INSTRUMENTATION.md#enabling-layer-2-make-instrument).
+- **Datadog resources.** `make tf-apply-dd` creates the monitors, SLOs, dashboard, synthetics, log pipeline, and the RUM application.
 
-Summary of what gets enabled:
+> ⚠️ **Browser RUM requires `make tf-apply-dd` before `make instrument`** — it injects the RUM credentials that Terraform creates. Backend patches apply either way; if you instrument first, just re-run `make instrument` after `tf-apply-dd` (idempotent).
 
-This numbering matches `INSTRUMENTATION.md`'s step-by-step breakdown exactly — use whichever doc you're reading, the step numbers are interchangeable.
-
-| Step | Signal | How |
-|---|---|---|
-| 1 | Structured JSON logs | Always active — `ad.datadoghq.com/*.logs` annotations |
-| 2 | Unified Service Tags | Always active — `DD_ENV`, `DD_SERVICE`, `DD_VERSION` env vars |
-| 3 | APM traces | Automatic — Admission Controller injects tracer at pod start |
-| 4 | Log–trace correlation | Automatic with Layer 1 — `dd.trace_id` in every log line |
-| 5 | Custom business spans | `make instrument` — uncomments span code in each service |
-| 6 | DogStatsD metrics | `make instrument` — `finance.payment.initiated` etc. |
-| 7 | Continuous Profiler | `DD_PROFILING_ENABLED=true` per service |
-| 8 | Browser RUM + Session Replay | `make instrument` — injects RUM credentials into the frontend dashboard |
-| 9 | Database Monitoring | Agent check — `deploy/kubernetes/datadog/checks/postgres-check.yaml` |
-| 10 | ActiveMQ JMX | Agent check — `deploy/kubernetes/datadog/checks/activemq-check.yaml` |
-| 11 | Terraform resources | `make tf-apply-dd` — monitors, SLOs, dashboard, synthetics |
-| 12 | Synthetic tests | Included in Terraform — tests from real APM traffic |
-| 13 | ASM + CWS + CSPM | Agent-side — enabled in `datadog-agent.yaml` |
+Per-signal breakdown and validation steps: [INSTRUMENTATION.md → Signal reference](./INSTRUMENTATION.md#signal-reference).
 
 ---
 

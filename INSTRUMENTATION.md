@@ -1,51 +1,111 @@
 # Finance Sample App — Instrumentation Guide
 
-Two complementary instrumentation layers — both independent, both reversible:
+This guide covers **what each observability layer enables and how to turn it on**.
+Building images, loading them into the cluster, and deploying the app (local vs EKS)
+are covered once in the [README runbook](../README.md#testing-everything-manually) —
+those deployment mechanics are not repeated here.
+
+---
+
+## How instrumentation is layered
+
+Two complementary layers — both independent, both reversible:
 
 | Layer | What it does | How |
 |---|---|---|
 | **1 — Single-step (Admission Controller)** | Injects the Datadog tracer into every pod at startup — no code changes, no rebuilds | `admission.datadoghq.com/enabled: "true"` label + Operator webhook |
-| **2 — Manual (`make instrument`)** | Adds custom business spans, Finance-domain tags, DogStatsD metrics, and Browser RUM SDK | Unified diff patches — fully reversible with `make uninstrument` |
+| **2 — Manual (`make instrument`)** | Adds custom business spans, Finance-domain tags, DogStatsD metrics, and the Browser RUM SDK | Unified diff patches — fully reversible with `make uninstrument` |
 
-Layer 1 alone gives distributed tracing, log correlation, and runtime metrics out of the box. Layer 2 enriches it with business context.
+- **Layer 1** is automatic once the Agent is deployed (`make deploy-k8s-dd`): distributed tracing, log–trace correlation, and runtime metrics, with zero code changes.
+- **Layer 2** is opt-in via `make instrument` and enriches Layer 1 with business context. The [Enabling Layer 2](#enabling-layer-2-make-instrument) section is the single source of truth for that workflow.
+
+### What enables what
+
+Not everything is `make instrument` — that's the most common point of confusion. Each signal is turned on by exactly **one** of these mechanisms:
+
+| Mechanism | Turned on by | What it enables |
+|---|---|---|
+| Layer 1 — Admission Controller injection | `make deploy-k8s-dd` (automatic) | APM traces, log–trace correlation, runtime metrics (UST + JSON logs are already in the manifests) |
+| Agent-side config | `make deploy-k8s-dd` (agent + checks) | DBM (Postgres), ActiveMQ JMX, **Security (ASM / CWS / CSPM)**, log collection |
+| Per-service env / already in source | manifest env var or source code | **Continuous Profiler** (`DD_PROFILING_ENABLED`; the Go service already calls `profiler.Start()`) |
+| **Layer 2 — `make instrument`** | `make instrument` | Custom spans + DogStatsD **for `fraud-detection` & `transaction-service` only**, plus RUM credential injection |
+| Terraform | `make tf-apply-dd` | Monitors, SLOs, dashboard, synthetics, log pipeline, the RUM application |
+
+**So `make instrument` is deliberately narrow.** It does **not** enable profiling or security — those come from the Agent config / env vars above. And `gateway-api`, `notification-service`, and `batch-processor` ship with their custom spans/metrics/profiler **already active in source** (not comment-gated), so they need no patch.
+
+The [Signal reference](#signal-reference) lists each signal with an explicit **Enabled by:** line.
 
 ---
 
-## TL;DR
+## Enabling Layer 2 (`make instrument`)
+
+`make instrument` applies reversible unified-diff patches that uncomment custom spans, DogStatsD metrics, and the Browser RUM SDK. **This is the one and only Layer 2 workflow** — every "Step" below marked *Layer 2* refers back here rather than repeating it.
+
+### What `make instrument` actually changes
+
+Only code that ships **commented out** is toggled — currently **two services** — plus a RUM credential injection:
+
+| Target | Mechanism | What it enables |
+|---|---|---|
+| `fraud-detection` | `scripts/patches/fraud-detection.patch` | DogStatsD fraud-score gauge (`statsd.gauge`) + statsd init in `listener.py` |
+| `transaction-service` | `scripts/patches/transaction-service.patch` | `payment.authorize` span + DogStatsD payment metrics (`payment.initiated`, `payment.processing_time`, `payment.validated`, `ledger.commit.errors`) across `payments.js` / `ledger.js` / `producer.js` |
+| `frontend-stub/index.html` | `sed` credential injection (**not a patch**) | Fills the RUM `applicationId` / `clientToken` from `terraform output` into the already-present `DD_RUM.init()` block |
+
+> **Already active in source — no patch, always on:**
+> - `gateway-api` — `payment.authorize` / `account.balance_check` spans + `finance.payment.*` DogStatsD
+> - `notification-service` — `alert.send` span **and `profiler.Start()`** (Go continuous profiler)
+> - `batch-processor` — `job.name` / `job.status` / `job.records_processed` span tags
+>
+> `make instrument` / `make uninstrument` do **not** touch these — they run whenever the service runs. `account-service` has no custom instrumentation (relies entirely on Java agent auto-instrumentation).
+
+### ⚠️ RUM requires `make tf-apply-dd` first
+
+`make instrument` injects the RUM `applicationId` and `clientToken` into `frontend-stub/index.html` by reading `terraform output` from `deploy/terraform/datadog`. That output only exists after `make tf-apply-dd` has created `datadog_rum_application.finance_frontend` (see [Step 11](#step-11--datadog-terraform-resources) for the `dd-secrets` / `TF_VAR_*` setup).
+
+- **Run `make tf-apply-dd` before `make instrument`** for a working frontend RUM setup.
+- If you instrument first, the **backend patches still apply** (spans, metrics, profiler) — only the RUM block stays on `REPLACE_WITH_APPLICATION_ID` / `REPLACE_WITH_CLIENT_TOKEN` placeholders and prints a `⚠`. Just re-run `make instrument` after `make tf-apply-dd` (it's idempotent).
+
+### Workflow
 
 ```bash
-# 1. Build and deploy the app (traffic starts automatically)
-make build
-# On Docker Desktop / Rancher Desktop: images are available immediately — no extra step.
-# On kind/k3d/minikube: load images first — see README.md Prerequisites.
-make deploy-k8s
-
-# 2. Add Datadog (creates the K8s secret from .env automatically, then deploys the Agent)
-make deploy-k8s-dd
-
-# 3. Watch traces appear (no code changes needed)
-kubectl logs -n finance deploy/traffic-generator -f
-# → Open https://app.datadoghq.com/apm/services (filter: env:staging)
-
-# 4. Optional: add custom spans + DogStatsD metrics + Browser RUM (Layer 2)
-#    RUM prerequisite — run 'make tf-apply-dd' (step 6) FIRST so the RUM app
-#    exists; 'make instrument' injects its credentials into the frontend.
-#    Backend patches apply regardless; only RUM needs the Terraform output.
-make tf-apply-dd   # creates the RUM application (see step 6 for TF_VAR setup)
-make instrument
-make build
-# Docker Desktop / Rancher Desktop: images available immediately after build
-# kind:     kind load docker-image finance-sample-app-<svc>:latest
-# k3d:      k3d image import finance-sample-app-<svc>:latest
-# minikube: minikube image load finance-sample-app-<svc>:latest
+make tf-apply-dd        # RUM prerequisite — creates the RUM app (skip only if you don't need RUM yet)
+make instrument         # apply patches + inject RUM credentials
+make build              # rebuild the service images
+# → reload the rebuilt images into your cluster (Colima/kind/k3d/minikube) — see the README runbook.
+#   Docker Desktop / Rancher Desktop need no reload.
 kubectl rollout restart deployment -n finance
+```
 
-# 5. Reverse Layer 2 at any time
-make uninstrument && make build   # then reload (if needed) + rollout restart
+**Frontend RUM is special:** the dashboard HTML is served from the `frontend-dashboard` ConfigMap, *not* the container image, so a `rollout restart` alone replays the old HTML. After instrumenting, rebuild that ConfigMap and restart the frontend:
 
-# 6. Apply Terraform resources (monitors, SLOs, dashboard, 7 synthetic tests)
-eval "$(make dd-secrets)"   # exports TF_VAR_* keys — Secrets Manager (EKS) or .env (local)
-make tf-apply-dd
+```bash
+kubectl create configmap frontend-dashboard \
+  --from-file=index.html=frontend-stub/index.html \
+  -n finance --dry-run=client -o yaml | kubectl apply -f -
+kubectl rollout restart deployment/frontend -n finance
+```
+
+> **EKS:** replace the local image reload with `make build-ecr && make deploy-k8s-eks`, then `kubectl rollout restart deployment -n finance`.
+
+### Reverse it
+
+```bash
+make uninstrument       # re-comments all patches, restores the RUM placeholders
+make build              # then reload images (if needed) + kubectl rollout restart deployment -n finance
+```
+
+### Regenerating patches
+
+If you modify any instrumented source file, regenerate the affected patch:
+
+```bash
+make uninstrument                        # must be in uninstrumented state first
+python3 scripts/generate-patches.py     # regenerates service patches (gateway-api, fraud-detection, etc.)
+# The frontend.patch is maintained manually — edit scripts/patches/frontend.patch directly
+# if you change the RUM block in frontend-stub/index.html
+for p in scripts/patches/*.patch; do
+  patch --dry-run -p1 -s --input "$p" && echo "OK: $p" || echo "FAIL: $p"
+done
 ```
 
 ---
@@ -60,8 +120,6 @@ The app uses two separate secret stores — here is why:
 | `app-secrets` K8s Secret (`finance` namespace) | Application credentials (PostgreSQL, ActiveMQ, Keycloak) | Applied by `make deploy-k8s`. Pre-set with safe dev defaults in `02-secrets.yaml`. Rotate before staging/production. |
 | `datadog-secret` K8s Secret (`datadog` namespace) | `DD_API_KEY`, `DD_APP_KEY`, `dbm-password` | Created by `make deploy-k8s-dd` (calls `make create-dd-secret` automatically). Read from `.env` locally or AWS Secrets Manager on EKS. |
 | `keycloak-tls` K8s Secret (`finance` namespace) | Self-signed TLS cert for the nginx HTTPS proxy | Generated automatically by `make deploy-k8s`. Never committed. |
-
----
 
 ### Application secrets — `app-secrets` K8s Secret
 
@@ -85,13 +143,9 @@ kubectl patch secret app-secrets -n finance \
   -p='[{"op":"replace","path":"/data/postgres-password","value":"'$(echo -n newpassword | base64)'"}]'
 ```
 
----
-
 ### Finance realm users
 
 Pre-imported into the Keycloak `finance` realm. Log in at the Finance dashboard: `http://localhost:30080`. See root [README.md's "Finance realm users and roles"](../README.md#finance-realm-users-and-roles) for the full table of usernames, passwords, roles, and per-dashboard-card permissions — all 5 users share the password `Finance@2025!`.
-
----
 
 ### Datadog secrets — `datadog-secret` K8s Secret
 
@@ -129,10 +183,7 @@ kubectl get secret datadog-secret -n datadog \
 ```
 
 **GitOps / production** — use the External Secrets Operator to sync from AWS Secrets Manager or Vault. An `ExternalSecret` manifest is in `deploy/kubernetes/datadog/secrets/datadog-secrets.yaml`.
-
 Docs: https://external-secrets.io/
-
----
 
 ### TLS secret — `keycloak-tls`
 
@@ -144,9 +195,9 @@ On EKS, TLS is terminated by the NLB using an ACM certificate — `keycloak-tls`
 
 ---
 
-## Prerequisites
+## Datadog Operator (prerequisite)
 
-### Datadog Operator
+`make deploy-k8s-dd` installs the Operator automatically (via Helm) if it's absent, then creates `datadog-secret` and deploys the Agent. To install it manually:
 
 ```bash
 helm repo add datadog https://helm.datadoghq.com
@@ -225,67 +276,9 @@ kubectl exec -n finance deploy/gateway-api -- env | grep DD_INSTRUMENTATION
 
 ---
 
-## Layer 2 — Manual instrumentation (`make instrument`)
+## Signal reference
 
-Applies unified diff patches to six targets, uncommenting custom spans, DogStatsD metrics, and the Browser RUM SDK. Fully reversible with `make uninstrument`.
-
-### What each patch adds
-
-| Service | What gets uncommented |
-|---|---|
-| `gateway-api` | `tracer.trace("payment.authorize")`, `tracer.trace("account.balance_check")`, `statsd.increment("finance.payment.initiated")`, `statsd.histogram("finance.payment.processing_time")` |
-| `fraud-detection` | `tracer.trace("fraud.score")` with `fraud.score_bucket` tag |
-| `transaction-service` | `tracer.startSpan("ledger.commit")` with `transaction.type`, `payment.currency`, `db.instance` tags |
-| `notification-service` | `tracer.StartSpanFromContext("alert.send")` with `messaging.destination`, `jms.correlation_id` tags; `profiler.Start()` |
-| `batch-processor` | OpenTracing span tags in `DatadogJobListener` (`job.name`, `job.status`, `job.records_processed`) |
-| **`frontend-stub/index.html`** | **RUM SDK** — `DD_RUM.init()` + `startSessionReplayRecording()` using `applicationId`/`clientToken` from Terraform |
-
-`account-service` has no Layer 2 patch — fully covered by the Java agent auto-instrumentation.
-
-### Workflow
-
-> ⚠️ **RUM requires the Datadog Terraform module to run first.** `make instrument` injects the RUM `applicationId` and `clientToken` into `frontend-stub/index.html` by reading `terraform output` from `deploy/terraform/datadog`. That output only exists after `make tf-apply-dd` has created the `datadog_rum_application.finance_frontend` resource.
->
-> - **Run `make tf-apply-dd` BEFORE `make instrument`** to get a working frontend RUM setup.
-> - If you run `make instrument` first, the backend patches (spans, metrics, profiler) still apply — but the RUM block keeps its `REPLACE_WITH_APPLICATION_ID` / `REPLACE_WITH_CLIENT_TOKEN` placeholders and prints a `⚠` warning. Simply re-run `make instrument` after `make tf-apply-dd` to fill them in (it's idempotent).
-
-```bash
-# REQUIRED FOR RUM: apply the Datadog Terraform first so RUM credentials exist.
-# (See step 6 / the 'tf-apply-dd' section below for the TF_VAR_* / dd-secrets setup.)
-make tf-apply-dd
-
-make instrument   # patches services + injects RUM credentials + uncomments SDK block
-make build
-
-# Local — reload images if needed, then rolling-restart
-# Docker Desktop / Rancher Desktop: skip the load step (images available automatically)
-# kind:     kind load docker-image finance-sample-app-<svc>:latest
-# k3d:      k3d image import finance-sample-app-<svc>:latest
-# minikube: minikube image load finance-sample-app-<svc>:latest
-kubectl rollout restart deployment -n finance
-
-# EKS
-make build-ecr && make deploy-k8s-eks
-kubectl rollout restart deployment -n finance
-```
-
-### Regenerating patches
-
-If you modify any instrumented source file, regenerate the affected patch:
-
-```bash
-make uninstrument                        # must be in uninstrumented state first
-python3 scripts/generate-patches.py     # regenerates service patches (gateway-api, fraud-detection, etc.)
-# The frontend.patch is maintained manually — edit scripts/patches/frontend.patch directly
-# if you change the RUM block in frontend-stub/index.html
-for p in scripts/patches/*.patch; do
-  patch --dry-run -p1 -s --input "$p" && echo "OK: $p" || echo "FAIL: $p"
-done
-```
-
----
-
-## Step-by-step breakdown
+Each Datadog signal, the layer that provides it, and how to validate it. Signals marked **Layer 2** are turned on via [Enabling Layer 2](#enabling-layer-2-make-instrument) — that section holds the full workflow; the steps below only list what appears and how to check it.
 
 ### Step 1 — Structured JSON logs (always active)
 
@@ -299,8 +292,6 @@ annotations:
 Already set in all six service manifests — no action required.
 
 **Validate:** Log Explorer → `kube_namespace:finance`
-
----
 
 ### Step 2 — Unified Service Tags (always active)
 
@@ -324,20 +315,11 @@ Already set in all six manifests — no action required.
 
 **Validate:** any trace or log should carry `env:staging service:<name> version:latest`.
 
----
-
 ### Step 3 — APM traces (Layer 1, automatic)
 
-Traces appear automatically once the Admission Controller injects the tracer. No code changes required.
+Traces appear automatically once the Admission Controller injects the tracer. No code changes required. To add custom business spans on top, see [Enabling Layer 2](#enabling-layer-2-make-instrument) (Step 5).
 
 **Validate:** APM → Services — all six services appear within ~2 minutes of the first request.
-
-To add custom business spans:
-```bash
-make instrument && make build   # then reload + rollout restart
-```
-
----
 
 ### Step 4 — Log–trace correlation (automatic with Layer 1)
 
@@ -345,30 +327,17 @@ The injected tracer patches the logging framework to append `dd.trace_id` and `d
 
 **Validate:** Log Explorer → click any log from a finance service → "View Trace" button appears.
 
----
+### Step 5 — Custom business spans
 
-### Step 5 — Custom spans (Layer 2)
-
-```bash
-make instrument
-make build   # then reload images + rollout restart
-```
-
-After rebuild, custom spans appear in APM:
-- `payment.authorize` (gateway-api)
-- `account.balance_check` (gateway-api)
-- `fraud.score` (fraud-detection)
-- `ledger.commit` (transaction-service)
-- `alert.send` (notification-service)
-- `job.name` / `job.status` tags on batch spans (batch-processor)
+**Enabled by:** partly [`make instrument`](#enabling-layer-2-make-instrument), partly always-on in source.
+- Via `make instrument`: `fraud.score` (fraud-detection), `payment.authorize` (transaction-service).
+- Already active in source (appear as soon as the tracer is injected — no patch): `payment.authorize` / `account.balance_check` (gateway-api), `alert.send` (notification-service), `job.*` tags (batch-processor).
 
 **Validate:** APM → Traces → filter by `resource_name:payment.authorize`
 
----
+### Step 6 — Custom metrics (DogStatsD)
 
-### Step 6 — Custom metrics (Layer 2, DogStatsD)
-
-Enabled by the same `make instrument` patches:
+**Enabled by:** [`make instrument`](#enabling-layer-2-make-instrument) — the `fraud-detection` and `transaction-service` patches. (`gateway-api` also emits `finance.payment.*` metrics, already active in source.)
 
 | Metric | Type | Tags |
 |---|---|---|
@@ -378,11 +347,9 @@ Enabled by the same `make instrument` patches:
 
 **Validate:** Metrics Explorer → search `finance.payment.initiated`
 
----
+### Step 7 — Continuous Profiler
 
-### Step 7 — Continuous Profiler (Layer 1)
-
-The Agent-side profiler intake is enabled automatically when `DD_PROFILING_ENABLED=true` is set on a pod. Add it to any service manifest's env block:
+**Enabled by:** per-service config — **not `make instrument`.** `notification-service` (Go) already calls `profiler.Start()` in source. For the other services, set `DD_PROFILING_ENABLED=true` on the pod. Add it to any service manifest's env block:
 
 ```yaml
 - name: DD_PROFILING_ENABLED
@@ -393,29 +360,9 @@ For Java: add `-Ddd.profiling.enabled=true` to `JAVA_TOOL_OPTIONS`.
 
 **Validate:** APM → Profiles — flame graphs appear within ~1 minute.
 
----
-
 ### Step 8 — Browser RUM + Session Replay (Layer 2)
 
-The finance dashboard (`frontend-stub/index.html`) ships with the Datadog Browser RUM SDK commented out. `make instrument` uncomments it and injects real credentials from Terraform automatically.
-
-#### Prerequisites
-
-```bash
-# 1. Create the RUM application via Terraform (creates datadog_rum_application.finance_frontend)
-make tf-apply-dd
-
-# 2. Apply Layer 2 patches — RUM credentials are injected from Terraform output
-make instrument
-
-# 3. Rebuild the frontend ConfigMap and restart the frontend pod
-kubectl create configmap frontend-dashboard \
-  --from-file=index.html=frontend-stub/index.html \
-  -n finance --dry-run=client -o yaml | kubectl apply -f -
-kubectl rollout restart deployment/frontend -n finance
-```
-
-If `make tf-apply-dd` has not been run yet, `make instrument` leaves `REPLACE_WITH_APPLICATION_ID` / `REPLACE_WITH_CLIENT_TOKEN` as placeholders and prints a `⚠` warning. Re-run `make instrument` after `make tf-apply-dd`.
+The finance dashboard (`frontend-stub/index.html`) ships with the Browser RUM SDK carrying placeholder credentials. [`make instrument`](#enabling-layer-2-make-instrument) injects the real `applicationId`/`clientToken` from Terraform and you rebuild the `frontend-dashboard` ConfigMap — both covered in the Enabling Layer 2 workflow (note the ⚠️ **`make tf-apply-dd` must run first**).
 
 #### What gets enabled
 
@@ -449,13 +396,11 @@ amount_bucket: amount < 100 ? '<100' : amount < 1000 ? '100-1000' : '>1000'
 
 Docs: https://docs.datadoghq.com/real_user_monitoring/browser/
 
----
-
 ### Step 9 — Database Monitoring (PostgreSQL)
 
 DBM is Agent-side only — no application code changes.
 
-#### 8a. Create the monitoring user (run once as superuser)
+#### 9a. Create the monitoring user (run once as superuser)
 
 ```sql
 -- Run on the 'ledger' database
@@ -470,7 +415,7 @@ CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
 
 The full SQL is in the header of `deploy/kubernetes/datadog/checks/postgres-check.yaml`.
 
-#### 8b. Apply the Agent check ConfigMap
+#### 9b. Apply the Agent check ConfigMap
 
 ```bash
 kubectl apply -f deploy/kubernetes/datadog/checks/postgres-check.yaml
@@ -479,8 +424,6 @@ kubectl apply -f deploy/kubernetes/datadog/checks/postgres-check.yaml
 The ConfigMap is already applied by `make deploy-k8s-dd`. Ensure `dbm-password` is set in the `datadog-secret` (via `make create-dd-secret`).
 
 **Validate:** Databases → Query Metrics — queries from `postgres-ledger` appear.
-
----
 
 ### Step 10 — ActiveMQ JMX metrics
 
@@ -491,8 +434,6 @@ kubectl apply -f deploy/kubernetes/datadog/checks/activemq-check.yaml
 Already applied by `make deploy-k8s-dd`.
 
 **Validate:** Infrastructure → Metrics → search `activemq.queue.size`
-
----
 
 ### Step 11 — Datadog Terraform resources
 
@@ -519,12 +460,10 @@ Resources created:
 | 7 monitors | Pod restarts, error rate, payment latency, payment errors, fraud queue, stuck transactions, pods not running |
 | 3 SLOs | Payment availability (99.9%), payment latency (99%), fraud consumer (99.5%) |
 | Dashboard | Finance App overview (APM, DogStatsD, DBM, ActiveMQ) |
-| **7 Synthetic tests** | See Step 12 |
+| **Synthetic tests** | See Step 12 |
 | **4 Security monitors** | See Step 13 |
 
 **Validate:** [Dashboards](https://app.datadoghq.com/dashboard/list) → search `Finance App`
-
----
 
 ### Step 12 — Synthetic Monitoring
 
@@ -555,9 +494,9 @@ Deployed via `make tf-apply-dd` (as `datadog_synthetics_test` Terraform resource
 
 Docs: https://docs.datadoghq.com/synthetics/apm/
 
----
-
 ### Step 13 — Application Security (ASM) + Cloud Security (CWS / CSPM)
+
+**Enabled by:** the Agent — `make deploy-k8s-dd` applies `datadog-agent.yaml` with these features on, and the Admission Controller auto-injects `DD_APPSEC_ENABLED=true`. **No `make instrument` and no application code changes.**
 
 All security features are enabled in `deploy/kubernetes/datadog/agent/datadog-agent.yaml` — no application code changes required beyond `DD_APPSEC_ENABLED=true` (set automatically by the Admission Controller when `asm.threats.enabled: true`).
 
@@ -802,7 +741,7 @@ Last validated: local Kubernetes (Colima + k3s, single-node, Apple Silicon) and 
 | DBM — PostgreSQL | Agent check | ✅ query metrics + samples |
 | ActiveMQ JMX | Agent check | ✅ broker + queue metrics |
 | Datadog Terraform | `tf-apply-dd` | ✅ 7 monitors, 3 SLOs, dashboard |
-| Synthetic tests | `tf-apply-dd` | ✅ 7 tests from APM traffic analysis |
+| Synthetic tests | `tf-apply-dd` | ✅ tests generated from APM traffic analysis |
 | ASM Threats | `DD_APPSEC_ENABLED=true` + Agent | ✅ all 6 services |
 | ASM SCA | Agent `asm.sca.enabled: true` | ✅ OSS vulnerability scanning |
 | CWS | Agent `cws.enabled: true` | ✅ 3/3 self-tests passed |
@@ -837,11 +776,3 @@ Last validated: local Kubernetes (Colima + k3s, single-node, Apple Silicon) and 
 | Synthetic → APM correlation | https://docs.datadoghq.com/synthetics/apm/ |
 | Continuous Testing (CI/CD) | https://docs.datadoghq.com/continuous_testing/cicd_integrations/ |
 | Application Security (ASM) | https://docs.datadoghq.com/security/application_security/ |
-| ASM — enabling | https://docs.datadoghq.com/security/application_security/enabling/ |
-| Cloud Workload Security (CWS) | https://docs.datadoghq.com/security/cloud_workload_security/ |
-| CSM Misconfigurations (CSPM) | https://docs.datadoghq.com/security/cloud_security_management/misconfigurations/ |
-| Tagging best practices | https://docs.datadoghq.com/tagging/assigning_tags/ |
-| Trace data security (PII) | https://docs.datadoghq.com/tracing/configure_data_security/ |
-| Datadog Operator | https://github.com/DataDog/datadog-operator |
-| Helm charts | https://github.com/DataDog/helm-charts |
-| Agent config reference | https://github.com/DataDog/datadog-agent/blob/main/pkg/config/config_template.yaml |
