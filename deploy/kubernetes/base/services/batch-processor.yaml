@@ -133,6 +133,12 @@ spec:
             # Docs: https://docs.datadoghq.com/security/application_security/
             - name: DD_APPSEC_ENABLED
               value: "true"
+            # ── DATA JOBS MONITORING (DJM) ──────────────────────────────────
+            # Surfaces Spring Batch job runs under APM > Data Jobs. Equivalent
+            # to the -Ddd.data.jobs.enabled=true JVM flag; no rebuild needed.
+            # Docs: https://docs.datadoghq.com/data_jobs/
+            - name: DD_DATA_JOBS_ENABLED
+              value: "true"
           # HTTP probes against Spring Boot Actuator — batch-processor now
           # runs an embedded web server (spring-boot-starter-web) to expose
           # the on-demand job trigger endpoints (/jobs/reconciliation,

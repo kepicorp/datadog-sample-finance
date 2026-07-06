@@ -155,6 +155,13 @@ spec:
             # Docs: https://docs.datadoghq.com/security/application_security/
             - name: DD_APPSEC_ENABLED
               value: "true"
+            # ── DATA STREAMS MONITORING (DSM) ───────────────────────────────
+            # JMS pipeline visibility in Data Streams. This service produces to
+            # ActiveMQ; full producer→consumer stitching across the Python/Go
+            # consumers may need manual checkpoints (see docs).
+            # Docs: https://docs.datadoghq.com/data_streams/
+            - name: DD_DATA_STREAMS_ENABLED
+              value: "true"
           # ── Health checks ──────────────────────────────────────────────────
           livenessProbe:
             httpGet:

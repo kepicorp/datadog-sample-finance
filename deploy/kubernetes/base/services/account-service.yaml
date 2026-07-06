@@ -144,6 +144,12 @@ spec:
             # Docs: https://docs.datadoghq.com/security/application_security/
             - name: DD_APPSEC_ENABLED
               value: "true"
+            # ── DATA STREAMS MONITORING (DSM) ───────────────────────────────
+            # End-to-end JMS pipeline visibility (producer → consumer latency,
+            # queue lag) in Data Streams. dd-trace-java auto-instruments JMS.
+            # Docs: https://docs.datadoghq.com/data_streams/
+            - name: DD_DATA_STREAMS_ENABLED
+              value: "true"
           # ── Health checks ──────────────────────────────────────────────
           # Use the custom /health endpoint (not /actuator/health) because Spring
           # Actuator includes the JMS health indicator which would report DOWN

@@ -103,6 +103,13 @@ spec:
             # Docs: https://docs.datadoghq.com/security/application_security/
             - name: DD_APPSEC_ENABLED
               value: "true"
+            # ── DATA STREAMS MONITORING (DSM) ───────────────────────────────
+            # JMS consumer on alert.queue. Enabling the flag turns DSM on; for
+            # full pipeline stitching a Go consumer checkpoint may be required
+            # (see docs).
+            # Docs: https://docs.datadoghq.com/data_streams/
+            - name: DD_DATA_STREAMS_ENABLED
+              value: "true"
           livenessProbe:
             exec:
               command:

@@ -76,10 +76,13 @@ output "slo_fraud_consumer_availability_id" {
 output "span_metrics" {
   description = "Span-based metrics generated from APM traces."
   value = {
-    payment_hits     = datadog_spans_metric.payment_hits.name
-    payment_duration = datadog_spans_metric.payment_duration.name
-    fraud_hits       = datadog_spans_metric.fraud_hits.name
-    batch_records    = datadog_spans_metric.batch_records.name
+    payment_hits               = datadog_spans_metric.payment_hits.name
+    payment_duration           = datadog_spans_metric.payment_duration.name
+    fraud_hits                 = datadog_spans_metric.fraud_hits.name
+    fraud_score                = datadog_spans_metric.fraud_score.name
+    batch_records              = datadog_spans_metric.batch_records.name
+    notification_sent          = datadog_spans_metric.notification_sent.name
+    notification_dispatch_time = datadog_spans_metric.notification_dispatch_time.name
   }
 }
 

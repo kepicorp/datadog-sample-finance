@@ -22,37 +22,13 @@ const ACTIVEMQ_URL =
 const [host, portStr] = ACTIVEMQ_URL.replace("stomp://", "").split(":");
 const BROKER_PORT = parseInt(portStr || "61613", 10);
 
-// ── DATADOG DATA STREAMS MONITORING ──────────────────────────────────
-// Step 10 — enable DSM to get end-to-end pipeline visibility across
-// the payment → fraud.score.queue → fraud-detection pathway.
-//
-// dd-trace automatically instruments STOMP connections when the tracer
-// is initialised (see src/index.js). No manual checkpoint call is
-// needed for Node.js — the auto-instrumentation injects the DSM
-// pathway context into STOMP message headers.
-//
-// To verify DSM is working:
-//   1. Set DD_DATA_STREAMS_ENABLED=true in the environment.
-//   2. Deploy and send a test payment via POST /v1/payments.
-//   3. Open Datadog > APM > Data Streams and look for the
-//      transaction-service → fraud.score.queue → fraud-detection pathway.
-//
-// If you are using a JMS bridge or a bespoke STOMP client that does
-// not carry headers automatically, add a manual producer checkpoint:
-//
-// const { DataStreams } = require('dd-trace/ext');
-// const checkpointer = require('dd-trace').dataStreams;
-// // Before calling client.send():
-// checkpointer.setProduceCheckpoint('stomp', destination, headers);
-//
+// Data Streams Monitoring (DSM): for Node.js, dd-trace auto-instruments STOMP
+// once the tracer is initialised (see src/index.js) and DD_DATA_STREAMS_ENABLED=true
+// is set on the pod (deploy/kubernetes/base/services/transaction-service.yaml).
+// No manual producer checkpoint is needed — pathway context is injected into the
+// STOMP message headers automatically. Verify in Datadog > APM > Data Streams:
+// transaction-service → fraud.score.queue → fraud-detection.
 // Docs: https://docs.datadoghq.com/data_streams/nodejs/
-//
-// Finance use-cases enabled by DSM on this queue:
-//   - Consumer lag on fraud.score.queue → detect scoring backlog before
-//     it delays payment confirmations to customers.
-//   - End-to-end latency (producer → consumer) → SLA breach alerting.
-//   - Queue depth trends → capacity planning for peak periods.
-// ─────────────────────────────────────────────────────────────────────
 
 /**
  * Publishes a JSON payload to the given STOMP destination on ActiveMQ.

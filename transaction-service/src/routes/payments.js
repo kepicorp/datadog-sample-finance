@@ -18,23 +18,10 @@ const logger = pino({
   },
 });
 
-// ── DOGSTATSD CLIENT ─────────────────────────────────────────────────
-// Step 6 — emit custom Finance metrics.
-// Requires: npm install hot-shots --save (DogStatsD client for Node.js)
-// Docs: https://docs.datadoghq.com/developers/dogstatsd/
-//
-// const StatsD = require('hot-shots');
-// const dogstatsd = new StatsD({
-//   host: process.env.DD_AGENT_HOST || 'datadog-agent',
-//   port: 8125,
-//   prefix: 'finance.',
-//   globalTags: {
-//     env:     process.env.DD_ENV     || 'development',
-//     service: process.env.DD_SERVICE || 'transaction-service',
-//     version: process.env.DD_VERSION || '0.0.0',
-//   },
-// });
-// ─────────────────────────────────────────────────────────────────────
+// Custom metrics for this service are generated from APM spans by span-based
+// metrics in deploy/terraform/datadog (e.g. finance.payment.hits / .duration).
+// No DogStatsD client is used here.
+// Docs: https://docs.datadoghq.com/tracing/trace_pipeline/generate_metrics/
 
 // In-memory payment store (replace with PostgreSQL in a real deployment)
 const payments = new Map();
@@ -127,28 +114,9 @@ router.post("/", async (req, res) => {
     );
 
     // ── DATADOG INSTRUMENTATION ──────────────────────────────────────
-    // Step 6 — custom metrics for this payment.
-    //
-    // finance.payment.initiated: counter — how many payments were started.
-    // Tag by currency and transaction type so you can alert on a drop in
-    // EUR payments independently of USD payments.
-    //
-    // finance.payment.processing_time: histogram — end-to-end duration of
-    // the initiation flow (ledger write + JMS publish). Use this to detect
-    // P99 regressions before customers notice.
-    //
-    // dogstatsd.increment('payment.initiated', 1, {
-    //   'transaction.type': 'payment',
-    //   'payment.currency': currency,
-    // });
-    //
-    // dogstatsd.histogram('payment.processing_time', Date.now() - startTime, {
-    //   'transaction.type': 'payment',
-    //   'payment.currency': currency,
-    // });
-    //
-    // ── DATADOG INSTRUMENTATION ──────────────────────────────────────
-    // Step 5 (continued) — close the span on success.
+    // Step 5 (continued) — close the payment.authorize span on success.
+    // Custom metrics (finance.payment.hits / .duration) come from span-based
+    // metrics in deploy/terraform/datadog — no DogStatsD here.
     // span.finish();
     // ─────────────────────────────────────────────────────────────────
 
@@ -210,13 +178,8 @@ router.patch("/:id", (req, res) => {
     "payment.validated",
   );
 
-  // ── DATADOG INSTRUMENTATION ────────────────────────────────────────
-  // Step 6 — emit a counter for each validation action.
-  // dogstatsd.increment('payment.validated', 1, {
-  //   'payment.status':  status,
-  //   'payment.currency': payment.currency,
-  // });
-  // ──────────────────────────────────────────────────────────────────
+  // (finance.payment.validated is derived from the PATCH span/log via a
+  //  span- or log-based metric in deploy/terraform/datadog — no DogStatsD.)
 
   return res.json(payment);
 });

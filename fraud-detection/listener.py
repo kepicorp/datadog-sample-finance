@@ -10,8 +10,8 @@ import os
 
 import stomp
 
-# ── DATADOG APM — CUSTOM SPANS ────────────────────────────────────────
-# Uncomment to create a manual span around each fraud.score operation.
+# ── APM — CUSTOM SPANS (fraud.score) ─────────────────────────────────
+# Manual span around each fraud.score operation (always on).
 # This gives you a dedicated span in the APM Trace view that you can
 # tag with Finance-domain attributes for slice-and-dice analysis.
 # Requires: ddtrace installed + patch_all() called in main.py first.
@@ -22,8 +22,8 @@ from scorer import score
 
 # ─────────────────────────────────────────────────────────────────────
 
-# ── DATADOG DATA STREAMS MONITORING ──────────────────────────────────
-# Uncomment to instrument this consumer for DSM pipeline visibility.
+# ── DATA STREAMS MONITORING (DSM) ────────────────────────────────────
+# Optional follow-up: instrument this consumer for DSM pipeline visibility.
 # DSM will track end-to-end latency from the JMS producer (account-service
 # or transaction-service) through to this consumer, expose consumer lag,
 # and surface the pathway in the Data Streams map.
@@ -33,21 +33,10 @@ from scorer import score
 # from ddtrace.data_streams import set_consume_checkpoint
 # ─────────────────────────────────────────────────────────────────────
 
-# ── DATADOG DOGSTATSD — CUSTOM METRICS ───────────────────────────────
-# Uncomment to emit a DogStatsD gauge for every scored message.
-# finance.fraud.score is tagged by score_bucket (low/medium/high) — NOT
-# by the raw float score, which would be unbounded high-cardinality.
-# HIGH-CARDINALITY WARNING: never use the raw fraud score float as a tag
-# value. Always bucket first. See: https://docs.datadoghq.com/tagging/assigning_tags/
-# Requires: datadog package installed + DOGSTATSD_HOST env var set.
-# Docs: https://docs.datadoghq.com/developers/dogstatsd/
-#
-# from datadog import initialize as dd_initialize, statsd
-# dd_initialize(
-#     statsd_host=os.environ.get("DOGSTATSD_HOST", os.environ.get("DD_AGENT_HOST", "datadog-agent")),
-#     statsd_port=int(os.environ.get("DOGSTATSD_PORT", "8125")),
-# )
-# ─────────────────────────────────────────────────────────────────────
+# NOTE: no DogStatsD here. The finance.fraud.hits and finance.fraud.score
+# metrics are generated from the fraud.score span below (span-based metrics
+# in deploy/terraform/datadog), keyed off the fraud.score_bucket / fraud.score
+# tags. Docs: https://docs.datadoghq.com/tracing/trace_pipeline/generate_metrics/
 
 logger = logging.getLogger("fraud_detection.listener")
 
@@ -101,7 +90,7 @@ class FraudScoreListener(stomp.ConnectionListener):
         message_id = frame.headers.get("message-id", "unknown")
         correlation_id = frame.headers.get("correlation-id", "")
 
-        # ── DATADOG DATA STREAMS — CONSUME CHECKPOINT ─────────────────
+        # ── DATA STREAMS (DSM) — CONSUME CHECKPOINT (follow-up) ───────
         # Call this BEFORE processing so that DSM records the ingress
         # timestamp and can calculate producer-to-consumer latency.
         # The headers dict carries the DSM pathway context injected by
@@ -130,7 +119,7 @@ class FraudScoreListener(stomp.ConnectionListener):
         amount = float(body.get("amount", 0.0))
         currency = body.get("currency", "UNKNOWN")
 
-        # ── DATADOG APM — CUSTOM SPAN ─────────────────────────────────
+        # ── APM CUSTOM SPAN (fraud.score) ─────────────────────────────
         # Wrap the scoring call in a manual span named "fraud.score".
         # Tag with Finance-domain attributes so you can filter traces
         # in APM > Services > fraud-detection by score_bucket or
@@ -148,6 +137,9 @@ class FraudScoreListener(stomp.ConnectionListener):
             span.set_tag("transaction.type", transaction_type)
             span.set_tag("payment.currency", currency)
             span.set_tag("fraud.score_bucket", result["bucket"])
+            # Numeric score → feeds the finance.fraud.score distribution span metric.
+            # Safe as a span metric value (aggregated), NOT used as a grouping tag.
+            span.set_tag("fraud.score", float(result["score"]))
             span.set_tag("messaging.destination", "fraud.score.queue")
             # HIGH-CARDINALITY WARNING: messaging.message_id is per-message —
             # tag only when debugging a specific incident, not in production.
@@ -155,27 +147,6 @@ class FraudScoreListener(stomp.ConnectionListener):
             if result["bucket"] == "high":
                 span.error = 1
                 span.set_tag("error.message", "High-risk transaction flagged")
-
-        # ── DATADOG DOGSTATSD — GAUGE ─────────────────────────────────
-        # Emit a gauge for each scored message. The value is the raw
-        # score float (useful for aggregation in Datadog metrics), but
-        # the BUCKET tag is what you use for alerting and dashboards.
-        # Never create a metric whose tag value IS the raw float —
-        # that produces one time series per unique float value.
-        # Docs: https://docs.datadoghq.com/developers/dogstatsd/
-        #
-        # statsd.gauge(
-        #     "finance.fraud.score",
-        #     value=result["score"],
-        #     tags=[
-        #         f"fraud.score_bucket:{result['bucket']}",
-        #         f"transaction.type:{transaction_type}",
-        #         f"payment.currency:{currency}",
-        #         f"env:{os.environ.get('DD_ENV', 'local')}",
-        #         f"service:{os.environ.get('DD_SERVICE', 'fraud-detection')}",
-        #     ],
-        # )
-        # ─────────────────────────────────────────────────────────────
 
         logger.info(
             "Fraud score computed",

@@ -445,6 +445,34 @@ resource "datadog_spans_metric" "fraud_hits" {
   }
 }
 
+# finance.fraud.score — distribution of the raw fraud score, computed from the
+# numeric @fraud.score span tag (percentiles auto-generated). This replaces the
+# old DogStatsD gauge; the raw float is safe here because it's aggregated into a
+# distribution, not used as a grouping tag value. Grouped by the bounded bucket.
+resource "datadog_spans_metric" "fraud_score" {
+  name = "finance.fraud.score"
+
+  compute {
+    aggregation_type    = "distribution"
+    include_percentiles = true
+    path                = "@fraud.score"
+  }
+
+  filter {
+    query = "service:fraud-detection"
+  }
+
+  group_by {
+    path     = "@fraud.score_bucket"
+    tag_name = "score_bucket"
+  }
+
+  group_by {
+    path     = "env"
+    tag_name = "env"
+  }
+}
+
 # finance.batch.records_processed — distribution of records written per batch step
 # Surfaces in dashboards as sum/p95. Tagged by job name and terminal status so
 # you can alert on partial runs (e.g. job_status:partial or job_status:failed).
@@ -469,6 +497,61 @@ resource "datadog_spans_metric" "batch_records" {
   group_by {
     path     = "@job.status"
     tag_name = "job_status"
+  }
+
+  group_by {
+    path     = "env"
+    tag_name = "env"
+  }
+}
+
+# finance.notification.sent — count of alert.send spans (replaces the old
+# DogStatsD counter in notification-service), grouped by channel + event type.
+resource "datadog_spans_metric" "notification_sent" {
+  name = "finance.notification.sent"
+
+  compute {
+    aggregation_type = "count"
+  }
+
+  filter {
+    query = "service:notification-service operation_name:alert.send"
+  }
+
+  group_by {
+    path     = "@notification.channel"
+    tag_name = "channel"
+  }
+
+  group_by {
+    path     = "@notification.event_type"
+    tag_name = "event_type"
+  }
+
+  group_by {
+    path     = "env"
+    tag_name = "env"
+  }
+}
+
+# finance.notification.dispatch_time — distribution of alert.send span latency
+# (replaces the old DogStatsD histogram). Percentiles auto-generated.
+resource "datadog_spans_metric" "notification_dispatch_time" {
+  name = "finance.notification.dispatch_time"
+
+  compute {
+    aggregation_type    = "distribution"
+    include_percentiles = true
+    path                = "@duration"
+  }
+
+  filter {
+    query = "service:notification-service operation_name:alert.send"
+  }
+
+  group_by {
+    path     = "@notification.channel"
+    tag_name = "channel"
   }
 
   group_by {
@@ -859,7 +942,7 @@ resource "datadog_dashboard" "finance_overview" {
   # ── Row 5: DogStatsD Custom Metrics ───────────────────────────────────────
   widget {
     group_definition {
-      title            = "Finance Custom Metrics (DogStatsD)"
+      title            = "Finance Custom Metrics (span-based)"
       layout_type      = "ordered"
       background_color = "orange"
 
@@ -872,7 +955,7 @@ resource "datadog_dashboard" "finance_overview" {
           precision   = 0
 
           request {
-            q          = "sum:finance.payment.initiated{${local.env_filter}}.as_count()"
+            q          = "sum:finance.payment.hits{${local.env_filter}}.as_count()"
             aggregator = "sum"
           }
         }
@@ -886,7 +969,7 @@ resource "datadog_dashboard" "finance_overview" {
           show_legend = true
 
           request {
-            q            = "sum:finance.payment.initiated{${local.env_filter}} by {payment.currency}.as_rate()"
+            q            = "sum:finance.payment.hits{${local.env_filter}} by {currency}.as_rate()"
             display_type = "bars"
           }
         }
@@ -894,13 +977,13 @@ resource "datadog_dashboard" "finance_overview" {
 
       widget {
         timeseries_definition {
-          title       = "Payment Processing Time p95 (ms)"
+          title       = "Payment Duration p95"
           title_size  = "16"
           title_align = "left"
           show_legend = true
 
           request {
-            q            = "p95:finance.payment.processing_time{${local.env_filter}}"
+            q            = "p95:finance.payment.duration{${local.env_filter}}"
             display_type = "line"
           }
         }

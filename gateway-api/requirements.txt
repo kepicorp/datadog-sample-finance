@@ -9,7 +9,8 @@ pydantic==2.7.1
 
 # ── DATADOG INSTRUMENTATION ──────────────────────────────────────────
 # Step 3  — APM + log correlation (ddtrace)
-# Step 6  — DogStatsD custom metrics (datadog)
+# Step 6  — Custom metrics are generated from spans (span-based metrics in
+#           deploy/terraform/datadog) — no DogStatsD client / package needed
 # Step 7  — Continuous Profiler (bundled in ddtrace — no extra package)
 # Uncomment when enabling any Datadog observability layer.
 # Docs: https://docs.datadoghq.com/tracing/trace_collection/dd_libraries/python/
@@ -22,7 +23,6 @@ pydantic==2.7.1
 # accumulated native/AppSec crash fixes while staying API-compatible with
 # the 2.x custom-span code in main.py.
 ddtrace==2.21.12
-datadog==0.49.1
 # ─────────────────────────────────────────────────────────────────────
 
 python-jose[cryptography]==3.3.0  # JWT validation against Keycloak JWKS (RS256)

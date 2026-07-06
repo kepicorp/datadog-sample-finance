@@ -13,8 +13,8 @@ const logger = pino({
   },
 });
 
-// ── DATADOG INSTRUMENTATION ──────────────────────────────────────────
-// Step 5 — custom span for ledger.commit.
+// ── APM: ledger.commit span (always on) ──────────────────────────
+// Custom span for ledger.commit.
 // This wraps the database write so the APM flame graph shows ledger
 // latency separately from fraud-queue publishing. Without this span,
 // both operations are folded into the parent payment.authorize span
@@ -94,8 +94,8 @@ function getPool() {
  * @returns {Promise<{committed: boolean}>}
  */
 async function commit({ payment_id, amount, currency, account_id }) {
-  // ── DATADOG INSTRUMENTATION ────────────────────────────────────────
-  // Step 5 — open a ledger.commit child span.
+  // ── APM: open the ledger.commit child span ─────────────────────
+  // Open a ledger.commit child span.
   // Tags:
   //   db.instance    → 'postgres-ledger' (matches DBM Agent config — enables
   //                    the "View in DBM" button on this span in APM)
@@ -158,12 +158,9 @@ async function commit({ payment_id, amount, currency, account_id }) {
       "ledger.commit.failed",
     );
 
-    // ── DATADOG INSTRUMENTATION ──────────────────────────────────────
-    // Step 5 — mark span as error so it appears in APM Error Tracking.
-    // Step 6 — increment the ledger commit error counter so monitors
-    //           and dashboards can alert before the on-call engineer
-    //           notices via logs.
-    //
+    // ── APM: mark span as error (Error Tracking) ───────────────────
+    // Ledger error rate/count is derived from these error spans via a
+    // span-based metric in deploy/terraform/datadog — no DogStatsD counter.
     const {
       ERROR_MESSAGE,
       ERROR_TYPE,
@@ -173,12 +170,6 @@ async function commit({ payment_id, amount, currency, account_id }) {
     span.setTag(ERROR_MESSAGE, err.message);
     span.setTag(ERROR_STACK, err.stack);
     span.finish();
-    //
-    // dogstatsd.increment('ledger.commit.errors', 1, {
-    //   'db.instance': 'postgres-ledger',
-    //   'payment.currency': currency,
-    // });
-    // Docs: https://docs.datadoghq.com/developers/dogstatsd/
     // ─────────────────────────────────────────────────────────────────
 
     throw err;

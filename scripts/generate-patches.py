@@ -501,12 +501,12 @@ def patch_batch_processor():
 
 
 def patch_gateway_api_deps():
-    """Uncomment ddtrace and datadog packages in gateway-api/requirements.txt."""
+    """Uncomment the ddtrace package in gateway-api/requirements.txt.
+    (DogStatsD/`datadog` was removed — custom metrics are span-based now.)"""
     orig = "gateway-api/requirements.txt"
     original_content = read(orig)
-    # Uncomment all DD-related packages in the instrumentation block
     patched_content = re.sub(
-        r"^# ((?:ddtrace|datadog)==\S+)",
+        r"^# (ddtrace==\S+)",
         r"\1",
         original_content,
         flags=re.MULTILINE,

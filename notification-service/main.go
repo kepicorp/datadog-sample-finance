@@ -10,7 +10,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/DataDog/datadog-go/v5/statsd"
 	"github.com/DataDog/dd-trace-go/v2/ddtrace/tracer"
 	"github.com/DataDog/dd-trace-go/v2/profiler"
 	"github.com/go-stomp/stomp/v3"
@@ -36,9 +35,9 @@ type AlertMessage struct {
 	// Ref: https://docs.datadoghq.com/tagging/assigning_tags/#defining-tags
 }
 
-// statsdClient is created once at startup and reused for the lifetime of the
-// process — see the comment in main() for why this matters.
-var statsdClient *statsd.Client
+// NOTE: no DogStatsD client. finance.notification.sent / .dispatch_time are
+// generated from the alert.send span (span-based metrics in
+// deploy/terraform/datadog), keyed off @notification.channel / @notification.event_type.
 
 func main() {
 	// ── Structured JSON logging (stdlib log/slog) ─────────────────────────────
@@ -74,22 +73,6 @@ func main() {
 		slog.Error("profiler failed to start", "error", err)
 	}
 	defer profiler.Stop()
-
-	// BUG FIX — memory leak: statsd.New(...) used to be called inside
-	// sendNotification(), i.e. once per message. Each call opens its own UDP
-	// socket and spins up background buffering/flush goroutines that were
-	// never closed, so every alert processed leaked a socket + goroutine set.
-	// Under continuous traffic this produced a steady, unbounded memory climb
-	// (observed: ~14MB -> 250MB+ within ~10 minutes) until the pod hit its
-	// memory limit and got OOMKilled. The client is now created exactly once
-	// here and reused for the life of the process; see the deferred Close().
-	sc, err := statsd.New(getEnv("DD_AGENT_HOST", "datadog-agent") + ":8125")
-	if err != nil {
-		slog.Error("failed to create statsd client — metrics will be disabled", "error", err)
-	} else {
-		statsdClient = sc
-		defer statsdClient.Close()
-	}
 
 	brokerURL := getEnv("ACTIVEMQ_URL", defaultBrokerURL)
 
@@ -222,14 +205,9 @@ func sendNotification(alert AlertMessage) {
 		"correlation_id", alert.CorrelationID,
 	)
 
-	// Reuse the process-wide statsd client created once in main() — do NOT
-	// create a new client here (see the BUG FIX comment in main() for why).
-	if statsdClient != nil {
-		statsdClient.Histogram("finance.notification.dispatch_time", float64(duration),
-			[]string{"channel:" + alert.Channel, "event_type:" + alert.EventType, "env:" + getEnv("DD_ENV", "local")}, 1.0)
-		statsdClient.Incr("finance.notification.sent",
-			[]string{"channel:" + alert.Channel, "event_type:" + alert.EventType}, 1.0)
-	}
+	// Metrics (finance.notification.sent / .dispatch_time) are generated from
+	// the alert.send span above via span-based metrics in deploy/terraform/datadog
+	// — no DogStatsD emission here.
 }
 
 // connectSTOMP establishes a STOMP connection to the ActiveMQ Artemis broker.

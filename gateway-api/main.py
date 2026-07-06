@@ -32,14 +32,11 @@ from pythonjsonlogger import jsonlogger
 patch_all()  # must be called before importing instrumented libraries
 patch_logging()  # injects dd.trace_id / dd.span_id into every log record
 
-#
-from datadog import initialize, statsd
-
-#
-initialize(
-    statsd_host=os.getenv("DD_AGENT_HOST", "datadog-agent"),
-    statsd_port=int(os.getenv("DD_DOGSTATSD_PORT", "8125")),
-)
+# NOTE: custom metrics are NOT emitted via DogStatsD. They are generated from
+# APM spans by span-based metrics defined in deploy/terraform/datadog (e.g.
+# finance.payment.hits / finance.payment.duration). Keep the spans + tags below
+# rich; the metrics follow automatically. Docs:
+# https://docs.datadoghq.com/tracing/trace_pipeline/generate_metrics/
 
 
 # ---------------------------------------------------------------------------
@@ -717,24 +714,9 @@ async def initiate_payment(
         },
     )
 
-    #
-    statsd.increment(
-        "finance.payment.initiated",
-        tags=[
-            f"transaction.type:payment",
-            f"payment.currency:{payload.currency}",
-            f"status:{tx_status}",
-            f"env:{os.getenv('DD_ENV', 'local')}",
-        ],
-    )
-    statsd.histogram(
-        "finance.payment.processing_time",
-        elapsed_ms,
-        tags=[
-            f"payment.currency:{payload.currency}",
-            f"env:{os.getenv('DD_ENV', 'local')}",
-        ],
-    )
+    # (Custom metrics finance.payment.hits / finance.payment.duration are
+    # generated from the payment.authorize span above via span-based metrics
+    # in deploy/terraform/datadog — no DogStatsD emission here.)
 
     return PaymentResponse(
         payment_id=payment_id,

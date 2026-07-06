@@ -14,7 +14,7 @@ Two complementary layers — both independent, both reversible:
 | Layer | What it does | How |
 |---|---|---|
 | **1 — Single-step (Admission Controller)** | Injects the Datadog tracer into every pod at startup — no code changes, no rebuilds | `admission.datadoghq.com/enabled: "true"` label + Operator webhook |
-| **2 — Manual (`make instrument`)** | Adds custom business spans, Finance-domain tags, DogStatsD metrics, and the Browser RUM SDK | Unified diff patches — fully reversible with `make uninstrument` |
+| **2 — Manual (`make instrument`)** | Uncomments the `transaction-service` `payment.authorize` span and injects the Browser RUM SDK credentials | Unified diff patch + `sed` — fully reversible with `make uninstrument` |
 
 - **Layer 1** is automatic once the Agent is deployed (`make deploy-k8s-dd`): distributed tracing, log–trace correlation, and runtime metrics, with zero code changes.
 - **Layer 2** is opt-in via `make instrument` and enriches Layer 1 with business context. The [Enabling Layer 2](#enabling-layer-2-make-instrument) section is the single source of truth for that workflow.
@@ -27,11 +27,11 @@ Not everything is `make instrument` — that's the most common point of confusio
 |---|---|---|
 | Layer 1 — Admission Controller injection | `make deploy-k8s-dd` (automatic) | APM traces, log–trace correlation, runtime metrics (UST + JSON logs are already in the manifests) |
 | Agent-side config | `make deploy-k8s-dd` (agent + checks) | DBM (Postgres), ActiveMQ JMX, **Security (ASM / CWS / CSPM)**, log collection |
-| Per-service env / already in source | manifest env var or source code | **Continuous Profiler** (`DD_PROFILING_ENABLED`; the Go service already calls `profiler.Start()`) |
-| **Layer 2 — `make instrument`** | `make instrument` | Custom spans + DogStatsD **for `fraud-detection` & `transaction-service` only**, plus RUM credential injection |
-| Terraform | `make tf-apply-dd` | Monitors, SLOs, dashboard, synthetics, log pipeline, the RUM application |
+| Per-service env / already in source | manifest env var or source code | **Continuous Profiler** (`DD_PROFILING_ENABLED`; the Go service already calls `profiler.Start()`), **Data Streams** (`DD_DATA_STREAMS_ENABLED`, JMS services), **Data Jobs** (`DD_DATA_JOBS_ENABLED`, batch-processor) |
+| **Layer 2 — `make instrument`** | `make instrument` | The `transaction-service` `payment.authorize` custom span + RUM credential injection. (Other services' custom spans are always-on in source.) |
+| Terraform | `make tf-apply-dd` | **All custom metrics (span-based)**, monitors, SLOs, dashboard, synthetics, log pipeline, the RUM application |
 
-**So `make instrument` is deliberately narrow.** It does **not** enable profiling or security — those come from the Agent config / env vars above. And `gateway-api`, `notification-service`, and `batch-processor` ship with their custom spans/metrics/profiler **already active in source** (not comment-gated), so they need no patch.
+**So `make instrument` is deliberately narrow.** It does **not** enable profiling, security, or custom metrics. **There is no DogStatsD anywhere** — every `finance.*` custom metric is generated from APM spans by span-based metrics defined in `deploy/terraform/datadog` (applied with `make tf-apply-dd`). `gateway-api`, `notification-service`, `batch-processor`, and `fraud-detection` ship with their custom spans/profiler **already active in source** (not comment-gated), so they need no patch.
 
 The [Signal reference](#signal-reference) lists each signal with an explicit **Enabled by:** line.
 
@@ -39,24 +39,24 @@ The [Signal reference](#signal-reference) lists each signal with an explicit **E
 
 ## Enabling Layer 2 (`make instrument`)
 
-`make instrument` applies reversible unified-diff patches that uncomment custom spans, DogStatsD metrics, and the Browser RUM SDK. **This is the one and only Layer 2 workflow** — every "Step" below marked *Layer 2* refers back here rather than repeating it.
+`make instrument` applies a reversible unified-diff patch that uncomments the `transaction-service` `payment.authorize` custom span, and injects the Browser RUM credentials. **This is the one and only Layer 2 workflow** — every "Step" below marked *Layer 2* refers back here rather than repeating it.
 
 ### What `make instrument` actually changes
 
-Only code that ships **commented out** is toggled — currently **two services** — plus a RUM credential injection:
-
 | Target | Mechanism | What it enables |
 |---|---|---|
-| `fraud-detection` | `scripts/patches/fraud-detection.patch` | DogStatsD fraud-score gauge (`statsd.gauge`) + statsd init in `listener.py` |
-| `transaction-service` | `scripts/patches/transaction-service.patch` | `payment.authorize` span + DogStatsD payment metrics (`payment.initiated`, `payment.processing_time`, `payment.validated`, `ledger.commit.errors`) across `payments.js` / `ledger.js` / `producer.js` |
+| `transaction-service` | `scripts/patches/transaction-service.patch` | Uncomments the `payment.authorize` custom span in `payments.js` |
 | `frontend-stub/index.html` | `sed` credential injection (**not a patch**) | Fills the RUM `applicationId` / `clientToken` from `terraform output` into the already-present `DD_RUM.init()` block |
 
 > **Already active in source — no patch, always on:**
-> - `gateway-api` — `payment.authorize` / `account.balance_check` spans + `finance.payment.*` DogStatsD
+> - `gateway-api` — `payment.authorize` / `account.balance_check` spans
+> - `fraud-detection` — `fraud.score` span (+ `fraud.score_bucket` and numeric `fraud.score` tags)
 > - `notification-service` — `alert.send` span **and `profiler.Start()`** (Go continuous profiler)
 > - `batch-processor` — `job.name` / `job.status` / `job.records_processed` span tags
 >
-> `make instrument` / `make uninstrument` do **not** touch these — they run whenever the service runs. `account-service` has no custom instrumentation (relies entirely on Java agent auto-instrumentation).
+> `make instrument` / `make uninstrument` do **not** touch these. `account-service` has no custom instrumentation (relies entirely on Java agent auto-instrumentation).
+>
+> **No DogStatsD anywhere.** All `finance.*` custom metrics are span-based (generated from the spans above by `datadog_spans_metric` resources in `deploy/terraform/datadog`, applied via `make tf-apply-dd`).
 
 ### ⚠️ RUM requires `make tf-apply-dd` first
 
@@ -329,23 +329,29 @@ The injected tracer patches the logging framework to append `dd.trace_id` and `d
 
 ### Step 5 — Custom business spans
 
-**Enabled by:** partly [`make instrument`](#enabling-layer-2-make-instrument), partly always-on in source.
-- Via `make instrument`: `fraud.score` (fraud-detection), `payment.authorize` (transaction-service).
-- Already active in source (appear as soon as the tracer is injected — no patch): `payment.authorize` / `account.balance_check` (gateway-api), `alert.send` (notification-service), `job.*` tags (batch-processor).
+**Enabled by:** mostly always-on in source; only `transaction-service`'s `payment.authorize` is gated by [`make instrument`](#enabling-layer-2-make-instrument).
+- Always active (appear as soon as the tracer is injected — no patch): `payment.authorize` / `account.balance_check` (gateway-api), `fraud.score` + `fraud.score_bucket` + numeric `fraud.score` (fraud-detection), `alert.send` (notification-service), `job.*` tags (batch-processor).
+- Via `make instrument`: `payment.authorize` (transaction-service).
 
-**Validate:** APM → Traces → filter by `resource_name:payment.authorize`
+**Validate:** APM → Traces → filter by `resource_name:payment.authorize` or `operation_name:fraud.score`
 
-### Step 6 — Custom metrics (DogStatsD)
+### Step 6 — Custom metrics (span-based, no DogStatsD)
 
-**Enabled by:** [`make instrument`](#enabling-layer-2-make-instrument) — the `fraud-detection` and `transaction-service` patches. (`gateway-api` also emits `finance.payment.*` metrics, already active in source.)
+**Enabled by:** [`make tf-apply-dd`](#step-11--datadog-terraform-resources) — **not `make instrument`, and not DogStatsD.** Every `finance.*` custom metric is a `datadog_spans_metric` generated in the trace pipeline from the custom spans above (100% of ingested spans, no client in the app).
 
-| Metric | Type | Tags |
-|---|---|---|
-| `finance.payment.initiated` | Counter | `transaction.type`, `currency` |
-| `finance.payment.processing_time` | Histogram | `transaction.type` |
-| `finance.fraud.score` | Gauge | `score_bucket` |
+| Metric | Type | From span | Grouped by |
+|---|---|---|---|
+| `finance.payment.hits` | count | gateway-api payment span | `transaction_type`, `currency` |
+| `finance.payment.duration` | distribution (p50–p99) | payment span `@duration` | `transaction_type` |
+| `finance.fraud.hits` | count | `fraud.score` span | `score_bucket` |
+| `finance.fraud.score` | distribution | `@fraud.score` numeric tag | `score_bucket` |
+| `finance.batch.records_processed` | distribution | `@job.records_processed` | `job_name`, `job_status` |
+| `finance.notification.sent` | count | `alert.send` span | `channel`, `event_type` |
+| `finance.notification.dispatch_time` | distribution | `alert.send` `@duration` | `channel` |
 
-**Validate:** Metrics Explorer → search `finance.payment.initiated`
+Defined in `deploy/terraform/datadog/main.tf` (`datadog_spans_metric`). Docs: https://docs.datadoghq.com/tracing/trace_pipeline/generate_metrics/
+
+**Validate:** Metrics Explorer → search `finance.payment.hits` (after `make tf-apply-dd` + some traffic)
 
 ### Step 7 — Continuous Profiler
 
@@ -398,32 +404,34 @@ Docs: https://docs.datadoghq.com/real_user_monitoring/browser/
 
 ### Step 9 — Database Monitoring (PostgreSQL)
 
-DBM is Agent-side only — no application code changes.
+**Enabled by:** the Agent + a one-time PostgreSQL role — **not `make instrument`.** DBM needs no application code changes.
 
-#### 9a. Create the monitoring user (run once as superuser)
+#### 9a. Create the monitoring role — `make dbm-setup`
 
-```sql
--- Run on the 'ledger' database
--- Replace <your-dbm-password> with a password of your choice.
--- Set the same value as DATADOG_DBM_PASSWORD in .env before running 'make create-dd-secret'.
--- Unlike other app credentials (postgres, artemis, keycloak) this password is NOT pre-configured
--- in 02-secrets.yaml — you must choose it yourself.
-CREATE USER datadog WITH PASSWORD '<your-dbm-password>';
-GRANT pg_monitor TO datadog;
-CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
+The monitoring role, grants, `pg_stat_statements`, and the `datadog.explain_statement` function (for EXPLAIN plans) are created by **`make dbm-setup`**, which runs `scripts/dbm-setup.sql` inside the `postgres-ledger` pod. It's **idempotent** and **auto-run by `make deploy-k8s-dd`** whenever a DBM password is available.
+
+```bash
+# Choose a password and put it in .env before deploying Datadog:
+#   DATADOG_DBM_PASSWORD=<your-dbm-password>
+# (Unlike postgres/artemis/keycloak creds, this one is NOT pre-set in 02-secrets.yaml.)
+# make create-dd-secret stores it in the datadog-secret; make dbm-setup then reads it.
+
+make dbm-setup     # or just 'make deploy-k8s-dd', which calls it automatically
 ```
 
-The full SQL is in the header of `deploy/kubernetes/datadog/checks/postgres-check.yaml`.
+Password source order: the `datadog-secret` `dbm-password` key, else `DATADOG_DBM_PASSWORD` in `.env`. If neither is set, `make dbm-setup` skips (DBM stays off). Server-side `shared_preload_libraries = 'pg_stat_statements'` is already set in `postgres.yaml`.
 
-#### 9b. Apply the Agent check ConfigMap
+The SQL lives in [`scripts/dbm-setup.sql`](./scripts/dbm-setup.sql) — edit there if you need to adjust grants or the explain function.
+
+#### 9b. Agent check ConfigMap
+
+Applied automatically by `make deploy-k8s-dd`:
 
 ```bash
 kubectl apply -f deploy/kubernetes/datadog/checks/postgres-check.yaml
 ```
 
-The ConfigMap is already applied by `make deploy-k8s-dd`. Ensure `dbm-password` is set in the `datadog-secret` (via `make create-dd-secret`).
-
-**Validate:** Databases → Query Metrics — queries from `postgres-ledger` appear.
+**Validate:** Databases → Query Metrics — queries from `postgres-ledger` appear; open a sample → **Explain Plan** (available thanks to the `datadog.explain_statement` function from `make dbm-setup`).
 
 ### Step 10 — ActiveMQ JMX metrics
 
@@ -434,6 +442,25 @@ kubectl apply -f deploy/kubernetes/datadog/checks/activemq-check.yaml
 Already applied by `make deploy-k8s-dd`.
 
 **Validate:** Infrastructure → Metrics → search `activemq.queue.size`
+
+### Step 10b — Data Streams Monitoring (DSM), JMS pipeline
+
+**Enabled by:** `DD_DATA_STREAMS_ENABLED=true` on the four JMS services (`account-service`, `transaction-service`, `fraud-detection`, `notification-service`) — already set in their manifests. Gives producer→consumer latency and consumer-lag visibility across the payment → fraud → notification flow.
+
+- `account-service` (Java) auto-instruments JMS producer/consumer checkpoints.
+- The Node.js producer and the Python / Go consumers may need **manual checkpoints** (`set_consume_checkpoint` / producer checkpoint) for complete end-to-end stitching — the flag enables DSM; full pathway stitching for those hops is a follow-up.
+
+**Validate:** Data Streams → pathway map shows `fraud.score.queue` and `alert.queue`.
+Docs: https://docs.datadoghq.com/data_streams/
+
+### Step 10c — Data Jobs Monitoring (DJM), batch-processor
+
+**Enabled by:** `DD_DATA_JOBS_ENABLED=true` on `batch-processor` (equivalent to the `-Ddd.data.jobs.enabled=true` JVM flag) — already set in its manifest, no rebuild needed. Surfaces Spring Batch job runs under **APM → Data Jobs**.
+
+> **Note:** Data Jobs Monitoring is primarily built for Spark / Databricks workloads. For a plain Spring Batch app the APM spans + `job.*` tags (from `DatadogJobListener`) already cover most needs; the flag is enabled for completeness/demonstration.
+
+**Validate:** APM → Data Jobs after a reconciliation run (`kubectl logs -n finance deploy/traffic-generator` triggers batch jobs).
+Docs: https://docs.datadoghq.com/data_jobs/
 
 ### Step 11 — Datadog Terraform resources
 
@@ -459,7 +486,7 @@ Resources created:
 | `finance.logs.errors` | Logs metric — error count by service |
 | 7 monitors | Pod restarts, error rate, payment latency, payment errors, fraud queue, stuck transactions, pods not running |
 | 3 SLOs | Payment availability (99.9%), payment latency (99%), fraud consumer (99.5%) |
-| Dashboard | Finance App overview (APM, DogStatsD, DBM, ActiveMQ) |
+| Dashboard | Finance App overview (APM, span-based metrics, DBM, ActiveMQ) |
 | **Synthetic tests** | See Step 12 |
 | **4 Security monitors** | See Step 13 |
 
@@ -614,7 +641,8 @@ make build && make deploy-k8s && make deploy-k8s-dd
 | `make build-ecr` | Build for `linux/amd64` and push to ECR (EKS) |
 | `make deploy-k8s` | Deploy app + traffic-generator to local k3s |
 | `make create-dd-secret` | Create/update `datadog-secret` — auto-detects local (`.env`) vs EKS (Secrets Manager) |
-| `make deploy-k8s-dd` | Deploy Datadog Agent (Operator + DaemonSet + checks + security) |
+| `make dbm-setup` | Create/refresh the PostgreSQL `datadog` DBM role + explain function (idempotent; auto-run by `make deploy-k8s-dd`) |
+| `make deploy-k8s-dd` | Deploy Datadog Agent (Operator + DaemonSet + checks + security); auto-runs `create-dd-secret` + `dbm-setup` |
 | `make deploy-k8s-eks` | Deploy to EKS using Kustomize overlay (ECR images + LoadBalancer) |
 | `make undeploy-k8s` | Remove finance + datadog namespaces |
 | `make teardown` | Full reset — namespaces (+ PVCs), Helm release, stray port-forwards, orphaned Docker volumes |
@@ -730,7 +758,7 @@ Last validated: local Kubernetes (Colima + k3s, single-node, Apple Silicon) and 
 | APM — `notification-service` | Layer 1 (injection) | ✅ Go tracer injected |
 | APM — `batch-processor` | Layer 1 (injection) | ✅ Java agent injected |
 | Custom spans | Layer 2 (patch) | ✅ after `make instrument` + rebuild |
-| DogStatsD metrics | Layer 2 (patch) | ✅ `finance.payment.initiated` flowing |
+| Custom metrics (span-based) | Terraform (`tf-apply-dd`) | ✅ `finance.payment.hits` / `finance.fraud.score` etc. generated from spans (no DogStatsD) |
 | Browser RUM | Layer 2 (patch) + Terraform | ✅ after `make tf-apply-dd` + `make instrument` + frontend restart |
 | Log collection | Agent | ✅ `kube_namespace:finance` logs in Datadog |
 | Log–trace correlation | Layer 1 | ✅ `dd.trace_id` in every log line |
@@ -760,7 +788,7 @@ Last validated: local Kubernetes (Colima + k3s, single-node, Apple Silicon) and 
 | APM setup | https://docs.datadoghq.com/tracing/trace_collection/ |
 | Custom instrumentation | https://docs.datadoghq.com/tracing/trace_collection/custom_instrumentation/ |
 | Log correlation | https://docs.datadoghq.com/tracing/other_telemetry/connect_logs_and_traces/ |
-| Custom metrics (DogStatsD) | https://docs.datadoghq.com/developers/dogstatsd/ |
+| Generate metrics from spans | https://docs.datadoghq.com/tracing/trace_pipeline/generate_metrics/ |
 | Continuous Profiler | https://docs.datadoghq.com/profiler/ |
 | Database Monitoring | https://docs.datadoghq.com/database_monitoring/ |
 | DBM — PostgreSQL self-hosted | https://docs.datadoghq.com/database_monitoring/setup_postgres/selfhosted/ |

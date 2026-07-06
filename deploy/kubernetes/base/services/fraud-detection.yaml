@@ -109,6 +109,13 @@ spec:
             # Docs: https://docs.datadoghq.com/security/application_security/
             - name: DD_APPSEC_ENABLED
               value: "true"
+            # ── DATA STREAMS MONITORING (DSM) ───────────────────────────────
+            # JMS consumer on fraud.score.queue. Enabling the flag turns DSM on;
+            # for full pipeline stitching a Python consumer checkpoint
+            # (ddtrace set_consume_checkpoint) may be required (see docs).
+            # Docs: https://docs.datadoghq.com/data_streams/python/
+            - name: DD_DATA_STREAMS_ENABLED
+              value: "true"
           livenessProbe:
             exec:
               command: ["/bin/sh", "-c", "[ -d /proc/1 ]"]

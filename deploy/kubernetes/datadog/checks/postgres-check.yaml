@@ -14,8 +14,8 @@
 #         mountPath: /etc/datadog-agent/conf.d/postgres.d/conf.yaml
 #         subPath: conf.yaml
 #
-# Requires the DBM prerequisites to be applied first — see
-# See INSTRUMENTATION.md Step 8 for the PostgreSQL DBM SQL prerequisites.
+# Requires the DBM PostgreSQL role to exist first — run 'make dbm-setup'
+# (auto-run by 'make deploy-k8s-dd'). See INSTRUMENTATION.md Step 9.
 #
 # Docs: https://docs.datadoghq.com/database_monitoring/setup_postgres/selfhosted/
 # Docs: https://docs.datadoghq.com/database_monitoring/
