@@ -170,13 +170,13 @@ labels:
 **Language annotation** — tells the webhook which library to inject:
 ```yaml
 annotations:
-  admission.datadoghq.com/python-lib.version: latest   # gateway-api, fraud-detection
-  admission.datadoghq.com/js-lib.version: latest       # transaction-service
-  admission.datadoghq.com/java-lib.version: latest     # account-service, batch-processor
-  admission.datadoghq.com/go-lib.version: latest       # notification-service
+  admission.datadoghq.com/python-lib.version: "v2"     # gateway-api, fraud-detection
+  admission.datadoghq.com/js-lib.version: "v5"         # transaction-service
+  admission.datadoghq.com/java-lib.version: "v1"       # account-service, batch-processor
+  admission.datadoghq.com/go-lib.version: latest       # notification-service (no-op for Go — see note below)
 ```
 
-Both are already set in all six service manifests under `deploy/kubernetes/base/services/`.
+Both are already set in all six service manifests under `deploy/kubernetes/base/services/`. The library versions are **pinned to floating major tags** (`v2`/`v1`/`v5`) rather than `latest` — reproducible across pod restarts, still receiving patches, and always resolvable (exact patch tags don't reliably exist as init-image tags).
 
 ### What gets injected
 
@@ -187,7 +187,7 @@ Both are already set in all six service manifests under `deploy/kubernetes/base/
 | `transaction-service` | `dd-trace` (Node.js) | `NODE_OPTIONS=--require dd-trace/init` |
 | `account-service` | `dd-java-agent` (Java) | `JAVA_TOOL_OPTIONS=-javaagent:...` |
 | `batch-processor` | `dd-java-agent` (Java) | same |
-| `notification-service` | `dd-trace-go` (Go) | orchestrion at init |
+| `notification-service` | `dd-trace-go` (Go) | **not single-step injected** — in-code `tracer.Start()` (see note) |
 
 The injected agent also sets `DD_TRACE_AGENT_URL`, `DD_INSTRUMENTATION_INSTALL_TYPE=k8s_lib_injection`, and `DD_APPSEC_ENABLED=true` (from the ASM feature flag) automatically.
 
@@ -207,6 +207,17 @@ kubectl exec -n finance deploy/gateway-api -- \
 kubectl exec -n finance deploy/gateway-api -- env | grep DD_INSTRUMENTATION
 # Expected: DD_INSTRUMENTATION_INSTALL_TYPE=k8s_lib_injection
 ```
+
+> **What actually provides the tracer (important nuance):**
+> - **Python** (`gateway-api`, `fraud-detection`) also pin `ddtrace` in their own
+>   `requirements.txt`, and that baked-in copy takes precedence over the injected
+>   library. So `import ddtrace` (and the `__version__` command above) reports the
+>   **baked-in** version (currently `2.21.12`), not the injected one — changing the
+>   `python-lib.version` annotation alone has no effect for these two services. To
+>   move the Python tracer version, edit `requirements.txt` and rebuild the image.
+> - **Go** (`notification-service`) is **not** single-step injected — the Admission
+>   Controller creates no init container for Go, so `go-lib.version` is a no-op.
+>   Go tracing comes from the in-code `tracer.Start()` enabled in Layer 2.
 
 ---
 

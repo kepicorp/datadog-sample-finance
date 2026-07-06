@@ -325,6 +325,57 @@ This numbering matches `INSTRUMENTATION.md`'s step-by-step breakdown exactly —
 
 ---
 
+## Testing everything manually
+
+The fastest way to exercise the whole stack end-to-end. Every target is
+idempotent — safe to re-run. For what "healthy" looks like at each phase, use the
+**✅ Verify before continuing** checklists in [Quick Start](#quick-start) and
+[Adding Datadog](#adding-datadog).
+
+### Local (Docker Desktop / Rancher / kind / k3d / minikube / Colima)
+
+```bash
+make build                     # build the 6 service images
+# kind/k3d/minikube: load images first (see Prerequisites). Docker Desktop / Rancher / Colima: skip.
+make deploy-k8s                # app + in-cluster traffic generator
+kubectl get pods -n finance    # wait for all 12 pods Running
+make deploy-k8s-dd             # Datadog Agent (reads DD_API_KEY / DD_APP_KEY from .env)
+
+# optional deeper layers
+make instrument && make build && kubectl rollout restart deployment -n finance   # custom spans, DogStatsD, RUM
+eval "$(make dd-secrets)" && make tf-apply-dd     # monitors, SLOs, dashboard, synthetic tests
+make uninstrument              # reverse Layer 2 at any time
+
+make teardown                  # full local cleanup (namespaces + volumes)
+```
+
+### AWS EKS
+
+```bash
+aws sso login --profile <profile>
+make tf-plan-aws && make tf-apply-aws            # provisions EKS/VPC/ECR/IAM/NLB (~15–20 min)
+make tf-configure-kubectl && kubectl get nodes
+eval "$(cd deploy/terraform/aws && terraform output -raw ecr_login_command)"
+make build-ecr && make deploy-k8s-eks
+# then point Keycloak at the NLB — run the numbered step 8 block under "AWS EKS via Terraform" below
+make deploy-k8s-dd                               # pulls DD keys from AWS Secrets Manager
+eval "$(make dd-secrets)" && make tf-apply-dd
+make tf-destroy-aws                              # single-command teardown when done
+```
+
+### How to confirm it works
+
+| Check | Where to look |
+|---|---|
+| App is serving traffic | `kubectl logs -n finance deploy/traffic-generator -f` — 200/201 responses, no 401 storms |
+| Dashboard + login | `http://localhost:30080` (EKS: `cd deploy/terraform/aws && terraform output -raw frontend_url`) — log in as `carol.admin` / `Finance@2025!` |
+| Scripted e2e test | `make test` (needs a port-forward — see [INSTRUMENTATION.md](./INSTRUMENTATION.md#makefile-targets)) |
+| APM traces | Datadog → **APM → Services** (filter `env:staging`); open a trace → connected flame graph across services |
+| Log–trace correlation | Datadog → **Logs** — every line carries `dd.trace_id` / `dd.service` |
+| Async pipeline & DB | **Data Streams** (JMS producer→consumer), **Database Monitoring** (Postgres query metrics) |
+
+---
+
 ## Deployment Targets
 
 ```
