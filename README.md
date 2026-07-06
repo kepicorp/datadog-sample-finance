@@ -102,6 +102,7 @@ kubectl get nodes   # 1 node Ready
 > - **kind** — `kind load docker-image finance-sample-app-<svc>:latest`
 > - **k3d** — `k3d image import finance-sample-app-<svc>:latest`
 > - **minikube** — `minikube image load finance-sample-app-<svc>:latest`
+> - **Colima (with Kubernetes)** — its k3s uses containerd, so import into the `k8s.io` namespace (not just Docker): `docker save finance-sample-app-<svc>:latest | colima ssh -- sudo ctr -n k8s.io image import -`
 
 ### Option B — AWS EKS
 
@@ -219,7 +220,7 @@ make build
 # kind:     kind load docker-image finance-sample-app-<svc>:latest
 # k3d:      k3d image import finance-sample-app-<svc>:latest
 # minikube: minikube image load finance-sample-app-<svc>:latest
-# Colima:   docker save finance-sample-app-<svc>:latest | colima ssh -- sudo ctr image import -
+# Colima:   docker save finance-sample-app-<svc>:latest | colima ssh -- sudo ctr -n k8s.io image import -
 
 # 3. Deploy
 make deploy-k8s
@@ -303,6 +304,15 @@ Traffic mix:
 
 See **[INSTRUMENTATION.md](./INSTRUMENTATION.md)** for the complete step-by-step guide.
 
+> ⚠️ **Browser RUM (step 8) requires `make tf-apply-dd` to run before `make instrument`.**
+> The RUM `applicationId` and `clientToken` are created by the Datadog Terraform module
+> (`deploy/terraform/datadog`), and `make instrument` injects them into the frontend by
+> reading its `terraform output`. If you run `make instrument` first, the backend patches
+> (custom spans, DogStatsD metrics, profiler) still apply — but the frontend RUM block keeps
+> its placeholders and prints a `⚠` warning. Just re-run `make instrument` after
+> `make tf-apply-dd` (it's idempotent). See
+> [INSTRUMENTATION.md → Layer 2 workflow](./INSTRUMENTATION.md#workflow).
+
 Summary of what gets enabled:
 
 This numbering matches `INSTRUMENTATION.md`'s step-by-step breakdown exactly — use whichever doc you're reading, the step numbers are interchangeable.
@@ -336,18 +346,38 @@ idempotent — safe to re-run. For what "healthy" looks like at each phase, use 
 
 ```bash
 make build                     # build the 6 service images
-# kind/k3d/minikube: load images first (see Prerequisites). Docker Desktop / Rancher / Colima: skip.
+
+# Load images into the cluster (see Prerequisites for your tool):
+#   Docker Desktop / Rancher Desktop — automatic, skip this step
+#   Colima (its Kubernetes uses containerd) — import into the k8s.io namespace:
+#     for svc in gateway-api account-service transaction-service fraud-detection notification-service batch-processor; do \
+#       docker save finance-sample-app-$svc:latest | colima ssh -- sudo ctr -n k8s.io image import -; done
+#   kind: kind load docker-image …   k3d: k3d image import …   minikube: minikube image load …
+
 make deploy-k8s                # app + in-cluster traffic generator
 kubectl get pods -n finance    # wait for all 12 pods Running
 make deploy-k8s-dd             # Datadog Agent (reads DD_API_KEY / DD_APP_KEY from .env)
 
-# optional deeper layers
-make instrument && make build && kubectl rollout restart deployment -n finance   # custom spans, DogStatsD, RUM
-eval "$(make dd-secrets)" && make tf-apply-dd     # monitors, SLOs, dashboard, synthetic tests
+# Datadog Terraform resources — RUM app, monitors, SLOs, dashboard, synthetics.
+# Run this BEFORE 'make instrument' so the RUM credentials exist (see Instrumentation note).
+cp deploy/terraform/datadog/staging.tfvars.example deploy/terraform/datadog/staging.tfvars   # first time only
+eval "$(make dd-secrets)"       # locally, falls back to DD_API_KEY / DD_APP_KEY from .env
+make tf-apply-dd
+
+# Layer 2 — custom spans, DogStatsD metrics, Browser RUM
+make instrument                # injects RUM creds from the tf-apply-dd output above
+make build                     # rebuild, then reload images (see load step) and restart:
+kubectl rollout restart deployment -n finance
 make uninstrument              # reverse Layer 2 at any time
 
 make teardown                  # full local cleanup (namespaces + volumes)
+make tf-destroy-dd             # remove the Datadog Terraform resources when done
 ```
+
+> **Local log-index note:** the Datadog log index created by `make tf-apply-dd` filters on
+> `kube_cluster_name:finance-app`. A local cluster usually reports a different cluster name, so
+> local logs may not land in that dedicated index — APM, monitors, dashboard, synthetics, and RUM
+> all still work regardless.
 
 ### AWS EKS
 
@@ -387,7 +417,6 @@ deploy/
   terraform/
     aws/           EKS + ECR + VPC + IAM + Secrets Manager
     datadog/       Monitors, SLOs, dashboard, synthetic tests
-    gcp/           GKE — scaffolded, not yet tested
 ```
 
 ### Local Kubernetes (Docker Desktop / kind / k3d / minikube)
@@ -483,10 +512,6 @@ make tf-destroy-aws   # single-pass terraform destroy — see below for why this
 | 6 | `terraform destroy` | VPC, subnets, IAM, KMS, CloudWatch, the frontend NLB, target groups |
 
 > **Why teardown no longer needs manual ELB cleanup:** the `frontend` Service is `type: NodePort` on both local and EKS — it never calls the AWS API. Public exposure is handled entirely by `aws_lb.frontend`, a first-class Terraform resource, so `terraform destroy` always finds and removes it in the correct dependency order. This replaced an older design where `type: LoadBalancer` let Kubernetes' cloud-controller-manager silently create a Classic ELB that Terraform never tracked — if the EKS cluster was deleted first, that ELB (and its security group) became permanently orphaned and blocked VPC/subnet deletion. Step 0 above is kept purely as a defense-in-depth safety net in case a future change reintroduces a `LoadBalancer` Service elsewhere.
-
-### GCP GKE *(coming soon)*
-
-Scaffolded in `deploy/terraform/gcp/` — not yet tested end-to-end. See `deploy/terraform/gcp/README.md`.
 
 ---
 

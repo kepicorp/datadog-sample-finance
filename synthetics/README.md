@@ -43,7 +43,7 @@ Docs: https://docs.datadoghq.com/synthetics/apm/
 The Terraform Datadog provider exposes a `datadog_synthetics_test` resource that maps directly to these YAML definitions. Store test definitions as Terraform variables or load them from the YAML files using `yamldecode(file(...))`.
 
 ```hcl
-# deploy/terraform/aws/synthetics.tf (or gcp equivalent)
+# deploy/terraform/aws/synthetics.tf
 
 terraform {
   required_providers {

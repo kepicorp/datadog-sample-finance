@@ -27,7 +27,11 @@ make deploy-k8s-dd
 kubectl logs -n finance deploy/traffic-generator -f
 # → Open https://app.datadoghq.com/apm/services (filter: env:staging)
 
-# 4. Optional: add custom spans + DogStatsD metrics (Layer 2)
+# 4. Optional: add custom spans + DogStatsD metrics + Browser RUM (Layer 2)
+#    RUM prerequisite — run 'make tf-apply-dd' (step 6) FIRST so the RUM app
+#    exists; 'make instrument' injects its credentials into the frontend.
+#    Backend patches apply regardless; only RUM needs the Terraform output.
+make tf-apply-dd   # creates the RUM application (see step 6 for TF_VAR setup)
 make instrument
 make build
 # Docker Desktop / Rancher Desktop: images available immediately after build
@@ -124,7 +128,7 @@ kubectl get secret datadog-secret -n datadog \
 # Expected keys: api-key, app-key, dbm-password
 ```
 
-**GitOps / production** — use the External Secrets Operator to sync from AWS Secrets Manager, GCP Secret Manager, or Vault. An `ExternalSecret` manifest is in `deploy/kubernetes/datadog/secrets/datadog-secrets.yaml`.
+**GitOps / production** — use the External Secrets Operator to sync from AWS Secrets Manager or Vault. An `ExternalSecret` manifest is in `deploy/kubernetes/datadog/secrets/datadog-secrets.yaml`.
 
 Docs: https://external-secrets.io/
 
@@ -240,10 +244,14 @@ Applies unified diff patches to six targets, uncommenting custom spans, DogStats
 
 ### Workflow
 
-> **RUM prerequisite:** `make instrument` automatically injects the RUM `applicationId` and `clientToken` from Terraform output into the finance dashboard. Run `make tf-apply-dd` first so the `datadog_rum_application` resource exists. If Terraform output is not available, `make instrument` will skip RUM with a warning — re-run after `make tf-apply-dd`.
+> ⚠️ **RUM requires the Datadog Terraform module to run first.** `make instrument` injects the RUM `applicationId` and `clientToken` into `frontend-stub/index.html` by reading `terraform output` from `deploy/terraform/datadog`. That output only exists after `make tf-apply-dd` has created the `datadog_rum_application.finance_frontend` resource.
+>
+> - **Run `make tf-apply-dd` BEFORE `make instrument`** to get a working frontend RUM setup.
+> - If you run `make instrument` first, the backend patches (spans, metrics, profiler) still apply — but the RUM block keeps its `REPLACE_WITH_APPLICATION_ID` / `REPLACE_WITH_CLIENT_TOKEN` placeholders and prints a `⚠` warning. Simply re-run `make instrument` after `make tf-apply-dd` to fill them in (it's idempotent).
 
 ```bash
-# Optional but recommended: apply Terraform first so RUM credentials are available
+# REQUIRED FOR RUM: apply the Datadog Terraform first so RUM credentials exist.
+# (See step 6 / the 'tf-apply-dd' section below for the TF_VAR_* / dd-secrets setup.)
 make tf-apply-dd
 
 make instrument   # patches services + injects RUM credentials + uncomments SDK block
@@ -670,7 +678,7 @@ make build && make deploy-k8s && make deploy-k8s-dd
 | `make deploy-k8s-eks` | Deploy to EKS using Kustomize overlay (ECR images + LoadBalancer) |
 | `make undeploy-k8s` | Remove finance + datadog namespaces |
 | `make teardown` | Full reset — namespaces (+ PVCs), Helm release, stray port-forwards, orphaned Docker volumes |
-| `make instrument` | Uncomment Layer 2 (5 services + frontend RUM) via patches; injects RUM credentials from Terraform |
+| `make instrument` | Uncomment Layer 2 (5 services + frontend RUM) via patches; injects RUM credentials from Terraform. **Run `make tf-apply-dd` first** so RUM credentials exist (backend patches apply either way) |
 | `make uninstrument` | Reverse all Layer 2 patches; restores RUM placeholder tokens |
 | `make test` | Run e2e test suite from laptop — requires active port-forwards (see note below) |
 | `make test-traffic` | Run traffic generator from laptop — requires active port-forwards (see note below) |

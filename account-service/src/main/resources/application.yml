@@ -14,7 +14,7 @@ spring:
     user: ${ACTIVEMQ_USER:admin}
     password: ${ACTIVEMQ_PASSWORD:admin}
     # NOTE: Never hardcode credentials. Use Docker secrets, K8s Secret,
-    # AWS Secrets Manager, or GCP Secret Manager in production.
+    # or AWS Secrets Manager in production.
 
   # ── PostgreSQL (Ledger database) ────────────────────────────────────────
   # Datasource is read entirely from environment variables — no values here.

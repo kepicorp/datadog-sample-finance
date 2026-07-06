@@ -35,7 +35,7 @@ base/
 
 | Requirement | Notes |
 |---|---|
-| Kubernetes 1.24+ | Any cluster: kind, minikube, Docker Desktop, EKS, GKE, AKS |
+| Kubernetes 1.24+ | Any cluster: kind, minikube, Docker Desktop, EKS, AKS |
 | `kubectl` configured | `kubectl cluster-info` must return a cluster URL |
 | Docker images built | `make build` from the project root |
 
@@ -68,7 +68,7 @@ make build
 # All images are now in minikube's Docker cache
 ```
 
-### Remote / cloud clusters (EKS, GKE, AKS)
+### Remote / cloud clusters (EKS, AKS)
 Push images to a container registry your cluster can pull from:
 ```bash
 # Example: AWS ECR
@@ -176,8 +176,8 @@ kubectl create secret generic app-secrets \
 
 **Option B — Sealed Secrets or SOPS** for GitOps-safe encrypted secrets.
 
-**Option C — External Secrets Operator** pulling from AWS Secrets Manager, GCP
-Secret Manager, or HashiCorp Vault.
+**Option C — External Secrets Operator** pulling from AWS Secrets Manager or
+HashiCorp Vault.
 
 ---
 

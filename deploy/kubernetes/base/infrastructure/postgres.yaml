@@ -10,7 +10,7 @@
 # without any application-side changes.
 #
 # PVC storage class is intentionally left as the cluster default.
-# Override `storageClassName` for production (e.g. `gp3` on EKS, `pd-ssd` on GKE).
+# Override `storageClassName` for production (e.g. `gp3` on EKS).
 # =============================================================================
 
 # ── Service ───────────────────────────────────────────────────────────────────
@@ -149,4 +149,4 @@ spec:
         resources:
           requests:
             storage: 2Gi
-        # storageClassName: gp3   # Uncomment and set for your cluster (EKS: gp3, GKE: pd-ssd)
+        # storageClassName: gp3   # Uncomment and set for your cluster (EKS: gp3)
