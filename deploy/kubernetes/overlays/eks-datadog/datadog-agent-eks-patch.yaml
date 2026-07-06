@@ -1,19 +1,22 @@
 # =============================================================================
-# DatadogAgent — EKS / Bottlerocket configuration
+# DatadogAgent — EKS overlay PATCH (deltas only)
 # =============================================================================
-# Applied by: make deploy-k8s-dd (auto-detected when running on EKS)
+# This is a strategic-merge patch applied on top of the shared base at
+# deploy/kubernetes/datadog/agent/datadog-agent.yaml (see kustomization.yaml
+# in this directory). It intentionally contains ONLY the values that differ
+# on EKS — every feature (APM, logs, DSM, ASM, CWS, CSPM, ...) is inherited
+# from the base so the two environments can never drift apart again.
 #
-# EKS-specific differences from a local cluster deployment:
-#   containerLogsPath  — Bottlerocket stores logs at /var/log/containers
-#                        (patched at deploy time by make deploy-k8s-dd)
-#   kubelet.tlsVerify  — true on EKS; nodes have valid TLS certs
-#   clusterName        — set to finance-app for scoping in Datadog UI
+# EKS-specific deltas:
+#   clusterName        — scopes the cluster in the Datadog UI
 #   tags               — adds cloud:aws and cluster:finance-app
+#   kubelet.tlsVerify  — true on EKS (nodes have valid kubelet TLS certs)
 #
-# Schema: datadoghq.com/v2alpha1 (Operator >= 1.0 / 1.27.x)
-# Docs: https://github.com/DataDog/datadog-operator/blob/main/docs/configuration.v2alpha1.md
+# NOTE: containerLogsPath is NOT overridden here. Both EKS Bottlerocket and
+# local containerd nodes use /var/log/containers, which the base already sets.
+#
+# Schema: datadoghq.com/v2alpha1 (Operator >= 1.0)
 # =============================================================================
-
 apiVersion: datadoghq.com/v2alpha1
 kind: DatadogAgent
 metadata:
@@ -21,59 +24,11 @@ metadata:
   namespace: datadog
 spec:
   global:
-    site: datadoghq.com
-
     clusterName: finance-app
-
-    credentials:
-      apiSecret:
-        secretName: datadog-secret
-        keyName: api-key
-
     tags:
       - env:staging
       - app:finance-sample-app
       - cloud:aws
       - cluster:finance-app
-
     kubelet:
       tlsVerify: true # EKS nodes have valid kubelet TLS certs
-
-  features:
-    apm:
-      enabled: true
-      hostPortConfig:
-        enabled: true
-        hostPort: 8126
-
-    logCollection:
-      enabled: true
-      containerCollectAll: true
-      # Bottlerocket stores logs here — not /var/lib/docker/containers
-      # This value is patched at deploy time by make deploy-k8s-dd
-      containerLogsPath: /var/log/containers
-
-    liveProcessCollection:
-      enabled: true
-
-    dogstatsd:
-      hostPortConfig:
-        enabled: true
-        hostPort: 8125
-
-    liveContainerCollection:
-      enabled: true
-
-    orchestratorExplorer:
-      enabled: true
-
-    clusterChecks:
-      enabled: true
-
-    admissionController:
-      enabled: true
-      mutateUnlabelled: false
-
-  override:
-    clusterAgent:
-      replicas: 2

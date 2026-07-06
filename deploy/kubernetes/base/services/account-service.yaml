@@ -46,8 +46,12 @@ spec:
   template:
     metadata:
       annotations:
-        # Datadog single-step instrumentation — inject java tracer at pod startup
-        admission.datadoghq.com/java-lib.version: latest
+        # Datadog single-step instrumentation — inject java tracer at pod startup.
+        # Pinned to the tracer's MAJOR version (Datadog publishes floating vN
+        # init-image tags). More reproducible than "latest" (no surprise major
+        # bumps) while still receiving patches; always resolvable — unlike exact
+        # patch tags, which don't reliably exist as init-image tags.
+        admission.datadoghq.com/java-lib.version: "v1"
         ad.datadoghq.com/account-service.logs: '[{"source":"java","service":"account-service"}]'
       labels:
         app: account-service

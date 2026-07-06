@@ -272,15 +272,12 @@ deploy-k8s:
 		--from-file=index.html=/tmp/finance-index.html \
 		-n finance --dry-run=client -o yaml | kubectl apply -f -; \
 	rm -f /tmp/finance-index.html
-	@echo "Applying application services..."
-	kubectl apply -f deploy/kubernetes/base/services/account-service.yaml
-	kubectl apply -f deploy/kubernetes/base/services/batch-processor.yaml
-	kubectl apply -f deploy/kubernetes/base/services/fraud-detection.yaml
-	kubectl apply -f deploy/kubernetes/base/services/frontend.yaml
-	kubectl apply -f deploy/kubernetes/base/services/gateway-api.yaml
-	kubectl apply -f deploy/kubernetes/base/services/notification-service.yaml
-	kubectl apply -f deploy/kubernetes/base/services/transaction-service.yaml
-	kubectl apply -f deploy/kubernetes/base/services/traffic-generator.yaml
+	@echo "Applying application services (pinning DD version=$(DD_VERSION))..."
+	@for f in account-service batch-processor fraud-detection frontend gateway-api notification-service transaction-service traffic-generator; do \
+		echo "  → $$f"; \
+		DD_VERSION=$(DD_VERSION) bash scripts/pin-dd-version.sh \
+			< deploy/kubernetes/base/services/$$f.yaml | kubectl apply -f -; \
+	done
 	@echo ""
 	@echo "✓  Deployed. Check pod status:"
 	@echo "     kubectl get pods -n finance"
@@ -330,8 +327,10 @@ deploy-k8s-eks:
 		--from-file=index.html=/tmp/finance-index.html \
 		-n finance --dry-run=client -o yaml | kubectl apply -f -; \
 	rm -f /tmp/finance-index.html
-	@echo "Applying EKS overlay (ECR images + gp3 StorageClass + infrastructure + services)..."
-	kubectl apply -k deploy/kubernetes/overlays/eks
+	@echo "Applying EKS overlay (ECR images + gp3 StorageClass + infrastructure + services; pinning DD version=$(DD_VERSION))..."
+	kubectl kustomize deploy/kubernetes/overlays/eks \
+		| DD_VERSION=$(DD_VERSION) bash scripts/pin-dd-version.sh \
+		| kubectl apply -f -
 	@echo "Waiting for PostgreSQL to be ready..."
 	kubectl rollout status statefulset/postgres-ledger -n finance --timeout=120s
 	@echo ""
@@ -397,11 +396,8 @@ deploy-k8s-dd:
 			exit 1; \
 		fi; \
 		$(MAKE) create-dd-secret; \
-		LOG_PATH=$$([ $$IS_BOTTLEROCKET -gt 0 ] && echo '/var/log/containers' || echo '/var/lib/docker/containers'); \
-		echo "==> Applying EKS agent config (log path: $$LOG_PATH)..."; \
-		sed "s|containerLogsPath:.*|containerLogsPath: $$LOG_PATH|" \
-			deploy/kubernetes/overlays/eks-datadog/datadog-agent-eks-patch.yaml \
-			| kubectl apply -f -; \
+		echo "==> Applying EKS agent config (Kustomize overlay — inherits full base spec)..."; \
+		kubectl apply -k deploy/kubernetes/overlays/eks-datadog; \
 	else \
 		echo "    Detected: local cluster"; \
 		echo "==> Checking Datadog Operator is installed and running..."; \
@@ -431,8 +427,8 @@ deploy-k8s-dd:
 		fi; \
 		echo "==> Creating datadog-secret from .env..."; \
 		$(MAKE) create-dd-secret; \
-		echo "==> Applying local cluster config..."; \
-		kubectl apply -f deploy/kubernetes/datadog/agent/datadog-agent.yaml; \
+		echo "==> Applying local cluster config (Kustomize base)..."; \
+		kubectl apply -k deploy/kubernetes/datadog/agent; \
 	fi
 	@kubectl apply -f deploy/kubernetes/datadog/checks/activemq-check.yaml
 	@kubectl apply -f deploy/kubernetes/datadog/checks/postgres-check.yaml

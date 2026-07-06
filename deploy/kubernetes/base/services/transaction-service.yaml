@@ -46,8 +46,12 @@ spec:
   template:
     metadata:
       annotations:
-        # Datadog single-step instrumentation — inject js tracer at pod startup
-        admission.datadoghq.com/js-lib.version: latest
+        # Datadog single-step instrumentation — inject js tracer at pod startup.
+        # Pinned to the tracer's MAJOR version (Datadog publishes floating vN
+        # init-image tags). More reproducible than "latest" (no surprise major
+        # bumps) while still receiving patches; always resolvable — unlike exact
+        # patch tags, which don't reliably exist as init-image tags.
+        admission.datadoghq.com/js-lib.version: "v5"
         ad.datadoghq.com/transaction-service.logs: '[{"source":"nodejs","service":"transaction-service"}]'
       labels:
         app: transaction-service

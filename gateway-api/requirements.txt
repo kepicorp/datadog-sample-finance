@@ -14,7 +14,14 @@ pydantic==2.7.1
 # Uncomment when enabling any Datadog observability layer.
 # Docs: https://docs.datadoghq.com/tracing/trace_collection/dd_libraries/python/
 #
-ddtrace==2.9.0
+# NOTE: this baked-in ddtrace is what actually runs (it shadows the
+# single-step Admission Controller injection, since `import ddtrace`
+# resolves to site-packages first). Keep it on the latest 2.x patch:
+# 2.9.0 was a March-2024 build whose native AppSec (libddwaf) extension
+# could SIGSEGV under sustained load on the gateway. 2.21.x carries the
+# accumulated native/AppSec crash fixes while staying API-compatible with
+# the 2.x custom-span code in main.py.
+ddtrace==2.21.12
 datadog==0.49.1
 # ─────────────────────────────────────────────────────────────────────
 

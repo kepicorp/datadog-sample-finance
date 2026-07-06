@@ -26,7 +26,12 @@ spec:
   template:
     metadata:
       annotations:
-        # Datadog single-step instrumentation — inject go tracer at pod startup
+        # NOTE: Go does NOT support single-step library injection like
+        # Python/JS/Java — the Admission Controller injects no init container for
+        # Go, so this annotation is effectively a no-op (kept only for parity /
+        # documentation). Go APM is enabled in-code via tracer.Start() (see
+        # main.go) plus compile-time instrumentation (orchestrion), not here.
+        # Docs: https://docs.datadoghq.com/tracing/trace_collection/automatic_instrumentation/single-step-apm/
         admission.datadoghq.com/go-lib.version: latest
         ad.datadoghq.com/notification-service.logs: '[{"source":"go","service":"notification-service"}]'
       labels:

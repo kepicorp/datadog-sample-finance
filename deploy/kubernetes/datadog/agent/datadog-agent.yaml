@@ -70,7 +70,13 @@ spec:
     logCollection:
       enabled: true
       containerCollectAll: true
-      containerLogsPath: /var/lib/docker/containers
+      # containerLogsPath is intentionally NOT set: the Operator auto-detects
+      # the node's container runtime and picks the right host path
+      # (/var/lib/docker/containers for Docker/cri-dockerd, /var/log/containers
+      # for containerd such as EKS Bottlerocket, kind, k3d). Hardcoding a single
+      # value was fragile — it broke log collection on whichever runtime it
+      # didn't match. Auto-detection works for both local and EKS, so the EKS
+      # overlay no longer needs to patch this value.
 
     # ── PROCESS DISCOVERY ─────────────────────────────────────────────────────
     # Enables the process agent for Live Processes and Network Performance
@@ -162,6 +168,14 @@ spec:
     #
     # Docs: https://docs.datadoghq.com/security/cloud_workload_security/
     # Docs: https://docs.datadoghq.com/security/cloud_security_management/
+    #
+    # ── RESOURCE NOTE (small / demo clusters) ────────────────────────────────
+    # CWS (eBPF system-probe) and CSPM host benchmarks are the heaviest
+    # features here. On small nodes (e.g. EKS t3.medium) they add noticeable
+    # CPU/memory and privileged-DaemonSet overhead. If the demo only needs
+    # APM + logs + metrics, comment out the `cws:` and `cspm:` blocks below
+    # (and `asm.sca` if OSS scanning isn't needed). For the full security
+    # suite, prefer t3.large nodes (see deploy/terraform/aws/staging.tfvars).
     cws:
       enabled: true
       syscallMonitorEnabled: true # Audit syscalls for deeper forensic visibility
