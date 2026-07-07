@@ -433,7 +433,11 @@ kubectl apply -f deploy/kubernetes/datadog/checks/postgres-check.yaml
 
 **Validate:** Databases → Query Metrics — queries from `postgres-ledger` appear; open a sample → **Explain Plan** (available thanks to the `datadog.explain_statement` function from `make dbm-setup`).
 
-### Step 10 — ActiveMQ JMX metrics
+### Step 10 — Data Observability
+
+Three independent signals for the async side of the app (JMS broker, data streams, batch jobs). Each is enabled separately — see the sub-steps below.
+
+#### 10a. ActiveMQ JMX metrics
 
 ```bash
 kubectl apply -f deploy/kubernetes/datadog/checks/activemq-check.yaml
@@ -443,7 +447,7 @@ Already applied by `make deploy-k8s-dd`.
 
 **Validate:** Infrastructure → Metrics → search `activemq.queue.size`
 
-### Step 10b — Data Streams Monitoring (DSM), JMS pipeline
+#### 10b. Data Streams Monitoring (DSM), JMS pipeline
 
 **Enabled by:** `DD_DATA_STREAMS_ENABLED=true` on the four JMS services (`account-service`, `transaction-service`, `fraud-detection`, `notification-service`) — already set in their manifests. Gives producer→consumer latency and consumer-lag visibility across the payment → fraud → notification flow.
 
@@ -453,7 +457,7 @@ Already applied by `make deploy-k8s-dd`.
 **Validate:** Data Streams → pathway map shows `fraud.score.queue` and `alert.queue`.
 Docs: https://docs.datadoghq.com/data_streams/
 
-### Step 10c — Data Jobs Monitoring (DJM), batch-processor
+#### 10c. Data Jobs Monitoring (DJM), batch-processor
 
 **Enabled by:** `DD_DATA_JOBS_ENABLED=true` on `batch-processor` (equivalent to the `-Ddd.data.jobs.enabled=true` JVM flag) — already set in its manifest, no rebuild needed. Surfaces Spring Batch job runs under **APM → Data Jobs**.
 
