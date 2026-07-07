@@ -1154,7 +1154,7 @@ resource "datadog_dashboard" "finance_overview" {
           show_legend = true
 
           request {
-            q            = "max:activemq.artemis.queue.message_count{${local.env_filter}} by {queue_name}"
+            q            = "max:activemq.artemis.queue.message_count{${local.env_filter}} by {queue}"
             display_type = "line"
           }
         }
@@ -1168,7 +1168,7 @@ resource "datadog_dashboard" "finance_overview" {
           show_legend = true
 
           request {
-            q            = "min:activemq.artemis.queue.consumer_count{${local.env_filter}} by {queue_name}"
+            q            = "min:activemq.artemis.queue.consumer_count{${local.env_filter}} by {queue}"
             display_type = "line"
           }
         }
@@ -1182,7 +1182,7 @@ resource "datadog_dashboard" "finance_overview" {
           show_legend = true
 
           request {
-            q            = "sum:activemq.artemis.queue.messages_added{${local.env_filter}} by {queue_name}.as_rate()"
+            q            = "sum:activemq.artemis.queue.messages_added{${local.env_filter}} by {queue}.as_rate()"
             display_type = "bars"
           }
         }
@@ -1360,7 +1360,10 @@ resource "datadog_monitor" "fraud_queue_depth" {
     @slack-finance-alerts
   EOT
 
-  query = "max(last_5m):max:activemq.artemis.queue.message_count{${local.env_filter},queue_name:fraud.score.queue} > 100"
+  # NOTE: tag is "queue" (not "queue_name") with a leading underscore on the
+  # value -- see the KNOWN QUIRK comment in
+  # deploy/kubernetes/datadog/checks/activemq-check.yaml for why.
+  query = "max(last_5m):max:activemq.artemis.queue.message_count{${local.env_filter},queue:_fraud.score.queue} > 100"
 
   monitor_thresholds {
     critical = 100
@@ -1860,7 +1863,7 @@ resource "datadog_dashboard" "finance_technical" {
           show_legend = true
 
           request {
-            q            = "max:activemq.artemis.queue.message_count{${local.env_filter}} by {queue_name}"
+            q            = "max:activemq.artemis.queue.message_count{${local.env_filter}} by {queue}"
             display_type = "line"
           }
         }
@@ -1874,7 +1877,7 @@ resource "datadog_dashboard" "finance_technical" {
           show_legend = true
 
           request {
-            q            = "min:activemq.artemis.queue.consumer_count{${local.env_filter}} by {queue_name}"
+            q            = "min:activemq.artemis.queue.consumer_count{${local.env_filter}} by {queue}"
             display_type = "line"
           }
         }

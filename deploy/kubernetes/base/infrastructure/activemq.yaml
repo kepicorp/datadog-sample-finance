@@ -92,10 +92,26 @@ spec:
                   name: app-secrets
                   key: artemis-password
             # Expose JMX for the Datadog ActiveMQ agent check.
+            #
+            # java.rmi.server.hostname MUST be a real, remotely-routable address,
+            # not 0.0.0.0. JMX/RMI is a two-step protocol: the client first
+            # connects to jmxremote.port (1099) to reach the RMI registry, which
+            # then hands back a stub telling the client to reconnect to
+            # java.rmi.server.hostname:jmxremote.rmi.port for the actual JMX
+            # object. If that hostname is 0.0.0.0, a remote client (e.g. the
+            # Datadog Agent in a different pod) tries to connect to 0.0.0.0
+            # itself and gets "Connection refused". Using the pod's own IP
+            # (via the Downward API) works identically on local k3s/Colima and
+            # on EKS, since pod IPs are always routable within the cluster
+            # network in both cases.
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
             - name: JAVA_ARGS
               value: >-
                 -Dcom.sun.jndi.rmiregistry.registrySocket.timeout=15000
-                -Djava.rmi.server.hostname=0.0.0.0
+                -Djava.rmi.server.hostname=$(POD_IP)
                 -Dcom.sun.management.jmxremote=true
                 -Dcom.sun.management.jmxremote.port=1099
                 -Dcom.sun.management.jmxremote.rmi.port=1099

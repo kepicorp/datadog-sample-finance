@@ -206,11 +206,31 @@ spec:
     #    postgres.d check config via %%env_DD_DBM_POSTGRES_PASSWORD%% templating.
     #    This avoids requiring a full Agent secrets-backend script for a single
     #    value. Docs: https://docs.datadoghq.com/agent/guide/autodiscovery-management/?tab=helm#template-variables
+    # ── DATA STREAMS: ActiveMQ Artemis JMX check config ─────────────────────
+    # Mounts the datadog-activemq-check ConfigMap (deploy/kubernetes/datadog/
+    # checks/activemq-check.yaml) into conf.d/activemq.d/conf.yaml. No
+    # password/env wiring needed here: the broker runs with JMX
+    # authentication disabled (see activemq.yaml's JAVA_ARGS), so unlike
+    # postgres.d there's no secret to inject.
+    #
+    # ── JMX / JAVA RUNTIME ─────────────────────────────────────────────────
+    # The standard agent:7 image does NOT bundle a JVM, so JMXFetch (needed by
+    # any is_jmx:true check, e.g. activemq.d) fails with:
+    #   "exec: java: executable file not found in $PATH"
+    # image.jmxEnabled: true switches the Node Agent to the '-jmx' image
+    # variant (e.g. 7.80.2-jmx), which bundles a JRE. Required for the
+    # ActiveMQ Artemis check below.
+    # Docs: https://docs.datadoghq.com/integrations/java
     nodeAgent:
+      image:
+        jmxEnabled: true
       volumes:
         - name: postgres-check-config
           configMap:
             name: datadog-postgres-check
+        - name: activemq-check-config
+          configMap:
+            name: datadog-activemq-check
       containers:
         agent:
           env:
@@ -222,6 +242,9 @@ spec:
           volumeMounts:
             - name: postgres-check-config
               mountPath: /etc/datadog-agent/conf.d/postgres.d/conf.yaml
+              subPath: conf.yaml
+            - name: activemq-check-config
+              mountPath: /etc/datadog-agent/conf.d/activemq.d/conf.yaml
               subPath: conf.yaml
 
   # ── OVERRIDE PER COMPONENT (optional) ────────────────────────────────────
