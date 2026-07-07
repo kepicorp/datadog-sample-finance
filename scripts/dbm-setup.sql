@@ -26,6 +26,12 @@ ALTER ROLE datadog WITH PASSWORD :'dbm_password';
 GRANT pg_monitor TO datadog;
 GRANT SELECT ON pg_stat_database TO datadog;
 
+-- 2b. Table-level grant for the Finance-specific custom_queries in
+--     postgres-check.yaml (finance.db.ledger.pending_count / failed_count).
+--     pg_monitor only covers system catalogs/stat views, not application
+--     tables, so the 'transactions' table needs an explicit read-only grant.
+GRANT SELECT ON transactions TO datadog;
+
 -- 3. Query metrics extension.
 CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
 

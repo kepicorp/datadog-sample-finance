@@ -196,6 +196,33 @@ spec:
     clusterAgent:
       replicas: 2 # HA for production
 
+    # ── DATABASE MONITORING (DBM) — PostgreSQL check config + password ─────
+    # 1. Mounts the datadog-postgres-check ConfigMap (deploy/kubernetes/datadog/
+    #    checks/postgres-check.yaml) into conf.d/postgres.d/conf.yaml so the
+    #    Agent actually picks up the DBM check (a ConfigMap alone does nothing
+    #    unless it's mounted like this).
+    # 2. Injects the 'datadog' DBM role's password (created by 'make dbm-setup')
+    #    into the node Agent container as an env var, referenced from the
+    #    postgres.d check config via %%env_DD_DBM_POSTGRES_PASSWORD%% templating.
+    #    This avoids requiring a full Agent secrets-backend script for a single
+    #    value. Docs: https://docs.datadoghq.com/agent/guide/autodiscovery-management/?tab=helm#template-variables
+    nodeAgent:
+      volumes:
+        - name: postgres-check-config
+          configMap:
+            name: datadog-postgres-check
+      containers:
+        agent:
+          env:
+            - name: DD_DBM_POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: datadog-secret
+                  key: dbm-password
+          volumeMounts:
+            - name: postgres-check-config
+              mountPath: /etc/datadog-agent/conf.d/postgres.d/conf.yaml
+              subPath: conf.yaml
 
   # ── OVERRIDE PER COMPONENT (optional) ────────────────────────────────────
   # Use overrides to set resource limits, node selectors, tolerations, etc.
