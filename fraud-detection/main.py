@@ -67,11 +67,15 @@ def main() -> None:
         },
     )
 
-    conn = stomp.Connection(host_and_ports=[(host, port)])
-    conn.set_listener("fraud_score_listener", FraudScoreListener(conn))
+    conn = None
 
     while True:
         try:
+            # Recreate the connection each attempt so a dropped/half-open
+            # transport (Artemis idle-connection TTL, AMQ229014) can't wedge
+            # subsequent reconnects.
+            conn = stomp.Connection(host_and_ports=[(host, port)])
+            conn.set_listener("fraud_score_listener", FraudScoreListener(conn))
             conn.connect(
                 username=os.environ.get("STOMP_USER", "admin"),
                 passcode=os.environ.get("STOMP_PASS", "admin"),
@@ -84,22 +88,38 @@ def main() -> None:
             )
             logger.info("Subscribed to queue", extra={"queue": queue})
 
-            # Block until disconnected, then attempt reconnect.
+            # Block until disconnected, then loop to reconnect.
             while conn.is_connected():
                 time.sleep(1)
 
-        except stomp.exception.ConnectFailedException:
-            logger.warning(
-                "Could not connect to broker — retrying in 5 s",
-                extra={"broker.host": host, "broker.port": port},
-            )
+            logger.warning("Broker connection lost — reconnecting in 5 s")
             time.sleep(5)
 
         except KeyboardInterrupt:
             logger.info("Shutting down fraud-detection service")
-            if conn.is_connected():
+            if conn is not None and conn.is_connected():
                 conn.disconnect()
             break
+
+        except (
+            stomp.exception.ConnectFailedException,
+            stomp.exception.NotConnectedException,
+        ):
+            logger.warning(
+                "Broker not connected — retrying in 5 s",
+                extra={"broker.host": host, "broker.port": port},
+            )
+            time.sleep(5)
+
+        except Exception as exc:
+            # Any other broker/protocol error (e.g. a STOMP ERROR frame during
+            # (re)connect) must not crash the process — log and retry so the
+            # consumer survives Artemis idle-connection drops instead of exiting.
+            logger.error(
+                "Unexpected error in consumer loop — retrying in 5 s",
+                extra={"error": str(exc), "error.type": type(exc).__name__},
+            )
+            time.sleep(5)
 
 
 if __name__ == "__main__":

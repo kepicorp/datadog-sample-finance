@@ -81,27 +81,51 @@ func main() {
 		"queue", alertQueue,
 	)
 
-	conn, err := connectSTOMP(brokerURL)
-	if err != nil {
-		slog.Error("failed to connect to STOMP broker", "error", err, "broker_url", brokerURL)
-		os.Exit(1)
-	}
-	defer conn.Disconnect()
-
-	slog.Info("connected to STOMP broker", "broker_url", brokerURL)
-
-	sub, err := conn.Subscribe(alertQueue, stomp.AckClient)
-	if err != nil {
-		slog.Error("failed to subscribe to queue", "queue", alertQueue, "error", err)
-		os.Exit(1)
-	}
-
-	slog.Info("subscribed to queue", "queue", alertQueue)
-
 	// Graceful shutdown on SIGTERM / SIGINT (important for K8s pod lifecycle).
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
+	// Outer reconnect loop. ActiveMQ Artemis closes idle STOMP connections
+	// (AMQ229014 connection TTL). Rather than exiting on disconnect and relying
+	// on a Kubernetes restart, reconnect in-process with a short backoff.
+	for ctx.Err() == nil {
+		conn, err := connectSTOMP(brokerURL)
+		if err != nil {
+			slog.Error("failed to connect to STOMP broker; retrying", "error", err, "broker_url", brokerURL)
+			if sleepCtx(ctx, 3*time.Second) {
+				return
+			}
+			continue
+		}
+		slog.Info("connected to STOMP broker", "broker_url", brokerURL)
+
+		sub, err := conn.Subscribe(alertQueue, stomp.AckClient)
+		if err != nil {
+			slog.Error("failed to subscribe to queue; reconnecting", "queue", alertQueue, "error", err)
+			_ = conn.Disconnect()
+			if sleepCtx(ctx, 3*time.Second) {
+				return
+			}
+			continue
+		}
+		slog.Info("subscribed to queue", "queue", alertQueue)
+
+		// Consume until the subscription channel closes (broker disconnect) or shutdown.
+		consume(ctx, conn, sub)
+		_ = conn.Disconnect()
+
+		if ctx.Err() != nil {
+			return // clean shutdown
+		}
+		slog.Warn("STOMP connection lost; reconnecting", "queue", alertQueue)
+		if sleepCtx(ctx, 3*time.Second) {
+			return
+		}
+	}
+}
+
+// consume reads messages until the subscription channel closes or ctx is cancelled.
+func consume(ctx context.Context, conn *stomp.Conn, sub *stomp.Subscription) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -109,11 +133,20 @@ func main() {
 			return
 		case msg, ok := <-sub.C:
 			if !ok {
-				slog.Warn("subscription channel closed, exiting")
 				return
 			}
 			processMessage(conn, msg)
 		}
+	}
+}
+
+// sleepCtx waits for d or until ctx is cancelled; returns true if cancelled.
+func sleepCtx(ctx context.Context, d time.Duration) bool {
+	select {
+	case <-ctx.Done():
+		return true
+	case <-time.After(d):
+		return false
 	}
 }
 
