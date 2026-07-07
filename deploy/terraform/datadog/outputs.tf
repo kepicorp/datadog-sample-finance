@@ -14,7 +14,27 @@ output "log_index_filter" {
 
 output "dashboard_url" {
   description = "URL of the Finance app overview dashboard in Datadog."
-  value       = "https://app.datadoghq.com/dashboard/${datadog_dashboard.finance_overview.id}"
+  value       = "https://app.${var.datadog_site}/dashboard/${datadog_dashboard.finance_overview.id}"
+}
+
+output "dashboard_url_technical" {
+  description = "URL of the Finance app Technical persona dashboard in Datadog."
+  value       = "https://app.${var.datadog_site}/dashboard/${datadog_dashboard.finance_technical.id}"
+}
+
+output "dashboard_url_business" {
+  description = "URL of the Finance app Business Lead persona dashboard in Datadog."
+  value       = "https://app.${var.datadog_site}/dashboard/${datadog_dashboard.finance_business.id}"
+}
+
+output "dashboard_url_analyst" {
+  description = "URL of the Finance app Finance Analyst persona dashboard in Datadog."
+  value       = "https://app.${var.datadog_site}/dashboard/${datadog_dashboard.finance_analyst.id}"
+}
+
+output "dashboard_url_admin" {
+  description = "URL of the Finance app Admin persona dashboard in Datadog."
+  value       = "https://app.${var.datadog_site}/dashboard/${datadog_dashboard.finance_admin.id}"
 }
 
 # ── Monitors ────────────────────────────────────────────────────────────────
@@ -54,6 +74,11 @@ output "monitor_stuck_pending_transactions_id" {
   value       = datadog_monitor.stuck_pending_transactions.id
 }
 
+output "monitor_ledger_commit_errors_id" {
+  description = "ID of the ledger commit errors monitor."
+  value       = datadog_monitor.ledger_commit_errors.id
+}
+
 # ── SLOs ────────────────────────────────────────────────────────────────────
 
 output "slo_payment_availability_id" {
@@ -78,11 +103,14 @@ output "span_metrics" {
   value = {
     payment_hits               = datadog_spans_metric.payment_hits.name
     payment_duration           = datadog_spans_metric.payment_duration.name
+    payment_success            = datadog_spans_metric.finance_payment_success.name
+    payment_failed             = datadog_spans_metric.finance_payment_failed.name
     fraud_hits                 = datadog_spans_metric.fraud_hits.name
     fraud_score                = datadog_spans_metric.fraud_score.name
     batch_records              = datadog_spans_metric.batch_records.name
     notification_sent          = datadog_spans_metric.notification_sent.name
     notification_dispatch_time = datadog_spans_metric.notification_dispatch_time.name
+    ledger_commit_errors       = datadog_spans_metric.finance_ledger_commit_errors.name
   }
 }
 
