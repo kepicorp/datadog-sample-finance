@@ -172,6 +172,8 @@ All credentials for local development are pre-set in `.env` and `deploy/kubernet
 | **Keycloak finance realm account** | `https://localhost:30443/realms/finance/account/` | Self-service account page for realm users |
 | **ActiveMQ management console** | `kubectl port-forward svc/activemq-artemis 8161:8161 -n finance` then `http://localhost:8161` | Broker metrics and queue management (not proxied through nginx) |
 
+> ⚠ **Self-signed certificate — accept it before logging in.** The Finance dashboard's login flow calls Keycloak directly at `https://localhost:30443`, which nginx serves with a self-signed cert (local-only — EKS uses a real ACM certificate instead, see [AWS EKS deployment](#aws-eks-via-terraform)). Before your first login attempt, visit `https://localhost:30443` in your browser and accept the security warning (**Advanced → Accept the Risk** in Firefox, **Advanced → Proceed** in Chrome). You only need to do this once per browser profile — skipping it makes dashboard login fail with a `NetworkError` / "Failed to fetch" style error. This does **not** affect the in-cluster traffic generator, which talks to Keycloak over plain HTTP via its ClusterIP service name and never goes through the self-signed HTTPS proxy.
+
 ### Finance realm users and roles
 
 Pre-imported into the `finance` Keycloak realm. Log in via the Finance dashboard at `http://localhost:30080` — it redirects to Keycloak at `https://localhost:30443` automatically.

@@ -305,6 +305,14 @@ deploy-k8s:
 	@echo "     kubectl get pods -n finance"
 	@echo "   Dashboard available at: http://localhost:30080"
 	@echo "   (or: kubectl port-forward svc/frontend 3000:80 -n finance)"
+	@echo ""
+	@echo "⚠  Keycloak on :30443 uses a self-signed HTTPS cert (local-only —"
+	@echo "   EKS uses a real ACM cert instead). Before your first login on the"
+	@echo "   dashboard, open https://localhost:30443 once and accept the browser"
+	@echo "   security warning (Advanced → Accept the Risk in Firefox, Advanced →"
+	@echo "   Proceed in Chrome). Skipping this makes dashboard login fail with a"
+	@echo "   network/fetch error. This only affects browser access — the in-cluster"
+	@echo "   traffic-generator talks to Keycloak over plain HTTP and is unaffected."
 
 ## deploy-k8s-eks: Deploy to EKS using Kustomize overlay.
 ##                 Patches base manifests with ECR image URLs, gp3 StorageClass,

@@ -12,6 +12,10 @@
 # The generator talks to services via their ClusterIP DNS names:
 #   gateway-api:8080, account-service:8081, transaction-service:8082, keycloak:8080
 #
+# Note: keycloak:8080 here is plain HTTP via ClusterIP — this generator never
+# goes through the nginx self-signed HTTPS proxy on :30443, so it is
+# unaffected by the browser-only self-signed certificate warning.
+#
 # Tune rate and behaviour via the TRAFFIC_RATE and TRAFFIC_SCENARIOS env vars.
 #
 # To watch live output:
