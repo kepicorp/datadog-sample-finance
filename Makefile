@@ -507,7 +507,7 @@ create-dd-secret:
 			--query SecretString --output text \
 			--region $$AWS_REGION $$PROFILE_FLAG 2>/dev/null); \
 		DBM_PASSWORD=$$(aws secretsmanager get-secret-value \
-			--secret-id finance-app/staging/dbm-password \
+			--secret-id finance-app/staging/datadog-dbm-password \
 			--query SecretString --output text \
 			--region $$AWS_REGION $$PROFILE_FLAG 2>/dev/null || echo ''); \
 		if [ -z "$$DD_API_KEY" ] || [ "$$DD_API_KEY" = "REPLACE_ME" ]; then \

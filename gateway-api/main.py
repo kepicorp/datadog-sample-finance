@@ -643,9 +643,11 @@ async def initiate_payment(
         },
     )
 
-    #
+    # resource MUST be a bounded, normalised value. Using the raw account_id
+    # here would create one APM resource per account (unbounded cardinality).
+    # The account id is still captured as a span tag below for trace search.
     with tracer.trace(
-        "payment.authorize", service="gateway-api", resource=payload.account_id
+        "payment.authorize", service="gateway-api", resource="POST /v1/payments"
     ) as span:
         span.set_tag("transaction.type", "payment")
         span.set_tag("payment.currency", payload.currency)
@@ -746,9 +748,13 @@ async def get_account_balance(
         extra={"account_id": account_id, "user.id": user_sub, "user.roles": user_roles},
     )
 
-    #
+    # resource MUST be a bounded, normalised route — never the raw account_id
+    # (that would create one APM resource per account). The account id remains
+    # a span tag for trace search.
     with tracer.trace(
-        "account.balance_check", service="gateway-api", resource=account_id
+        "account.balance_check",
+        service="gateway-api",
+        resource="GET /v1/accounts/{account_id}/balance",
     ) as span:
         span.set_tag("account.id", account_id)
         span.set_tag("http.route", "/v1/accounts/{account_id}/balance")
