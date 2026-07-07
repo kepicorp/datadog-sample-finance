@@ -104,6 +104,9 @@ kubectl get nodes   # 1 node Ready
 > - **minikube** — `minikube image load finance-sample-app-<svc>:latest`
 > - **Colima (with Kubernetes)** — its k3s uses containerd, so import into the `k8s.io` namespace (not just Docker): `docker save finance-sample-app-<svc>:latest | colima ssh -- sudo ctr -n k8s.io image import -`
 
+> **NOTE**
+> Please note that synthetics test will not work with local k8s unless you set up internal location as your network is not reachable by public cloud.
+
 ### Option B — AWS EKS
 
 Additionally requires AWS CLI ≥ 2.x and an SSO profile (`aws configure sso`). See [AWS EKS section](#aws--eks-via-terraform).
