@@ -108,7 +108,7 @@ kubectl run -it --rm curl-test --image=curlimages/curl -n finance --restart=Neve
 ## 4 — Instrumentation: Was instrumentation injected?
 
 ```bash
-# Init containers present? (Admission Controller auto-injection, Layer 1)
+# Init containers present? (Admission Controller auto-injection, Single Step Instrumentation)
 kubectl get pod -n finance -l app=gateway-api \
   -o jsonpath='{.items[0].spec.initContainers[*].name}'
 # Expected: datadog-lib-python-init datadog-init-apm-inject
@@ -134,7 +134,7 @@ kubectl exec -n finance deploy/gateway-api -- env | grep DD_INSTRUMENTATION_INST
   webhook on node port 8000 — check the node security group has the
   `ingress_cluster_8000_datadog_admission_webhook` rule (see
   `deploy/terraform/aws/main.tf`).
-- `make instrument` (Layer 2 custom spans/metrics/RUM) reports patch failures
+- `make instrument` (In-depth instrumentation custom spans/metrics/RUM) reports patch failures
   or `.rej` files — this means the patch files are stale relative to the
   current source. Regenerate them: `python3 scripts/generate-patches.py`,
   then re-run `make instrument`. It's idempotent — running it twice in a row

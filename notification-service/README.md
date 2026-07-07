@@ -24,7 +24,7 @@ Datadog configuration. Follow the steps below to progressively enable each obser
 ### Step 1 — Enable the Datadog Agent (Admission Controller)
 
 The Admission Controller auto-injects the tracer library — see
-[INSTRUMENTATION.md's Layer 1](../INSTRUMENTATION.md#layer-1--single-step-instrumentation-admission-controller)
+[INSTRUMENTATION.md's Single Step Instrumentation](../INSTRUMENTATION.md#single-step-instrumentation-admission-controller)
 for the full mechanism. For `notification-service`, expect a `datadog-lib-go-init` init container
 (injecting `dd-trace-go` via Orchestrion) once the Agent and Admission Controller are deployed.
 

@@ -13,11 +13,11 @@ Two complementary layers — both independent, both reversible:
 
 | Layer | What it does | How |
 |---|---|---|
-| **1 — Single-step (Admission Controller)** | Injects the Datadog tracer into every pod at startup — no code changes, no rebuilds | `admission.datadoghq.com/enabled: "true"` label + Operator webhook |
-| **2 — Manual (`make instrument`)** | Uncomments the `transaction-service` `payment.authorize` span and injects the Browser RUM SDK credentials | Unified diff patch + `sed` — fully reversible with `make uninstrument` |
+| **Single Step Instrumentation (Admission Controller)** | Injects the Datadog tracer into every pod at startup — no code changes, no rebuilds | `admission.datadoghq.com/enabled: "true"` label + Operator webhook |
+| **In-depth instrumentation (`make instrument`)** | Uncomments the `transaction-service` `payment.authorize` span and injects the Browser RUM SDK credentials | Unified diff patch + `sed` — fully reversible with `make uninstrument` |
 
-- **Layer 1** is automatic once the Agent is deployed (`make deploy-k8s-dd`): distributed tracing, log–trace correlation, and runtime metrics, with zero code changes.
-- **Layer 2** is opt-in via `make instrument` and enriches Layer 1 with business context. The [Enabling Layer 2](#enabling-layer-2-make-instrument) section is the single source of truth for that workflow.
+- **Single Step Instrumentation** is automatic once the Agent is deployed (`make deploy-k8s-dd`): distributed tracing, log–trace correlation, and runtime metrics, with zero code changes.
+- **In-depth instrumentation** is opt-in via `make instrument` and enriches Single Step Instrumentation with business context. The [Enabling In-depth instrumentation](#enabling-in-depth-instrumentation-make-instrument) section is the single source of truth for that workflow.
 
 ### What enables what
 
@@ -25,10 +25,10 @@ Not everything is `make instrument` — that's the most common point of confusio
 
 | Mechanism | Turned on by | What it enables |
 |---|---|---|
-| Layer 1 — Admission Controller injection | `make deploy-k8s-dd` (automatic) | APM traces, log–trace correlation, runtime metrics (UST + JSON logs are already in the manifests) |
+| Single Step Instrumentation — Admission Controller injection | `make deploy-k8s-dd` (automatic) | APM traces, log–trace correlation, runtime metrics (UST + JSON logs are already in the manifests) |
 | Agent-side config | `make deploy-k8s-dd` (agent + checks) | DBM (Postgres), ActiveMQ JMX, **Security (ASM / CWS / CSPM)**, log collection |
 | Per-service env / already in source | manifest env var or source code | **Continuous Profiler** (`DD_PROFILING_ENABLED`; the Go service already calls `profiler.Start()`), **Data Streams** (`DD_DATA_STREAMS_ENABLED`, JMS services), **Data Jobs** (`DD_DATA_JOBS_ENABLED`, batch-processor) |
-| **Layer 2 — `make instrument`** | `make instrument` | The `transaction-service` `payment.authorize` custom span + RUM credential injection. (Other services' custom spans are always-on in source.) |
+| **In-depth instrumentation — `make instrument`** | `make instrument` | The `transaction-service` `payment.authorize` custom span + RUM credential injection. (Other services' custom spans are always-on in source.) |
 | Terraform | `make tf-apply-dd` | **All custom metrics (span-based)**, monitors, SLOs, dashboard, synthetics, log pipeline, the RUM application |
 
 **So `make instrument` is deliberately narrow.** It does **not** enable profiling, security, or custom metrics. **There is no DogStatsD anywhere** — every `finance.*` custom metric is generated from APM spans by span-based metrics defined in `deploy/terraform/datadog` (applied with `make tf-apply-dd`). `gateway-api`, `notification-service`, `batch-processor`, and `fraud-detection` ship with their custom spans/profiler **already active in source** (not comment-gated), so they need no patch.
@@ -37,9 +37,9 @@ The [Signal reference](#signal-reference) lists each signal with an explicit **E
 
 ---
 
-## Enabling Layer 2 (`make instrument`)
+## Enabling In-depth instrumentation (`make instrument`)
 
-`make instrument` applies a reversible unified-diff patch that uncomments the `transaction-service` `payment.authorize` custom span, and injects the Browser RUM credentials. **This is the one and only Layer 2 workflow** — every "Step" below marked *Layer 2* refers back here rather than repeating it.
+`make instrument` applies a reversible unified-diff patch that uncomments the `transaction-service` `payment.authorize` custom span, and injects the Browser RUM credentials. **This is the one and only In-depth instrumentation workflow** — every "Step" below marked *In-depth instrumentation* refers back here rather than repeating it.
 
 ### What `make instrument` actually changes
 
@@ -210,7 +210,7 @@ make deploy-k8s-dd   # creates the datadog-secret from .env, then deploys the Ag
 
 ---
 
-## Layer 1 — Single-step instrumentation (Admission Controller)
+## Single Step Instrumentation (Admission Controller)
 
 The Datadog Operator's **mutating admission webhook** injects the tracer library into pods at creation time via init containers. No application code changes or Docker image rebuilds required.
 
@@ -272,13 +272,13 @@ kubectl exec -n finance deploy/gateway-api -- env | grep DD_INSTRUMENTATION
 >   move the Python tracer version, edit `requirements.txt` and rebuild the image.
 > - **Go** (`notification-service`) is **not** single-step injected — the Admission
 >   Controller creates no init container for Go, so `go-lib.version` is a no-op.
->   Go tracing comes from the in-code `tracer.Start()` enabled in Layer 2.
+>   Go tracing comes from the in-code `tracer.Start()` enabled in In-depth instrumentation.
 
 ---
 
 ## Signal reference
 
-Each Datadog signal, the layer that provides it, and how to validate it. Signals marked **Layer 2** are turned on via [Enabling Layer 2](#enabling-layer-2-make-instrument) — that section holds the full workflow; the steps below only list what appears and how to check it.
+Each Datadog signal, the layer that provides it, and how to validate it. Signals marked **In-depth instrumentation** are turned on via [Enabling In-depth instrumentation](#enabling-in-depth-instrumentation-make-instrument) — that section holds the full workflow; the steps below only list what appears and how to check it.
 
 ### Step 1 — Structured JSON logs (always active)
 
@@ -315,13 +315,13 @@ Already set in all six manifests — no action required.
 
 **Validate:** any trace or log should carry `env:staging service:<name> version:latest`.
 
-### Step 3 — APM traces (Layer 1, automatic)
+### Step 3 — APM traces (Single Step Instrumentation, automatic)
 
-Traces appear automatically once the Admission Controller injects the tracer. No code changes required. To add custom business spans on top, see [Enabling Layer 2](#enabling-layer-2-make-instrument) (Step 5).
+Traces appear automatically once the Admission Controller injects the tracer. No code changes required. To add custom business spans on top, see [Enabling In-depth instrumentation](#enabling-in-depth-instrumentation-make-instrument) (Step 5).
 
 **Validate:** APM → Services — all six services appear within ~2 minutes of the first request.
 
-### Step 4 — Log–trace correlation (automatic with Layer 1)
+### Step 4 — Log–trace correlation (automatic with Single Step Instrumentation)
 
 The injected tracer patches the logging framework to append `dd.trace_id` and `dd.span_id` to every log line. No code changes required.
 
@@ -329,7 +329,7 @@ The injected tracer patches the logging framework to append `dd.trace_id` and `d
 
 ### Step 5 — Custom business spans
 
-**Enabled by:** mostly always-on in source; only `transaction-service`'s `payment.authorize` is gated by [`make instrument`](#enabling-layer-2-make-instrument).
+**Enabled by:** mostly always-on in source; only `transaction-service`'s `payment.authorize` is gated by [`make instrument`](#enabling-in-depth-instrumentation-make-instrument).
 - Always active (appear as soon as the tracer is injected — no patch): `payment.authorize` / `account.balance_check` (gateway-api), `fraud.score` + `fraud.score_bucket` + numeric `fraud.score` (fraud-detection), `alert.send` (notification-service), `job.*` tags (batch-processor).
 - Via `make instrument`: `payment.authorize` (transaction-service).
 
@@ -366,9 +366,9 @@ For Java: add `-Ddd.profiling.enabled=true` to `JAVA_TOOL_OPTIONS`.
 
 **Validate:** APM → Profiles — flame graphs appear within ~1 minute.
 
-### Step 8 — Browser RUM + Session Replay (Layer 2)
+### Step 8 — Browser RUM + Session Replay (In-depth instrumentation)
 
-The finance dashboard (`frontend-stub/index.html`) ships with the Browser RUM SDK carrying placeholder credentials. [`make instrument`](#enabling-layer-2-make-instrument) injects the real `applicationId`/`clientToken` from Terraform and you rebuild the `frontend-dashboard` ConfigMap — both covered in the Enabling Layer 2 workflow (note the ⚠️ **`make tf-apply-dd` must run first**).
+The finance dashboard (`frontend-stub/index.html`) ships with the Browser RUM SDK carrying placeholder credentials. [`make instrument`](#enabling-in-depth-instrumentation-make-instrument) injects the real `applicationId`/`clientToken` from Terraform and you rebuild the `frontend-dashboard` ConfigMap — both covered in the Enabling In-depth instrumentation workflow (note the ⚠️ **`make tf-apply-dd` must run first**).
 
 #### What gets enabled
 
@@ -646,8 +646,8 @@ make build && make deploy-k8s && make deploy-k8s-dd
 | `make deploy-k8s-eks` | Deploy to EKS using Kustomize overlay (ECR images + LoadBalancer) |
 | `make undeploy-k8s` | Remove finance + datadog namespaces |
 | `make teardown` | Full reset — namespaces (+ PVCs), Helm release, stray port-forwards, orphaned Docker volumes |
-| `make instrument` | Uncomment Layer 2 (5 services + frontend RUM) via patches; injects RUM credentials from Terraform. **Run `make tf-apply-dd` first** so RUM credentials exist (backend patches apply either way) |
-| `make uninstrument` | Reverse all Layer 2 patches; restores RUM placeholder tokens |
+| `make instrument` | Uncomment In-depth instrumentation (5 services + frontend RUM) via patches; injects RUM credentials from Terraform. **Run `make tf-apply-dd` first** so RUM credentials exist (backend patches apply either way) |
+| `make uninstrument` | Reverse all In-depth instrumentation patches; restores RUM placeholder tokens |
 | `make test` | Run e2e test suite from laptop — requires active port-forwards (see note below) |
 | `make test-traffic` | Run traffic generator from laptop — requires active port-forwards (see note below) |
 | `make tf-apply-dd` | Apply Datadog Terraform resources (monitors, SLOs, dashboard, synthetics) |
@@ -751,17 +751,17 @@ Last validated: local Kubernetes (Colima + k3s, single-node, Apple Silicon) and 
 
 | Signal | Layer | Status |
 |---|---|---|
-| APM — `gateway-api` | Layer 1 (injection) | ✅ `ddtrace 4.10.5`, traces flowing |
-| APM — `account-service` | Layer 1 (injection) | ✅ Java agent injected |
-| APM — `transaction-service` | Layer 1 (injection) | ✅ `dd-trace` via `NODE_OPTIONS` |
-| APM — `fraud-detection` | Layer 1 (injection) | ✅ `ddtrace` injected |
-| APM — `notification-service` | Layer 1 (injection) | ✅ Go tracer injected |
-| APM — `batch-processor` | Layer 1 (injection) | ✅ Java agent injected |
-| Custom spans | Layer 2 (patch) | ✅ after `make instrument` + rebuild |
+| APM — `gateway-api` | Single Step Instrumentation (injection) | ✅ `ddtrace 4.10.5`, traces flowing |
+| APM — `account-service` | Single Step Instrumentation (injection) | ✅ Java agent injected |
+| APM — `transaction-service` | Single Step Instrumentation (injection) | ✅ `dd-trace` via `NODE_OPTIONS` |
+| APM — `fraud-detection` | Single Step Instrumentation (injection) | ✅ `ddtrace` injected |
+| APM — `notification-service` | Single Step Instrumentation (injection) | ✅ Go tracer injected |
+| APM — `batch-processor` | Single Step Instrumentation (injection) | ✅ Java agent injected |
+| Custom spans | In-depth instrumentation (patch) | ✅ after `make instrument` + rebuild |
 | Custom metrics (span-based) | Terraform (`tf-apply-dd`) | ✅ `finance.payment.hits` / `finance.fraud.score` etc. generated from spans (no DogStatsD) |
-| Browser RUM | Layer 2 (patch) + Terraform | ✅ after `make tf-apply-dd` + `make instrument` + frontend restart |
+| Browser RUM | In-depth instrumentation (patch) + Terraform | ✅ after `make tf-apply-dd` + `make instrument` + frontend restart |
 | Log collection | Agent | ✅ `kube_namespace:finance` logs in Datadog |
-| Log–trace correlation | Layer 1 | ✅ `dd.trace_id` in every log line |
+| Log–trace correlation | Single Step Instrumentation | ✅ `dd.trace_id` in every log line |
 | Traffic generator | In-cluster | ✅ continuous load, no laptop required |
 | Keycloak 26.0 | ClusterIP proxied via nginx HTTPS (:30443, self-signed cert) | ✅ admin console + finance realm users |
 | `KEYCLOAK_PUBLIC_URL` | `01-config.yaml` | ✅ `https://localhost:30443` (local) — patch to NLB hostname on EKS |

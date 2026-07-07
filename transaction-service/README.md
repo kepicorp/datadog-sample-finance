@@ -27,7 +27,7 @@ the Learning Progression below to enable each layer one at a time.
 ### Step 1 — Enable the Datadog Agent
 
 Run `make deploy-k8s-dd` to deploy the Agent; the Admission Controller injects the tracer
-automatically — see [INSTRUMENTATION.md's Layer 1](../INSTRUMENTATION.md#layer-1--single-step-instrumentation-admission-controller)
+[INSTRUMENTATION.md's Single Step Instrumentation](../INSTRUMENTATION.md#single-step-instrumentation-admission-controller)
 for the full mechanism. For `transaction-service`, expect a `datadog-lib-js-init` init container
 (injecting `dd-trace` via `NODE_OPTIONS=--require dd-trace/init`).
 

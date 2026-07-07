@@ -12,7 +12,7 @@ make deploy-k8s
 kubectl get pods -n finance   # all 12 pods should be Running (incl. traffic-generator)
 ```
 
-> **Layer 1 instrumentation ships on by default.** Unlike an older design this
+> **Single Step Instrumentation ships on by default.** Unlike an older design this
 > project used, `admission.datadoghq.com/enabled: "true"`, the
 > `tags.datadoghq.com/*` Unified Service Tagging labels, and the `DD_ENV` /
 > `DD_SERVICE` / `DD_VERSION` env vars are already present in every base
@@ -201,7 +201,7 @@ each service's own README.
 | 1 | Complete Steps 1–3 above (Operator + Agent) | Infrastructure List, Container Map |
 | 2 | Confirm Unified Service Tags on all Deployments (already applied) | APM, Logs, Metrics correlation |
 | 3 | Verify APM traces appear (automatic — Admission Controller injection) | APM > Services |
-| 4 | Verify `trace_id` appears in logs (automatic with Layer 1) | Log Management |
+| 4 | Verify `trace_id` appears in logs (automatic with Single Step Instrumentation) | Log Management |
 | 5 | `make instrument` — custom spans in business-critical code paths | APM flame graphs |
 | 6 | `make instrument` — DogStatsD metric calls | Metrics Explorer |
 | 7 | Enable Continuous Profiler (`DD_PROFILING_ENABLED=true`) | Continuous Profiler |

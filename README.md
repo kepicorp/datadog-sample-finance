@@ -307,8 +307,8 @@ Traffic mix:
 
 Instrumentation is layered. Full guide: **[INSTRUMENTATION.md](./INSTRUMENTATION.md)**.
 
-- **Layer 1 — automatic.** Deploy the Agent (`make deploy-k8s-dd`) and the Admission Controller injects the tracer into every pod: APM traces, log–trace correlation, and runtime metrics, plus agent-side DBM, ActiveMQ JMX, and ASM/CWS/CSPM. No code changes.
-- **Layer 2 — `make instrument`.** Uncomments the `transaction-service` `payment.authorize` span and injects Browser RUM credentials. (Other custom spans are always-on in source; **custom metrics are span-based**, created by `make tf-apply-dd` — no DogStatsD.) See [Enabling Layer 2](./INSTRUMENTATION.md#enabling-layer-2-make-instrument).
+- **Single Step Instrumentation — automatic.** Deploy the Agent (`make deploy-k8s-dd`) and the Admission Controller injects the tracer into every pod: APM traces, log–trace correlation, and runtime metrics, plus agent-side DBM, ActiveMQ JMX, and ASM/CWS/CSPM. No code changes.
+- **In-depth instrumentation — `make instrument`.** Uncomments the `transaction-service` `payment.authorize` span and injects Browser RUM credentials. (Other custom spans are always-on in source; **custom metrics are span-based**, created by `make tf-apply-dd` — no DogStatsD.) See [Enabling In-depth instrumentation](./INSTRUMENTATION.md#enabling-in-depth-instrumentation-make-instrument).
 - **Datadog resources.** `make tf-apply-dd` creates the monitors, SLOs, dashboard, synthetics, log pipeline, and the RUM application.
 
 > ⚠️ **Browser RUM requires `make tf-apply-dd` before `make instrument`** — it injects the RUM credentials that Terraform creates. Backend patches apply either way; if you instrument first, just re-run `make instrument` after `tf-apply-dd` (idempotent).
@@ -347,12 +347,12 @@ eval "$(make dd-secrets)"       # exports TF_VAR_* keys; locally reads DD_API_KE
                                 # (falls back to .env even if you're logged into AWS)
 make tf-apply-dd
 
-# Layer 2 — transaction-service payment.authorize span + Browser RUM
+# In-depth instrumentation — transaction-service payment.authorize span + Browser RUM
 # (custom metrics are span-based via 'make tf-apply-dd' — no DogStatsD)
 make instrument                # injects RUM creds from the tf-apply-dd output above
 make build                     # rebuild, then reload images (see load step) and restart:
 kubectl rollout restart deployment -n finance
-make uninstrument              # reverse Layer 2 at any time
+make uninstrument              # reverse In-depth instrumentation at any time
 
 make teardown                  # full local cleanup (namespaces + volumes)
 make tf-destroy-dd             # remove the Datadog Terraform resources when done
@@ -471,7 +471,7 @@ make deploy-k8s-dd
 eval "$(make dd-secrets)"
 make tf-apply-dd
 
-# 11. Enable Layer 2 instrumentation
+# 11. Enable In-depth instrumentation
 make instrument
 make build-ecr
 make deploy-k8s-eks
