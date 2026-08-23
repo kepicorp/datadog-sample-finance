@@ -18,7 +18,7 @@
 #   make deploy-k8s-eks                 # deploy app (includes gp3 StorageClass)
 #   make deploy-k8s-dd                  # deploy Datadog Agent (auto-detects EKS)
 
-.PHONY: all build build-ecr version test test-traffic deploy-k8s deploy-k8s-eks deploy-k8s-dd undeploy-k8s teardown instrument uninstrument create-dd-secret dbm-setup tf-plan-aws tf-apply-aws tf-configure-kubectl frontend-url tf-destroy-aws dd-secrets tf-plan-dd tf-apply-dd tf-destroy-dd help
+.PHONY: all build build-ecr version test test-traffic deploy-k8s deploy-k8s-eks deploy-k8s-dd undeploy-k8s teardown instrument uninstrument tags untag create-dd-secret dbm-setup tf-plan-aws tf-apply-aws tf-configure-kubectl frontend-url tf-destroy-aws dd-secrets tf-plan-dd tf-apply-dd tf-destroy-dd help
 
 # Resolve DD_VERSION once so all targets share the same value.
 # Falls back to 'dev' when git is not available (e.g. in a bare CI image).
@@ -192,6 +192,79 @@ uninstrument:
 		echo "  ✓ RUM placeholders restored"; \
 		echo ""; \
 		echo "✓ Instrumentation disabled. Redeploy to deactivate:"; \
+		$(print_redeploy_hint); \
+	fi
+
+## tags: Enable Unified Service Tagging (env/service/version) + log injection.
+##       Two-step, narrated: (a) UST pod labels + DD_ENV/DD_SERVICE/DD_VERSION
+##       env vars in the Kubernetes manifests, (b) trace_id/span_id log
+##       injection (Python patch_logging(), Node dd-trace logInjection, Java
+##       DD_LOGS_INJECTION, Go manual field injection). Applies unified diff
+##       patches from scripts/patches/tags/ — a separate directory from
+##       scripts/patches/*.patch, so this never interacts with
+##       make instrument/uninstrument. Fully reversible with make untag.
+##       Idempotent: a second run is a clean no-op (tracked via .tags-applied).
+##
+##       NOTE: the Go log-injection block references the 'alert.send' span
+##       created by 'make instrument' — run 'make instrument' first if you
+##       want notification-service log correlation to actually compile/work.
+##
+##       After patching, redeploy:
+##         Local:  make build && load images into k3s && kubectl rollout restart deployment -n finance
+##         EKS:    make build-ecr && make deploy-k8s-eks && kubectl rollout restart deployment -n finance
+tags:
+	@if [ -f .tags-applied ]; then \
+		echo "Tags + log injection already enabled. Run 'make untag' first to reapply."; \
+	else \
+		echo "Step (a): Enabling Unified Service Tagging (env/service/version)..."; \
+		echo "  Why: DD_ENV/DD_SERVICE/DD_VERSION (+ tags.datadoghq.com/* pod labels) are what"; \
+		echo "  let Datadog group traces/logs/metrics by service and correlate deploys via"; \
+		echo "  Deployment Tracking. Uncommenting now in the Kubernetes manifests:"; \
+		for p in scripts/patches/tags/ust-*.patch; do \
+			svc=$$(basename $$p .patch | sed 's/^ust-//'); \
+			echo "    $$svc"; \
+			patch -p1 --forward -s < $$p || true; \
+		done; \
+		echo ""; \
+		echo "Step (b): Enabling log injection (trace_id/span_id correlation)..."; \
+		echo "  Why: without this, JSON logs and APM traces exist independently — this"; \
+		echo "  stitches them so 'View in APM' works from Log Management."; \
+		for p in scripts/patches/tags/loginject-*.patch; do \
+			svc=$$(basename $$p .patch | sed 's/^loginject-//'); \
+			echo "    $$svc"; \
+			patch -p1 --forward -s < $$p || true; \
+		done; \
+		touch .tags-applied; \
+		echo ""; \
+		echo "✓ Tags + log injection enabled. Redeploy to activate:"; \
+		$(print_redeploy_hint); \
+	fi
+
+## untag: Re-comment all UST + log-injection blocks (reverse of make tags).
+##        Restores every file to its original commented-out state.
+##
+##        After patching, redeploy:
+##          Local:  make build && load images into k3s && kubectl rollout restart deployment -n finance
+##          EKS:    make build-ecr && make deploy-k8s-eks && kubectl rollout restart deployment -n finance
+untag:
+	@if [ ! -f .tags-applied ]; then \
+		echo "Tags + log injection are not currently enabled (nothing to reverse)."; \
+	else \
+		echo "Reversing log injection patches..."; \
+		for p in scripts/patches/tags/loginject-*.patch; do \
+			svc=$$(basename $$p .patch | sed 's/^loginject-//'); \
+			echo "  $$svc"; \
+			patch -p1 --reverse -s < $$p || true; \
+		done; \
+		echo "Reversing Unified Service Tagging patches..."; \
+		for p in scripts/patches/tags/ust-*.patch; do \
+			svc=$$(basename $$p .patch | sed 's/^ust-//'); \
+			echo "  $$svc"; \
+			patch -p1 --reverse -s < $$p || true; \
+		done; \
+		rm -f .tags-applied; \
+		echo ""; \
+		echo "✓ Tags + log injection disabled. Redeploy to deactivate:"; \
 		$(print_redeploy_hint); \
 	fi
 
