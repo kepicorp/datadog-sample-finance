@@ -18,7 +18,7 @@
 #   make deploy-k8s-eks                 # deploy app (includes gp3 StorageClass)
 #   make deploy-k8s-dd                  # deploy Datadog Agent (auto-detects EKS)
 
-.PHONY: all build build-ecr version test test-traffic deploy-k8s deploy-k8s-eks deploy-k8s-dd undeploy-k8s teardown instrument uninstrument tags untag create-dd-secret dbm-setup tf-plan-aws tf-apply-aws tf-configure-kubectl frontend-url tf-destroy-aws dd-secrets tf-plan-dd tf-apply-dd tf-destroy-dd help
+.PHONY: all build build-ecr version test test-traffic deploy-k8s deploy-k8s-eks deploy-k8s-dd undeploy-k8s teardown instrument uninstrument tags untag dem undem create-dd-secret dbm-setup tf-plan-aws tf-apply-aws tf-configure-kubectl frontend-url tf-destroy-aws dd-secrets tf-plan-dd tf-apply-dd tf-destroy-dd help
 
 # Resolve DD_VERSION once so all targets share the same value.
 # Falls back to 'dev' when git is not available (e.g. in a bare CI image).
@@ -87,6 +87,45 @@ endef
 define print_redeploy_hint
 	echo "   Local: make build && load images into k3s && kubectl rollout restart deployment -n finance"; \
 	echo "   EKS:   make build-ecr && make deploy-k8s-eks && kubectl rollout restart deployment -n finance"
+endef
+
+# Resolve DD_API_KEY / DD_APP_KEY into $$API_KEY / $$APP_KEY / $$DD_KEY_SRC shell vars.
+# Priority: AWS Secrets Manager (if an SSO session for aws_profile is active AND the
+# finance-app/staging secrets exist), else .env locally. Sets all three to "" if
+# neither source resolves both keys — callers are responsible for checking and
+# failing with their own error message (kept out of this macro so 'dd-secrets',
+# 'dem', and 'undem' can each word their own error text). This is the SINGLE
+# source of truth for credential resolution — deliberately a canned recipe (not a
+# recipe-embedded '$(MAKE) dd-secrets' call) so 'make -n dem'/'make -n undem' stay
+# true dry-runs: a recipe line containing the literal text '$(MAKE)' is always
+# executed by GNU Make even under -n, which would otherwise silently resolve and
+# print real credentials during a dry run.
+define resolve_dd_keys
+	AWS_PROF=$$(grep '^aws_profile' deploy/terraform/aws/staging.tfvars 2>/dev/null | sed 's/.*=[ ]*//' | tr -d '"' | tr -d ' '); \
+	API_KEY=""; APP_KEY=""; DD_KEY_SRC=""; \
+	if [ -n "$$AWS_PROF" ] && aws sts get-caller-identity --profile "$$AWS_PROF" >/dev/null 2>&1; then \
+		AWS_REGION=$$(grep '^aws_region' deploy/terraform/aws/staging.tfvars 2>/dev/null | sed 's/.*=[ ]*//' | tr -d '"' | tr -d ' '); \
+		if [ -z "$$AWS_REGION" ]; then AWS_REGION=eu-west-1; fi; \
+		API_KEY=$$(aws secretsmanager get-secret-value \
+			--secret-id finance-app/staging/dd-api-key \
+			--query SecretString --output text \
+			--region $$AWS_REGION --profile "$$AWS_PROF" 2>/dev/null); \
+		APP_KEY=$$(aws secretsmanager get-secret-value \
+			--secret-id finance-app/staging/dd-app-key \
+			--query SecretString --output text \
+			--region $$AWS_REGION --profile "$$AWS_PROF" 2>/dev/null); \
+		if [ -n "$$API_KEY" ] && [ -n "$$APP_KEY" ]; then \
+			DD_KEY_SRC="AWS Secrets Manager (profile $$AWS_PROF, region $$AWS_REGION)"; \
+		else \
+			echo "# dd-secrets: AWS session active but finance-app/staging secrets not found -- falling back to .env" >&2; \
+			API_KEY=""; APP_KEY=""; \
+		fi; \
+	fi; \
+	if { [ -z "$$API_KEY" ] || [ -z "$$APP_KEY" ]; } && [ -f .env ]; then \
+		API_KEY=$$(grep '^DD_API_KEY=' .env | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'"); \
+		APP_KEY=$$(grep '^DD_APP_KEY=' .env | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'"); \
+		if [ -n "$$API_KEY" ] && [ -n "$$APP_KEY" ]; then DD_KEY_SRC=".env"; fi; \
+	fi
 endef
 # ──────────────────────────────────────────────────────────────────────
 
@@ -232,6 +271,139 @@ untag:
 		echo ""; \
 		echo "✓ Tags + log injection disabled. Redeploy to deactivate:"; \
 		$(print_redeploy_hint); \
+	fi
+
+## dem: Enable Digital Experience Monitoring (Browser RUM + Session Replay) for the
+##      finance-frontend dashboard. Creates the RUM application via a DIRECT Datadog
+##      API call (NOT Terraform — 'make tf-apply-dd' no longer owns RUM), then injects
+##      the resulting applicationId/clientToken into frontend-stub/index.html.
+##      Idempotent: checks for an existing 'finance-frontend' RUM application first
+##      (tracked via .dem-applied + .dem-state.json, which caches the id/client_token
+##      so re-runs and 'make undem' don't need to re-query the API). Reversible with
+##      make undem. Credentials resolved via the same .env / AWS Secrets Manager
+##      logic as 'make dd-secrets' / create-dd-secret / tf-apply-dd (shared
+##      'resolve_dd_keys' canned recipe — no $(MAKE) recipe call, so 'make -n dem'
+##      stays a true dry-run).
+##
+##      After creating, redeploy the frontend ConfigMap (HTML is served from a
+##      ConfigMap, not the container image — a plain rollout restart isn't enough):
+##        kubectl create configmap frontend-dashboard --from-file=index.html=frontend-stub/index.html -n finance --dry-run=client -o yaml | kubectl apply -f -
+##        kubectl rollout restart deployment/frontend -n finance
+dem:
+	@if [ -f .dem-applied ]; then \
+		echo "DEM (Digital Experience Monitoring) already enabled. Run 'make undem' first to reapply."; \
+	else \
+		echo "==> Digital Experience Monitoring (DEM): Browser RUM + Session Replay"; \
+		echo "  Why: RUM captures real browser sessions for the finance dashboard — page"; \
+		echo "  loads, clicks, errors — and Session Replay lets you watch exactly what a"; \
+		echo "  user saw. This is the frontend counterpart to 'make instrument', which"; \
+		echo "  only covers backend APM spans."; \
+		echo ""; \
+		echo "==> Resolving Datadog credentials (DD_API_KEY / DD_APP_KEY)..."; \
+		$(resolve_dd_keys); \
+		if [ -z "$$API_KEY" ] || [ -z "$$APP_KEY" ]; then \
+			echo "ERROR: could not resolve DD_API_KEY/DD_APP_KEY for 'make dem'."; \
+			echo "       Local: cp .env.example .env && set DD_API_KEY / DD_APP_KEY"; \
+			echo "       EKS:   aws sso login --profile <profile>  (and ensure finance-app/staging/dd-*-key secrets exist)"; \
+			exit 1; \
+		fi; \
+		DD_SITE=$$(grep '^DD_SITE=' .env 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'"); \
+		if [ -z "$$DD_SITE" ]; then DD_SITE=datadoghq.com; fi; \
+		echo "  ✓ credentials resolved (source: $$DD_KEY_SRC; site: $$DD_SITE)"; \
+		echo ""; \
+		echo "==> Checking for an existing 'finance-frontend' RUM application..."; \
+		LIST_JSON=$$(curl -s -H "DD-API-KEY: $$API_KEY" -H "DD-APPLICATION-KEY: $$APP_KEY" \
+			"https://api.$$DD_SITE/api/v2/rum/applications"); \
+		EXISTING_ID=$$(echo "$$LIST_JSON" | python3 -c "import sys,json; d=json.load(sys.stdin); print(next((a['id'] for a in d.get('data',[]) if a.get('attributes',{}).get('name')=='finance-frontend'), ''))" 2>/dev/null); \
+		if [ -n "$$EXISTING_ID" ]; then \
+			echo "  Found existing RUM application (id: $$EXISTING_ID) — reusing it, no duplicate created."; \
+			APP_JSON=$$(curl -s -H "DD-API-KEY: $$API_KEY" -H "DD-APPLICATION-KEY: $$APP_KEY" \
+				"https://api.$$DD_SITE/api/v2/rum/applications/$$EXISTING_ID"); \
+		else \
+			echo "  None found — creating a new Browser RUM application named 'finance-frontend'..."; \
+			APP_JSON=$$(curl -s -X POST \
+				-H "DD-API-KEY: $$API_KEY" -H "DD-APPLICATION-KEY: $$APP_KEY" \
+				-H "Content-Type: application/json" \
+				-d '{"data":{"type":"rum_application_create","attributes":{"name":"finance-frontend","type":"browser"}}}' \
+				"https://api.$$DD_SITE/api/v2/rum/applications"); \
+		fi; \
+		RUM_APP_ID=$$(echo "$$APP_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin).get('data',{}).get('id',''))" 2>/dev/null); \
+		RUM_TOKEN=$$(echo "$$APP_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin).get('data',{}).get('attributes',{}).get('client_token',''))" 2>/dev/null); \
+		if [ -z "$$RUM_APP_ID" ] || [ -z "$$RUM_TOKEN" ]; then \
+			echo "ERROR: could not create/fetch the RUM application. API response:"; \
+			echo "$$APP_JSON"; \
+			exit 1; \
+		fi; \
+		echo "  ✓ RUM application ready (id: $$RUM_APP_ID)"; \
+		printf '{\n  "id": "%s",\n  "client_token": "%s",\n  "name": "finance-frontend"\n}\n' "$$RUM_APP_ID" "$$RUM_TOKEN" > .dem-state.json; \
+		touch .dem-applied; \
+		echo ""; \
+		echo "==> Injecting RUM credentials into frontend-stub/index.html..."; \
+		sed -i '' "s|'REPLACE_WITH_APPLICATION_ID'|'$$RUM_APP_ID'|g" frontend-stub/index.html; \
+		sed -i '' "s|'REPLACE_WITH_CLIENT_TOKEN'|'$$RUM_TOKEN'|g" frontend-stub/index.html; \
+		echo "  ✓ RUM credentials injected"; \
+		echo ""; \
+		echo "✓ DEM enabled. Frontend HTML is served from a ConfigMap, not the image —"; \
+		echo "  rebuild it and restart to activate:"; \
+		echo "    kubectl create configmap frontend-dashboard \\"; \
+		echo "      --from-file=index.html=frontend-stub/index.html \\"; \
+		echo "      -n finance --dry-run=client -o yaml | kubectl apply -f -"; \
+		echo "    kubectl rollout restart deployment/frontend -n finance"; \
+	fi
+
+## undem: Delete the RUM application via the Datadog API and restore the frontend
+##        RUM placeholders (reverse of make dem). Removes .dem-applied and
+##        .dem-state.json. Fails gracefully (no cryptic curl error) if
+##        DD_API_KEY/DD_APP_KEY can't be resolved.
+undem:
+	@if [ ! -f .dem-applied ]; then \
+		echo "DEM is not currently enabled (nothing to reverse)."; \
+	else \
+		echo "==> Resolving Datadog credentials (DD_API_KEY / DD_APP_KEY)..."; \
+		$(resolve_dd_keys); \
+		if [ -z "$$API_KEY" ] || [ -z "$$APP_KEY" ]; then \
+			echo "ERROR: could not resolve DD_API_KEY/DD_APP_KEY for 'make undem'."; \
+			echo "       Local: cp .env.example .env && set DD_API_KEY / DD_APP_KEY"; \
+			echo "       EKS:   aws sso login --profile <profile>  (and ensure finance-app/staging/dd-*-key secrets exist)"; \
+			echo "       The RUM application will NOT be deleted from Datadog. Local state"; \
+			echo "       (.dem-applied / .dem-state.json) and the frontend placeholders are"; \
+			echo "       left untouched — retry once credentials are available."; \
+			exit 1; \
+		fi; \
+		DD_SITE=$$(grep '^DD_SITE=' .env 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'"); \
+		if [ -z "$$DD_SITE" ]; then DD_SITE=datadoghq.com; fi; \
+		RUM_APP_ID=""; \
+		if [ -f .dem-state.json ]; then \
+			RUM_APP_ID=$$(python3 -c "import json; print(json.load(open('.dem-state.json')).get('id',''))" 2>/dev/null); \
+		fi; \
+		if [ -n "$$RUM_APP_ID" ]; then \
+			echo "==> Deleting RUM application (id: $$RUM_APP_ID) via the Datadog API..."; \
+			HTTP_CODE=$$(curl -s -o /dev/null -w '%{http_code}' -X DELETE \
+				-H "DD-API-KEY: $$API_KEY" -H "DD-APPLICATION-KEY: $$APP_KEY" \
+				"https://api.$$DD_SITE/api/v2/rum/applications/$$RUM_APP_ID"); \
+			if [ "$$HTTP_CODE" = "204" ] || [ "$$HTTP_CODE" = "404" ]; then \
+				echo "  ✓ RUM application deleted (or already gone)"; \
+			else \
+				echo "  ⚠  Unexpected HTTP $$HTTP_CODE deleting RUM application — check manually in the Datadog UI."; \
+			fi; \
+		else \
+			echo "  ⚠  No RUM application id found in .dem-state.json — skipping API delete."; \
+		fi; \
+		echo "==> Restoring RUM credential placeholders..."; \
+		sed -i '' \
+			"s|'[a-f0-9]\{8\}-[a-f0-9]\{4\}-[a-f0-9]\{4\}-[a-f0-9]\{4\}-[a-f0-9]\{12\}'|'REPLACE_WITH_APPLICATION_ID'|g" \
+			frontend-stub/index.html; \
+		sed -i '' \
+			"s|clientToken:             '[a-z0-9]*'|clientToken:             'REPLACE_WITH_CLIENT_TOKEN'|g" \
+			frontend-stub/index.html; \
+		rm -f .dem-applied .dem-state.json; \
+		echo "  ✓ RUM placeholders restored"; \
+		echo ""; \
+		echo "✓ DEM disabled. Redeploy to deactivate:"; \
+		echo "    kubectl create configmap frontend-dashboard \\"; \
+		echo "      --from-file=index.html=frontend-stub/index.html \\"; \
+		echo "      -n finance --dry-run=client -o yaml | kubectl apply -f -"; \
+		echo "    kubectl rollout restart deployment/frontend -n finance"; \
 	fi
 
 ## build: Build all service images for the local platform.
@@ -630,38 +802,14 @@ dbm-setup:
 ##             works locally without needing to 'aws sso logout' first.
 ##             Usage: eval "$(make dd-secrets)"
 dd-secrets:
-	@AWS_PROF=$$(grep '^aws_profile' deploy/terraform/aws/staging.tfvars 2>/dev/null | sed 's/.*=[ ]*//' | tr -d '"' | tr -d ' '); \
-	API_KEY=""; APP_KEY=""; SRC=""; \
-	if [ -n "$$AWS_PROF" ] && aws sts get-caller-identity --profile "$$AWS_PROF" >/dev/null 2>&1; then \
-		AWS_REGION=$$(grep '^aws_region' deploy/terraform/aws/staging.tfvars 2>/dev/null | sed 's/.*=[ ]*//' | tr -d '"' | tr -d ' '); \
-		if [ -z "$$AWS_REGION" ]; then AWS_REGION=eu-west-1; fi; \
-		API_KEY=$$(aws secretsmanager get-secret-value \
-			--secret-id finance-app/staging/dd-api-key \
-			--query SecretString --output text \
-			--region $$AWS_REGION --profile "$$AWS_PROF" 2>/dev/null); \
-		APP_KEY=$$(aws secretsmanager get-secret-value \
-			--secret-id finance-app/staging/dd-app-key \
-			--query SecretString --output text \
-			--region $$AWS_REGION --profile "$$AWS_PROF" 2>/dev/null); \
-		if [ -n "$$API_KEY" ] && [ -n "$$APP_KEY" ]; then \
-			SRC="AWS Secrets Manager (profile $$AWS_PROF, region $$AWS_REGION)"; \
-		else \
-			echo "# dd-secrets: AWS session active but finance-app/staging secrets not found -- falling back to .env" >&2; \
-			API_KEY=""; APP_KEY=""; \
-		fi; \
-	fi; \
-	if { [ -z "$$API_KEY" ] || [ -z "$$APP_KEY" ]; } && [ -f .env ]; then \
-		API_KEY=$$(grep '^DD_API_KEY=' .env | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'"); \
-		APP_KEY=$$(grep '^DD_APP_KEY=' .env | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'"); \
-		if [ -n "$$API_KEY" ] && [ -n "$$APP_KEY" ]; then SRC=".env"; fi; \
-	fi; \
+	@$(resolve_dd_keys); \
 	if [ -z "$$API_KEY" ] || [ -z "$$APP_KEY" ]; then \
 		echo "# ERROR: could not resolve Datadog keys." >&2; \
 		echo "#   Local: cp .env.example .env && set DD_API_KEY / DD_APP_KEY" >&2; \
 		echo "#   EKS:   aws sso login --profile $$AWS_PROF  (and ensure finance-app/staging/dd-*-key secrets exist)" >&2; \
 		exit 1; \
 	fi; \
-	echo "# dd-secrets: sourced Datadog keys from $$SRC" >&2; \
+	echo "# dd-secrets: sourced Datadog keys from $$DD_KEY_SRC" >&2; \
 	echo "export TF_VAR_datadog_api_key=\"$$API_KEY\""; \
 	echo "export TF_VAR_datadog_app_key=\"$$APP_KEY\""
 

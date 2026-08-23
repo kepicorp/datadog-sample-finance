@@ -120,6 +120,11 @@ deploy/kubernetes/overlays/eks/kustomization.yaml
 .instrumentation-applied
 # Idempotency marker for make tags/untag — never committed.
 .tags-applied
+# Idempotency marker for make dem/undem — never committed.
+.dem-applied
+# Cached RUM application id/client_token from make dem — contains a live
+# Datadog credential (client_token), never committed.
+.dem-state.json
 
 # ── AI agent / Claude files ──────────────────────────────────────────────────
 # Local agent instructions and workspace — not committed.
