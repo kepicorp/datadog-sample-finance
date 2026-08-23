@@ -134,11 +134,12 @@ kubectl exec -n finance deploy/gateway-api -- env | grep DD_INSTRUMENTATION_INST
   webhook on node port 8000 — check the node security group has the
   `ingress_cluster_8000_datadog_admission_webhook` rule (see
   `deploy/terraform/aws/main.tf`).
-- `make instrument` (In-depth instrumentation custom spans/metrics/RUM) reports patch failures
-  or `.rej` files — this means the patch files are stale relative to the
+- `make instrument` (In-depth instrumentation — APM custom spans only) reports patch
+  failures or `.rej` files — this means the patch files are stale relative to the
   current source. Regenerate them: `python3 scripts/generate-patches.py`,
   then re-run `make instrument`. It's idempotent — running it twice in a row
   is a safe no-op (tracked via `.instrumentation-applied`).
+  RUM/DEM issues are separate — see `make dem`/`make undem` in INSTRUMENTATION.md.
 
 ---
 

@@ -310,11 +310,10 @@ Traffic mix:
 Instrumentation is layered. Full guide: **[INSTRUMENTATION.md](./INSTRUMENTATION.md)**.
 
 - **Single Step Instrumentation — automatic.** Deploy the Agent (`make deploy-k8s-dd`) and the Admission Controller injects the tracer into every pod: APM traces, log–trace correlation, and runtime metrics, plus agent-side DBM, ActiveMQ JMX, and ASM/CWS/CSPM. No code changes.
-- **In-depth instrumentation — `make instrument`.** Uncomments the `transaction-service` `payment.authorize` span and the `notification-service` (Go) APM tracer/profiler/`alert.send` span, and injects Browser RUM credentials. (Other custom spans are always-on in source; **custom metrics are span-based**, created by `make tf-apply-dd` — no DogStatsD.) See [Enabling In-depth instrumentation](./INSTRUMENTATION.md#enabling-in-depth-instrumentation-make-instrument).
+- **In-depth instrumentation — `make instrument`.** Uncomments the `transaction-service` `payment.authorize` span and the `notification-service` (Go) APM tracer/profiler/`alert.send` span. APM only. (Other custom spans are always-on in source; **custom metrics are span-based**, created by `make tf-apply-dd` — no DogStatsD.) See [Enabling In-depth instrumentation](./INSTRUMENTATION.md#enabling-in-depth-instrumentation-make-instrument).
 - **Tags + log injection — `make tags`.** Uncomments Unified Service Tagging (pod labels + `DD_ENV`/`DD_SERVICE`/`DD_VERSION`) on all six manifests, and log-trace correlation for services with a baked-in/self-managed tracer (Python, Node, Java, Go). Separate, independently reversible from `make instrument` — see [Enabling Tags + Log Injection](./INSTRUMENTATION.md#enabling-tags--log-injection-make-tags).
-- **Datadog resources.** `make tf-apply-dd` creates the monitors, SLOs, dashboard, synthetics, log pipeline, and the RUM application.
-
-> ⚠️ **Browser RUM requires `make tf-apply-dd` before `make instrument`** — it injects the RUM credentials that Terraform creates. Backend patches apply either way; if you instrument first, just re-run `make instrument` after `tf-apply-dd` (idempotent).
+- **Digital Experience Monitoring — `make dem`.** Creates the Browser RUM application via a direct Datadog API call (not Terraform) and injects the credentials into `frontend-stub/index.html`. Independent of `make instrument`/`make tags`/`make tf-apply-dd`. See [Enabling Digital Experience Monitoring](./INSTRUMENTATION.md#enabling-digital-experience-monitoring-make-dem).
+- **Datadog resources.** `make tf-apply-dd` creates the monitors, SLOs, dashboard, synthetics, and log pipeline. RUM is no longer part of this Terraform module — see `make dem` above.
 
 Per-signal breakdown and validation steps: [INSTRUMENTATION.md → Signal reference](./INSTRUMENTATION.md#signal-reference).
 
@@ -343,17 +342,10 @@ make deploy-k8s                # app + in-cluster traffic generator
 kubectl get pods -n finance    # wait for all 12 pods Running
 make deploy-k8s-dd             # Datadog Agent (reads DD_API_KEY / DD_APP_KEY from .env)
 
-# Datadog Terraform resources — RUM app, monitors, SLOs, dashboard, synthetics.
-# Run this BEFORE 'make instrument' so the RUM credentials exist (see Instrumentation note).
-cp deploy/terraform/datadog/staging.tfvars.example deploy/terraform/datadog/staging.tfvars   # first time only
-eval "$(make dd-secrets)"       # exports TF_VAR_* keys; locally reads DD_API_KEY / DD_APP_KEY from .env
-                                # (falls back to .env even if you're logged into AWS)
-make tf-apply-dd
-
 # In-depth instrumentation — transaction-service payment.authorize span,
-# notification-service (Go) tracer/profiler/alert.send span, + Browser RUM
+# notification-service (Go) tracer/profiler/alert.send span. APM only.
 # (custom metrics are span-based via 'make tf-apply-dd' — no DogStatsD)
-make instrument                # injects RUM creds from the tf-apply-dd output above
+make instrument
 make build                     # rebuild, then reload images (see load step) and restart:
 kubectl rollout restart deployment -n finance
 make uninstrument              # reverse In-depth instrumentation at any time
@@ -364,13 +356,30 @@ make tags
 make build && kubectl rollout restart deployment -n finance
 make untag                     # reverse Tags + log injection at any time
 
+# Digital Experience Monitoring — creates the Browser RUM application via a
+# direct Datadog API call (not Terraform), then injects the credentials into
+# frontend-stub/index.html. Independent of make instrument/make tags.
+make dem
+kubectl create configmap frontend-dashboard \
+  --from-file=index.html=frontend-stub/index.html \
+  -n finance --dry-run=client -o yaml | kubectl apply -f -
+kubectl rollout restart deployment/frontend -n finance
+make undem                     # reverse DEM at any time (deletes the RUM app)
+
+# Datadog Terraform resources — monitors, SLOs, dashboard, synthetics, log pipeline.
+# No longer creates RUM (that's make dem, above) — independent, any order relative to it.
+cp deploy/terraform/datadog/staging.tfvars.example deploy/terraform/datadog/staging.tfvars   # first time only
+eval "$(make dd-secrets)"       # exports TF_VAR_* keys; locally reads DD_API_KEY / DD_APP_KEY from .env
+                                # (falls back to .env even if you're logged into AWS)
+make tf-apply-dd
+
 make teardown                  # full local cleanup (namespaces + volumes)
 make tf-destroy-dd             # remove the Datadog Terraform resources when done
 ```
 
 > **Local log-index note:** the Datadog log index created by `make tf-apply-dd` filters on
 > `kube_cluster_name:finance-app`. A local cluster usually reports a different cluster name, so
-> local logs may not land in that dedicated index — APM, monitors, dashboard, synthetics, and RUM
+> local logs may not land in that dedicated index — APM, monitors, dashboard, and synthetics
 > all still work regardless.
 
 ### AWS EKS
@@ -486,6 +495,13 @@ make instrument
 make build-ecr
 make deploy-k8s-eks
 kubectl rollout restart deployment -n finance
+
+# 11b. Enable Digital Experience Monitoring (Browser RUM + Session Replay)
+make dem
+sed "s|https://localhost:30443|$FE_URL|g" frontend-stub/index.html > /tmp/finance-index.html
+kubectl create configmap frontend-dashboard --from-file=index.html=/tmp/finance-index.html \
+  -n finance --dry-run=client -o yaml | kubectl apply -f -
+kubectl rollout restart deployment/frontend -n finance
 
 # 12. Tear down when done
 make tf-destroy-aws   # single-pass terraform destroy — see below for why this is now reliable

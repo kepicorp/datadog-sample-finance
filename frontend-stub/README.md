@@ -16,8 +16,7 @@ The page runs without any Datadog configuration. All RUM SDK code is commented o
 
 | Step | Action |
 |------|--------|
-| 8a | Run `make tf-apply-dd` to create the RUM application via Terraform (`datadog_rum_application.finance_frontend`) |
-| 8b | Run `make instrument` — it uncomments the `<script src="...datadog-rum.js">` tag and `DD_RUM.init({...})` block in `index.html`, and injects the real `applicationId`/`clientToken` from the Terraform output automatically (no manual copy/paste) |
+| 8a | Run `make dem` — it creates the RUM application via a direct Datadog API call (not Terraform), and uncomments the `<script src="...datadog-rum.js">` tag and `DD_RUM.init({...})` block in `index.html`, injecting the real `applicationId`/`clientToken` automatically (no manual copy/paste) |
 | 8c | Rebuild the frontend ConfigMap and `kubectl rollout restart deployment/frontend -n finance` so the updated `index.html` is served |
 | 8d | Open the page and confirm the injected `applicationId`/`clientToken` values in `index.html` are real (not `REPLACE_WITH_APPLICATION_ID`/`REPLACE_WITH_CLIENT_TOKEN` placeholders) |
 | 8e | Trigger a payment and verify the session appears in RUM > Sessions |
@@ -25,7 +24,7 @@ The page runs without any Datadog configuration. All RUM SDK code is commented o
 | 8g | Replace `console.log` / `appLog()` calls with `DD_RUM.addAction(...)` calls (examples are inline) and verify the actions appear on the RUM session timeline |
 | 8h | In APM > Traces, click a `gateway-api` trace and verify the RUM session link appears |
 
-See `../INSTRUMENTATION.md` (Step 8) for the full `make tf-apply-dd && make instrument` workflow, including the ConfigMap rebuild command and troubleshooting if credentials are left as placeholders.
+See `../INSTRUMENTATION.md` (Step 8) for the full `make dem` workflow, including the ConfigMap rebuild command and troubleshooting if credentials are left as placeholders.
 
 Docs: https://docs.datadoghq.com/real_user_monitoring/browser/
 

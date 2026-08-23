@@ -57,9 +57,10 @@ make tf-apply-dd
 
 > **Local log-index caveat:** the log index filters on `kube_cluster_name:finance-app`.
 > A local cluster usually reports a different cluster name, so local logs may not route into
-> the dedicated index. The RUM application, monitors, dashboard, and synthetics still work.
-> `make tf-apply-dd` is what creates the RUM app whose credentials `make instrument` injects
-> into the frontend — so run it **before** `make instrument`.
+> the dedicated index. The monitors, dashboard, and synthetics still work.
+> **RUM is not created by this module** — it's created independently by `make dem`
+> (a direct Datadog API call, not Terraform). `make dem` and `make tf-apply-dd` have no
+> dependency on each other for RUM specifically.
 
 ### AWS EKS
 

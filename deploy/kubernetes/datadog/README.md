@@ -205,7 +205,7 @@ each service's own README.
 | 5 | `make instrument` — custom spans in business-critical code paths | APM flame graphs |
 | 6 | `make instrument` — DogStatsD metric calls | Metrics Explorer |
 | 7 | Enable Continuous Profiler (`DD_PROFILING_ENABLED=true`) | Continuous Profiler |
-| 8 | `make instrument` — Browser RUM + Session Replay | RUM |
+| 8 | `make dem` — Browser RUM + Session Replay | RUM |
 | 9 | Apply DBM ConfigMap + PostgreSQL prerequisites (Step 4 above) | Databases > Query Metrics |
 | 10 | Apply ActiveMQ ConfigMap + enable DSM (Step 4 above) | Data Streams |
 | 11 | `make tf-apply-dd` — monitors, SLOs, dashboard, synthetics | Monitors, Dashboards |

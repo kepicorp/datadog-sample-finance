@@ -14,12 +14,14 @@ Two complementary layers — both independent, both reversible:
 | Layer | What it does | How |
 |---|---|---|
 | **Single Step Instrumentation (Admission Controller)** | Injects the Datadog tracer into every pod at startup — no code changes, no rebuilds | `admission.datadoghq.com/enabled: "true"` label + Operator webhook |
-| **In-depth instrumentation (`make instrument`)** | Uncomments the `transaction-service` `payment.authorize` span, the `notification-service` (Go) tracer/profiler/`alert.send` span, and injects the Browser RUM SDK credentials | Unified diff patch + `sed` — fully reversible with `make uninstrument` |
+| **In-depth instrumentation (`make instrument`)** | Uncomments the `transaction-service` `payment.authorize` span and the `notification-service` (Go) tracer/profiler/`alert.send` span. APM only. | Unified diff patch — fully reversible with `make uninstrument` |
 | **Tags + log injection (`make tags`)** | Uncomments Unified Service Tagging (pod labels + `DD_ENV`/`DD_SERVICE`/`DD_VERSION`) on all 6 manifests, and log-trace correlation for services with a baked-in/self-managed tracer | Unified diff patches under `scripts/patches/tags/` — fully reversible with `make untag` |
+| **Digital Experience Monitoring (`make dem`)** | Creates the Browser RUM application via a direct Datadog API call (not Terraform) and injects the resulting credentials into `frontend-stub/index.html` | Direct API call + `sed` — fully reversible with `make undem` |
 
 - **Single Step Instrumentation** is automatic once the Agent is deployed (`make deploy-k8s-dd`): distributed tracing, log–trace correlation, and runtime metrics, with zero code changes.
-- **In-depth instrumentation** is opt-in via `make instrument` and enriches Single Step Instrumentation with business context. The [Enabling In-depth instrumentation](#enabling-in-depth-instrumentation-make-instrument) section is the single source of truth for that workflow.
+- **In-depth instrumentation** is opt-in via `make instrument` and enriches Single Step Instrumentation with business context (APM custom spans only). The [Enabling In-depth instrumentation](#enabling-in-depth-instrumentation-make-instrument) section is the single source of truth for that workflow.
 - **Tags + log injection** is opt-in via `make tags` and turns on UST + log correlation, which are **not** always-active despite what Single Step Instrumentation alone provides for baked-in tracers. See [Step 2](#step-2--unified-service-tags-make-tags) and [Step 4](#step-4--logtrace-correlation).
+- **Digital Experience Monitoring** is opt-in via `make dem` and turns on Browser RUM + Session Replay for the frontend dashboard — independent of `make instrument`/`make tags` and of `make tf-apply-dd`. See [Enabling Digital Experience Monitoring](#enabling-digital-experience-monitoring-make-dem).
 
 ### What enables what
 
@@ -30,11 +32,12 @@ Not everything is `make instrument` — that's the most common point of confusio
 | Single Step Instrumentation — Admission Controller injection | `make deploy-k8s-dd` (automatic) | APM traces, log–trace correlation (for the admission-injected tracer path), runtime metrics; JSON logs are already in the manifests |
 | Agent-side config | `make deploy-k8s-dd` (agent + checks) | DBM (Postgres), ActiveMQ JMX, **Security (ASM / CWS / CSPM)**, log collection |
 | Per-service env / already in source | manifest env var or source code | **Continuous Profiler** for Python/Java/Node (`DD_PROFILING_ENABLED`), **Data Streams** (`DD_DATA_STREAMS_ENABLED`, JMS services), **Data Jobs** (`DD_DATA_JOBS_ENABLED`, batch-processor) |
-| **In-depth instrumentation — `make instrument`** | `make instrument` | The `transaction-service` `payment.authorize` custom span; the `notification-service` (Go) `tracer.Start()` + `profiler.Start()` + `alert.send` custom span; RUM credential injection. (`gateway-api`/`batch-processor`'s custom spans are always-on in source.) |
+| **In-depth instrumentation — `make instrument`** | `make instrument` | The `transaction-service` `payment.authorize` custom span; the `notification-service` (Go) `tracer.Start()` + `profiler.Start()` + `alert.send` custom span. APM only — no RUM. (`gateway-api`/`batch-processor`'s custom spans are always-on in source.) |
 | **Tags + log injection — `make tags`** | `make tags` | Unified Service Tagging on all 6 manifests; log-trace correlation for Python (`patch_logging()`), Node (`dd-trace` `logInjection`), Java (`DD_LOGS_INJECTION`), and Go (manual `dd.trace_id`/`dd.span_id` field injection — requires `make instrument` first for the Go `alert.send` span to exist) |
-| Terraform | `make tf-apply-dd` | **All custom metrics (span-based)**, monitors, SLOs, dashboard, synthetics, log pipeline, the RUM application |
+| **Digital Experience Monitoring — `make dem`** | `make dem` | Browser RUM application (created via direct Datadog API call) + credential injection into `frontend-stub/index.html` |
+| Terraform | `make tf-apply-dd` | **All custom metrics (span-based)**, monitors, SLOs, dashboard, synthetics, log pipeline. **Not RUM** — see `make dem`. |
 
-**So `make instrument` is deliberately narrow.** It does **not** enable profiling for Python/Java/Node, security, custom metrics, UST, or log injection. **There is no DogStatsD anywhere** — every `finance.*` custom metric is generated from APM spans by span-based metrics defined in `deploy/terraform/datadog` (applied with `make tf-apply-dd`). `gateway-api` and `batch-processor` ship with their custom spans **already active in source** (not comment-gated), so they need no patch.
+**So `make instrument` is deliberately narrow.** It does **not** enable profiling for Python/Java/Node, security, custom metrics, UST, log injection, or RUM. **There is no DogStatsD anywhere** — every `finance.*` custom metric is generated from APM spans by span-based metrics defined in `deploy/terraform/datadog` (applied with `make tf-apply-dd`). `gateway-api` and `batch-processor` ship with their custom spans **already active in source** (not comment-gated), so they need no patch.
 
 The [Signal reference](#signal-reference) lists each signal with an explicit **Enabled by:** line.
 
@@ -42,7 +45,7 @@ The [Signal reference](#signal-reference) lists each signal with an explicit **E
 
 ## Enabling In-depth instrumentation (`make instrument`)
 
-`make instrument` applies reversible unified-diff patches that uncomment the `transaction-service` `payment.authorize` custom span, the `notification-service` (Go) APM tracer + Continuous Profiler + `alert.send` custom span, and inject the Browser RUM credentials. **This is the one and only In-depth instrumentation workflow** — every "Step" below marked *In-depth instrumentation* refers back here rather than repeating it.
+`make instrument` applies reversible unified-diff patches that uncomment the `transaction-service` `payment.authorize` custom span and the `notification-service` (Go) APM tracer + Continuous Profiler + `alert.send` custom span. **APM only** — for Browser RUM, see [Enabling Digital Experience Monitoring](#enabling-digital-experience-monitoring-make-dem) below. **This is the one and only In-depth instrumentation workflow** — every "Step" below marked *In-depth instrumentation* refers back here rather than repeating it.
 
 ### What `make instrument` actually changes
 
@@ -50,7 +53,6 @@ The [Signal reference](#signal-reference) lists each signal with an explicit **E
 |---|---|---|
 | `transaction-service` | `scripts/patches/transaction-service.patch` | Uncomments the `payment.authorize` custom span in `payments.js` |
 | `notification-service` | `scripts/patches/notification-service.patch` | Uncomments `tracer.Start()` (APM), `profiler.Start()` (Continuous Profiler), and the `alert.send` custom span in `main.go` |
-| `frontend-stub/index.html` | `sed` credential injection (**not a patch**) | Fills the RUM `applicationId` / `clientToken` from `terraform output` into the already-present `DD_RUM.init()` block |
 
 > **Already active in source — no patch, always on:**
 > - `gateway-api` — `payment.authorize` / `account.balance_check` spans
@@ -62,32 +64,17 @@ The [Signal reference](#signal-reference) lists each signal with an explicit **E
 > **No DogStatsD anywhere.** All `finance.*` custom metrics are span-based (generated from the spans above by `datadog_spans_metric` resources in `deploy/terraform/datadog`, applied via `make tf-apply-dd`).
 >
 > **UST and log injection are a separate lifecycle.** `make instrument` does not touch Unified Service Tagging or log-trace correlation for any service — see [`make tags`](#step-2--unified-service-tags-make-tags) below.
-
-### ⚠️ RUM requires `make tf-apply-dd` first
-
-`make instrument` injects the RUM `applicationId` and `clientToken` into `frontend-stub/index.html` by reading `terraform output` from `deploy/terraform/datadog`. That output only exists after `make tf-apply-dd` has created `datadog_rum_application.finance_frontend` (see [Step 11](#step-11--datadog-terraform-resources) for the `dd-secrets` / `TF_VAR_*` setup).
-
-- **Run `make tf-apply-dd` before `make instrument`** for a working frontend RUM setup.
-- If you instrument first, the **backend patches still apply** (spans, metrics, profiler) — only the RUM block stays on `REPLACE_WITH_APPLICATION_ID` / `REPLACE_WITH_CLIENT_TOKEN` placeholders and prints a `⚠`. Just re-run `make instrument` after `make tf-apply-dd` (it's idempotent).
+>
+> **RUM is a separate lifecycle too.** `make instrument` does not touch the frontend at all — see [`make dem`](#enabling-digital-experience-monitoring-make-dem) below.
 
 ### Workflow
 
 ```bash
-make tf-apply-dd        # RUM prerequisite — creates the RUM app (skip only if you don't need RUM yet)
-make instrument         # apply patches + inject RUM credentials
+make instrument         # apply APM patches
 make build              # rebuild the service images
 # → reload the rebuilt images into your cluster (Colima/kind/k3d/minikube) — see the README runbook.
 #   Docker Desktop / Rancher Desktop need no reload.
 kubectl rollout restart deployment -n finance
-```
-
-**Frontend RUM is special:** the dashboard HTML is served from the `frontend-dashboard` ConfigMap, *not* the container image, so a `rollout restart` alone replays the old HTML. After instrumenting, rebuild that ConfigMap and restart the frontend:
-
-```bash
-kubectl create configmap frontend-dashboard \
-  --from-file=index.html=frontend-stub/index.html \
-  -n finance --dry-run=client -o yaml | kubectl apply -f -
-kubectl rollout restart deployment/frontend -n finance
 ```
 
 > **EKS:** replace the local image reload with `make build-ecr && make deploy-k8s-eks`, then `kubectl rollout restart deployment -n finance`.
@@ -95,7 +82,7 @@ kubectl rollout restart deployment/frontend -n finance
 ### Reverse it
 
 ```bash
-make uninstrument       # re-comments all patches, restores the RUM placeholders
+make uninstrument       # re-comments all patches
 make build              # then reload images (if needed) + kubectl rollout restart deployment -n finance
 ```
 
@@ -106,8 +93,6 @@ If you modify any instrumented source file, regenerate the affected patch:
 ```bash
 make uninstrument                        # must be in uninstrumented state first
 python3 scripts/generate-patches.py     # regenerates service patches (gateway-api, fraud-detection, etc.)
-# The frontend.patch is maintained manually — edit scripts/patches/frontend.patch directly
-# if you change the RUM block in frontend-stub/index.html
 for p in scripts/patches/*.patch; do
   patch --dry-run -p1 -s --input "$p" && echo "OK: $p" || echo "FAIL: $p"
 done
@@ -149,6 +134,71 @@ make build               # then reload images (if needed) + kubectl rollout rest
 ```
 
 Patches live under `scripts/patches/tags/` — a separate directory from the top-level `scripts/patches/*.patch` used by `make instrument`/`make uninstrument`, so the two lifecycles' globs never pick up each other's patches. Both use the same idempotent pattern (`.tags-applied` sentinel, `patch -p1 --forward/--reverse -s`).
+
+---
+
+## Enabling Digital Experience Monitoring (`make dem`)
+
+`make dem` turns on Digital Experience Monitoring (DEM) — Browser RUM + Session Replay — for the `frontend-stub/index.html` dashboard. Unlike `make instrument`/`make tags`, it does not apply a patch: it creates the RUM application via a **direct Datadog API call** (`POST /api/v2/rum/applications` — not Terraform, not `terraform-provider-datadog`) and injects the resulting credentials with `sed`. **This is the one and only DEM workflow** — [Step 8](#step-8--browser-rum--session-replay-make-dem) below refers back here.
+
+### What `make dem` actually does
+
+1. Resolves `DD_API_KEY`/`DD_APP_KEY` via `make dd-secrets` — the same `.env` (local) / AWS Secrets Manager (EKS) resolution used by `make create-dd-secret` and `make tf-apply-dd`. No separate credential setup.
+2. Checks for an existing RUM application named `finance-frontend` (`GET /api/v2/rum/applications`, filtered client-side by name — the list endpoint has no server-side name filter) to avoid creating a duplicate on repeated runs.
+3. Creates one if none exists (`POST /api/v2/rum/applications`), or reuses the existing one's `id`/`client_token` (`GET /api/v2/rum/applications/{id}` — the list endpoint doesn't return `client_token`, only the single-resource GET does).
+4. Caches `id`/`client_token` in the gitignored `.dem-state.json` so re-runs and `make undem` don't need to re-query the API.
+5. Injects the credentials into `frontend-stub/index.html`'s `DD_RUM.init()` block via `sed` — same placeholder mechanism `make instrument` used to use for this (`REPLACE_WITH_APPLICATION_ID` / `REPLACE_WITH_CLIENT_TOKEN`).
+
+Idempotent: tracked via `.dem-applied` (mirrors `.instrumentation-applied` / `.tags-applied`). A second run without `make undem` first is a no-op.
+
+### API schema
+
+```
+POST https://api.<site>/api/v2/rum/applications
+Headers: DD-API-KEY, DD-APPLICATION-KEY, Content-Type: application/json
+Body:
+{
+  "data": {
+    "type": "rum_application_create",
+    "attributes": { "name": "finance-frontend", "type": "browser" }
+  }
+}
+Response (data.id is the applicationId; data.attributes.client_token is the clientToken):
+{
+  "data": {
+    "id": "<uuid>",
+    "type": "rum_application",
+    "attributes": { "application_id": "<uuid>", "client_token": "pub...", "name": "finance-frontend", "type": "browser", "api_key_id": <int>, ... }
+  }
+}
+```
+
+`<site>` comes from `DD_SITE` in `.env` (default `datadoghq.com`) — same variable already documented in `.env.example`.
+
+### Workflow
+
+```bash
+make dem                # create/find the RUM app, inject credentials into frontend-stub/index.html
+```
+
+**Frontend RUM is special:** the dashboard HTML is served from the `frontend-dashboard` ConfigMap, *not* the container image, so a plain `rollout restart` alone replays the old HTML. After running `make dem`, rebuild that ConfigMap and restart the frontend:
+
+```bash
+kubectl create configmap frontend-dashboard \
+  --from-file=index.html=frontend-stub/index.html \
+  -n finance --dry-run=client -o yaml | kubectl apply -f -
+kubectl rollout restart deployment/frontend -n finance
+```
+
+`make dem` is independent of `make tf-apply-dd` — neither needs to run before the other for RUM's sake (Terraform no longer creates any RUM resource at all).
+
+### Reverse it
+
+```bash
+make undem              # deletes the RUM application via the API, restores the frontend placeholders
+```
+
+If `DD_API_KEY`/`DD_APP_KEY` can't be resolved, `make undem` fails with a clear error and leaves `.dem-applied`/`.dem-state.json`/the frontend untouched rather than raising a cryptic curl error — retry once credentials are available.
 
 ---
 
@@ -410,9 +460,9 @@ For Java: add `-Ddd.profiling.enabled=true` to `JAVA_TOOL_OPTIONS`.
 
 **Validate:** APM → Profiles — flame graphs appear within ~1 minute.
 
-### Step 8 — Browser RUM + Session Replay (In-depth instrumentation)
+### Step 8 — Browser RUM + Session Replay (`make dem`)
 
-The finance dashboard (`frontend-stub/index.html`) ships with the Browser RUM SDK carrying placeholder credentials. [`make instrument`](#enabling-in-depth-instrumentation-make-instrument) injects the real `applicationId`/`clientToken` from Terraform and you rebuild the `frontend-dashboard` ConfigMap — both covered in the Enabling In-depth instrumentation workflow (note the ⚠️ **`make tf-apply-dd` must run first**).
+The finance dashboard (`frontend-stub/index.html`) ships with the Browser RUM SDK carrying placeholder credentials. [`make dem`](#enabling-digital-experience-monitoring-make-dem) creates the RUM application via a direct Datadog API call, injects the real `applicationId`/`clientToken`, and you rebuild the `frontend-dashboard` ConfigMap — both covered in the Enabling Digital Experience Monitoring workflow. Independent of `make instrument` and `make tf-apply-dd`.
 
 #### What gets enabled
 
@@ -694,8 +744,12 @@ make build && make deploy-k8s && make deploy-k8s-dd
 | `make deploy-k8s-eks` | Deploy to EKS using Kustomize overlay (ECR images + LoadBalancer) |
 | `make undeploy-k8s` | Remove finance + datadog namespaces |
 | `make teardown` | Full reset — namespaces (+ PVCs), Helm release, stray port-forwards, orphaned Docker volumes |
-| `make instrument` | Uncomment In-depth instrumentation (5 services + frontend RUM) via patches; injects RUM credentials from Terraform. **Run `make tf-apply-dd` first** so RUM credentials exist (backend patches apply either way) |
-| `make uninstrument` | Reverse all In-depth instrumentation patches; restores RUM placeholder tokens |
+| `make instrument` | Uncomment In-depth instrumentation (APM custom spans, 2 services) via patches. No RUM — see `make dem` |
+| `make uninstrument` | Reverse all In-depth instrumentation patches |
+| `make tags` | Enable Unified Service Tagging + log injection (all 6 manifests) via patches |
+| `make untag` | Reverse all Tags + log-injection patches |
+| `make dem` | Create the Browser RUM application via a direct Datadog API call and inject credentials into `frontend-stub/index.html`. Idempotent (`.dem-applied` + `.dem-state.json`) |
+| `make undem` | Delete the RUM application via the Datadog API; restore frontend RUM placeholder tokens |
 | `make test` | Run e2e test suite from laptop — requires active port-forwards (see note below) |
 | `make test-traffic` | Run traffic generator from laptop — requires active port-forwards (see note below) |
 | `make tf-apply-dd` | Apply Datadog Terraform resources (monitors, SLOs, dashboard, synthetics) |
@@ -807,7 +861,7 @@ Last validated: local Kubernetes (Colima + k3s, single-node, Apple Silicon) and 
 | APM — `batch-processor` | Single Step Instrumentation (injection) | ✅ Java agent injected |
 | Custom spans | In-depth instrumentation (patch) | ✅ after `make instrument` + rebuild |
 | Custom metrics (span-based) | Terraform (`tf-apply-dd`) | ✅ `finance.payment.hits` / `finance.fraud.score` etc. generated from spans (no DogStatsD) |
-| Browser RUM | In-depth instrumentation (patch) + Terraform | ✅ after `make tf-apply-dd` + `make instrument` + frontend restart |
+| Browser RUM | `make dem` (direct Datadog API call) | ✅ after `make dem` + frontend restart |
 | Log collection | Agent | ✅ `kube_namespace:finance` logs in Datadog |
 | Log–trace correlation | Single Step Instrumentation | ✅ `dd.trace_id` in every log line |
 | Traffic generator | In-cluster | ✅ continuous load, no laptop required |
