@@ -310,7 +310,8 @@ Traffic mix:
 Instrumentation is layered. Full guide: **[INSTRUMENTATION.md](./INSTRUMENTATION.md)**.
 
 - **Single Step Instrumentation — automatic.** Deploy the Agent (`make deploy-k8s-dd`) and the Admission Controller injects the tracer into every pod: APM traces, log–trace correlation, and runtime metrics, plus agent-side DBM, ActiveMQ JMX, and ASM/CWS/CSPM. No code changes.
-- **In-depth instrumentation — `make instrument`.** Uncomments the `transaction-service` `payment.authorize` span and injects Browser RUM credentials. (Other custom spans are always-on in source; **custom metrics are span-based**, created by `make tf-apply-dd` — no DogStatsD.) See [Enabling In-depth instrumentation](./INSTRUMENTATION.md#enabling-in-depth-instrumentation-make-instrument).
+- **In-depth instrumentation — `make instrument`.** Uncomments the `transaction-service` `payment.authorize` span and the `notification-service` (Go) APM tracer/profiler/`alert.send` span, and injects Browser RUM credentials. (Other custom spans are always-on in source; **custom metrics are span-based**, created by `make tf-apply-dd` — no DogStatsD.) See [Enabling In-depth instrumentation](./INSTRUMENTATION.md#enabling-in-depth-instrumentation-make-instrument).
+- **Tags + log injection — `make tags`.** Uncomments Unified Service Tagging (pod labels + `DD_ENV`/`DD_SERVICE`/`DD_VERSION`) on all six manifests, and log-trace correlation for services with a baked-in/self-managed tracer (Python, Node, Java, Go). Separate, independently reversible from `make instrument` — see [Enabling Tags + Log Injection](./INSTRUMENTATION.md#enabling-tags--log-injection-make-tags).
 - **Datadog resources.** `make tf-apply-dd` creates the monitors, SLOs, dashboard, synthetics, log pipeline, and the RUM application.
 
 > ⚠️ **Browser RUM requires `make tf-apply-dd` before `make instrument`** — it injects the RUM credentials that Terraform creates. Backend patches apply either way; if you instrument first, just re-run `make instrument` after `tf-apply-dd` (idempotent).
@@ -349,12 +350,19 @@ eval "$(make dd-secrets)"       # exports TF_VAR_* keys; locally reads DD_API_KE
                                 # (falls back to .env even if you're logged into AWS)
 make tf-apply-dd
 
-# In-depth instrumentation — transaction-service payment.authorize span + Browser RUM
+# In-depth instrumentation — transaction-service payment.authorize span,
+# notification-service (Go) tracer/profiler/alert.send span, + Browser RUM
 # (custom metrics are span-based via 'make tf-apply-dd' — no DogStatsD)
 make instrument                # injects RUM creds from the tf-apply-dd output above
 make build                     # rebuild, then reload images (see load step) and restart:
 kubectl rollout restart deployment -n finance
 make uninstrument              # reverse In-depth instrumentation at any time
+
+# Tags + log injection — UST on all 6 manifests + log-trace correlation
+# for Python/Node/Java/Go's baked-in tracers (separate from make instrument)
+make tags
+make build && kubectl rollout restart deployment -n finance
+make untag                     # reverse Tags + log injection at any time
 
 make teardown                  # full local cleanup (namespaces + volumes)
 make tf-destroy-dd             # remove the Datadog Terraform resources when done

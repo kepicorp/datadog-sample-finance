@@ -14,10 +14,12 @@ Two complementary layers — both independent, both reversible:
 | Layer | What it does | How |
 |---|---|---|
 | **Single Step Instrumentation (Admission Controller)** | Injects the Datadog tracer into every pod at startup — no code changes, no rebuilds | `admission.datadoghq.com/enabled: "true"` label + Operator webhook |
-| **In-depth instrumentation (`make instrument`)** | Uncomments the `transaction-service` `payment.authorize` span and injects the Browser RUM SDK credentials | Unified diff patch + `sed` — fully reversible with `make uninstrument` |
+| **In-depth instrumentation (`make instrument`)** | Uncomments the `transaction-service` `payment.authorize` span, the `notification-service` (Go) tracer/profiler/`alert.send` span, and injects the Browser RUM SDK credentials | Unified diff patch + `sed` — fully reversible with `make uninstrument` |
+| **Tags + log injection (`make tags`)** | Uncomments Unified Service Tagging (pod labels + `DD_ENV`/`DD_SERVICE`/`DD_VERSION`) on all 6 manifests, and log-trace correlation for services with a baked-in/self-managed tracer | Unified diff patches under `scripts/patches/tags/` — fully reversible with `make untag` |
 
 - **Single Step Instrumentation** is automatic once the Agent is deployed (`make deploy-k8s-dd`): distributed tracing, log–trace correlation, and runtime metrics, with zero code changes.
 - **In-depth instrumentation** is opt-in via `make instrument` and enriches Single Step Instrumentation with business context. The [Enabling In-depth instrumentation](#enabling-in-depth-instrumentation-make-instrument) section is the single source of truth for that workflow.
+- **Tags + log injection** is opt-in via `make tags` and turns on UST + log correlation, which are **not** always-active despite what Single Step Instrumentation alone provides for baked-in tracers. See [Step 2](#step-2--unified-service-tags-make-tags) and [Step 4](#step-4--logtrace-correlation).
 
 ### What enables what
 
@@ -25,13 +27,14 @@ Not everything is `make instrument` — that's the most common point of confusio
 
 | Mechanism | Turned on by | What it enables |
 |---|---|---|
-| Single Step Instrumentation — Admission Controller injection | `make deploy-k8s-dd` (automatic) | APM traces, log–trace correlation, runtime metrics (UST + JSON logs are already in the manifests) |
+| Single Step Instrumentation — Admission Controller injection | `make deploy-k8s-dd` (automatic) | APM traces, log–trace correlation (for the admission-injected tracer path), runtime metrics; JSON logs are already in the manifests |
 | Agent-side config | `make deploy-k8s-dd` (agent + checks) | DBM (Postgres), ActiveMQ JMX, **Security (ASM / CWS / CSPM)**, log collection |
-| Per-service env / already in source | manifest env var or source code | **Continuous Profiler** (`DD_PROFILING_ENABLED`; the Go service already calls `profiler.Start()`), **Data Streams** (`DD_DATA_STREAMS_ENABLED`, JMS services), **Data Jobs** (`DD_DATA_JOBS_ENABLED`, batch-processor) |
-| **In-depth instrumentation — `make instrument`** | `make instrument` | The `transaction-service` `payment.authorize` custom span + RUM credential injection. (Other services' custom spans are always-on in source.) |
+| Per-service env / already in source | manifest env var or source code | **Continuous Profiler** for Python/Java/Node (`DD_PROFILING_ENABLED`), **Data Streams** (`DD_DATA_STREAMS_ENABLED`, JMS services), **Data Jobs** (`DD_DATA_JOBS_ENABLED`, batch-processor) |
+| **In-depth instrumentation — `make instrument`** | `make instrument` | The `transaction-service` `payment.authorize` custom span; the `notification-service` (Go) `tracer.Start()` + `profiler.Start()` + `alert.send` custom span; RUM credential injection. (`gateway-api`/`batch-processor`'s custom spans are always-on in source.) |
+| **Tags + log injection — `make tags`** | `make tags` | Unified Service Tagging on all 6 manifests; log-trace correlation for Python (`patch_logging()`), Node (`dd-trace` `logInjection`), Java (`DD_LOGS_INJECTION`), and Go (manual `dd.trace_id`/`dd.span_id` field injection — requires `make instrument` first for the Go `alert.send` span to exist) |
 | Terraform | `make tf-apply-dd` | **All custom metrics (span-based)**, monitors, SLOs, dashboard, synthetics, log pipeline, the RUM application |
 
-**So `make instrument` is deliberately narrow.** It does **not** enable profiling, security, or custom metrics. **There is no DogStatsD anywhere** — every `finance.*` custom metric is generated from APM spans by span-based metrics defined in `deploy/terraform/datadog` (applied with `make tf-apply-dd`). `gateway-api`, `notification-service`, `batch-processor`, and `fraud-detection` ship with their custom spans/profiler **already active in source** (not comment-gated), so they need no patch.
+**So `make instrument` is deliberately narrow.** It does **not** enable profiling for Python/Java/Node, security, custom metrics, UST, or log injection. **There is no DogStatsD anywhere** — every `finance.*` custom metric is generated from APM spans by span-based metrics defined in `deploy/terraform/datadog` (applied with `make tf-apply-dd`). `gateway-api` and `batch-processor` ship with their custom spans **already active in source** (not comment-gated), so they need no patch.
 
 The [Signal reference](#signal-reference) lists each signal with an explicit **Enabled by:** line.
 
@@ -39,24 +42,26 @@ The [Signal reference](#signal-reference) lists each signal with an explicit **E
 
 ## Enabling In-depth instrumentation (`make instrument`)
 
-`make instrument` applies a reversible unified-diff patch that uncomments the `transaction-service` `payment.authorize` custom span, and injects the Browser RUM credentials. **This is the one and only In-depth instrumentation workflow** — every "Step" below marked *In-depth instrumentation* refers back here rather than repeating it.
+`make instrument` applies reversible unified-diff patches that uncomment the `transaction-service` `payment.authorize` custom span, the `notification-service` (Go) APM tracer + Continuous Profiler + `alert.send` custom span, and inject the Browser RUM credentials. **This is the one and only In-depth instrumentation workflow** — every "Step" below marked *In-depth instrumentation* refers back here rather than repeating it.
 
 ### What `make instrument` actually changes
 
 | Target | Mechanism | What it enables |
 |---|---|---|
 | `transaction-service` | `scripts/patches/transaction-service.patch` | Uncomments the `payment.authorize` custom span in `payments.js` |
+| `notification-service` | `scripts/patches/notification-service.patch` | Uncomments `tracer.Start()` (APM), `profiler.Start()` (Continuous Profiler), and the `alert.send` custom span in `main.go` |
 | `frontend-stub/index.html` | `sed` credential injection (**not a patch**) | Fills the RUM `applicationId` / `clientToken` from `terraform output` into the already-present `DD_RUM.init()` block |
 
 > **Already active in source — no patch, always on:**
 > - `gateway-api` — `payment.authorize` / `account.balance_check` spans
 > - `fraud-detection` — `fraud.score` span (+ `fraud.score_bucket` and numeric `fraud.score` tags)
-> - `notification-service` — `alert.send` span **and `profiler.Start()`** (Go continuous profiler)
 > - `batch-processor` — `job.name` / `job.status` / `job.records_processed` span tags
 >
 > `make instrument` / `make uninstrument` do **not** touch these. `account-service` has no custom instrumentation (relies entirely on Java agent auto-instrumentation).
 >
 > **No DogStatsD anywhere.** All `finance.*` custom metrics are span-based (generated from the spans above by `datadog_spans_metric` resources in `deploy/terraform/datadog`, applied via `make tf-apply-dd`).
+>
+> **UST and log injection are a separate lifecycle.** `make instrument` does not touch Unified Service Tagging or log-trace correlation for any service — see [`make tags`](#step-2--unified-service-tags-make-tags) below.
 
 ### ⚠️ RUM requires `make tf-apply-dd` first
 
@@ -107,6 +112,43 @@ for p in scripts/patches/*.patch; do
   patch --dry-run -p1 -s --input "$p" && echo "OK: $p" || echo "FAIL: $p"
 done
 ```
+
+**`scripts/patches/tags/*.patch` are hand-authored, not regenerated by this script.** `generate-patches.py`'s uncomment engine only understands Python/JS/Go/Java source syntax — it has no YAML support, and the manifest-only UST patches need one either way. If you modify a `tags/` patch's source (a manifest or one of the log-injection source blocks), edit the corresponding `scripts/patches/tags/*.patch` unified diff by hand and re-validate with the same `patch --dry-run` loop, pointed at `scripts/patches/tags/*.patch`.
+
+---
+
+## Enabling Tags + Log Injection (`make tags`)
+
+`make tags` applies reversible unified-diff patches — separate from `make instrument` — that uncomment Unified Service Tagging (UST) and log-trace correlation. **This is the one and only Tags + Log Injection workflow** — [Step 2](#step-2--unified-service-tags-make-tags) and [Step 4](#step-4--logtrace-correlation) below refer back here.
+
+### What `make tags` actually changes
+
+| Step | Target | Mechanism | What it enables |
+|---|---|---|---|
+| (a) UST | all 6 manifests | `scripts/patches/tags/ust-<service>.patch` | Uncomments `tags.datadoghq.com/env\|service\|version` pod labels + `DD_ENV`/`DD_SERVICE`/`DD_VERSION` env vars (`DD_AGENT_HOST` is untouched — it's not a UST concern) |
+| (b) Log injection — Python | `gateway-api`, `fraud-detection` | `scripts/patches/tags/loginject-<service>.patch` | Uncomments the `ddtrace.contrib.logging.patch` import + `patch_logging()` call |
+| (b) Log injection — Node | `transaction-service` | `scripts/patches/tags/loginject-transaction-service.patch` | Uncomments `logInjection: true` in the `dd-trace` init block |
+| (b) Log injection — Java | `account-service`, `batch-processor` | `scripts/patches/tags/loginject-<service>.patch` | Uncomments the `DD_LOGS_INJECTION=true` env var (Java has no source-level equivalent — dd-trace-java's Logback/Log4j2 MDC hook needs only this flag) |
+| (b) Log injection — Go | `notification-service` | `scripts/patches/tags/loginject-notification-service.patch` | Uncomments manual `dd.trace_id`/`dd.span_id` field injection into the `alert.send`/`alert.send.complete` `slog` calls — Go has no automatic MDC-style hook, unlike Java/Python |
+
+> **Go log injection requires `make instrument` first.** The uncommented fields read `span.Context().TraceID()`/`SpanID()` off the `alert.send` span, which only exists once `make instrument` has uncommented it. Applying `make tags` alone (without `make instrument`) leaves `notification-service` referencing an undefined `span` variable and it will fail to build — this mirrors the documented Learning Progression order (Step 3 APM before Step 4 log correlation).
+
+### Workflow
+
+```bash
+make tags               # apply UST + log injection patches
+make build               # rebuild the service images
+kubectl rollout restart deployment -n finance
+```
+
+### Reverse it
+
+```bash
+make untag               # re-comments all tags/log-injection patches
+make build               # then reload images (if needed) + kubectl rollout restart deployment -n finance
+```
+
+Patches live under `scripts/patches/tags/` — a separate directory from the top-level `scripts/patches/*.patch` used by `make instrument`/`make uninstrument`, so the two lifecycles' globs never pick up each other's patches. Both use the same idempotent pattern (`.tags-applied` sentinel, `patch -p1 --forward/--reverse -s`).
 
 ---
 
@@ -293,7 +335,7 @@ Already set in all six service manifests — no action required.
 
 **Validate:** Log Explorer → `kube_namespace:finance`
 
-### Step 2 — Unified Service Tags (always active)
+### Step 2 — Unified Service Tags (`make tags`)
 
 `DD_ENV`, `DD_SERVICE`, `DD_VERSION`, `DD_AGENT_HOST`, and `tags.datadoghq.com/*` pod labels are set in every service manifest:
 
@@ -311,7 +353,7 @@ env:
         fieldPath: status.hostIP
 ```
 
-Already set in all six manifests — no action required.
+**Enabled by:** [`make tags`](#enabling-tags--log-injection-make-tags) — commented out by default in all six manifests. `DD_AGENT_HOST` is the one exception: it's always active (not a UST concern, needed regardless for the Agent address).
 
 **Validate:** any trace or log should carry `env:staging service:<name> version:latest`.
 
@@ -321,17 +363,19 @@ Traces appear automatically once the Admission Controller injects the tracer. No
 
 **Validate:** APM → Services — all six services appear within ~2 minutes of the first request.
 
-### Step 4 — Log–trace correlation (automatic with Single Step Instrumentation)
+### Step 4 — Log–trace correlation
 
-The injected tracer patches the logging framework to append `dd.trace_id` and `dd.span_id` to every log line. No code changes required.
+**Enabled by:** it depends on which tracer is active for a given service — this is the most nuanced signal in the app:
+- **Admission-injected tracer path (Single Step Instrumentation):** the injected agent patches the logging framework automatically once the Admission Controller injects it — no code changes.
+- **Baked-in / self-managed tracer path:** `gateway-api` and `fraud-detection` pin their own `ddtrace` in `requirements.txt` (which takes precedence over the injected copy — see the nuance box above), `transaction-service` initializes `dd-trace` explicitly in `index.js`, and `notification-service` (Go) has no admission-injected path at all (Go isn't single-step injectable). For these, log injection is gated by [`make tags`](#enabling-tags--log-injection-make-tags): Python `patch_logging()`, Node `logInjection: true`, Java `DD_LOGS_INJECTION=true` (MDC hook), and Go's manual `dd.trace_id`/`dd.span_id` field injection (no automatic hook exists for Go).
 
 **Validate:** Log Explorer → click any log from a finance service → "View Trace" button appears.
 
 ### Step 5 — Custom business spans
 
-**Enabled by:** mostly always-on in source; only `transaction-service`'s `payment.authorize` is gated by [`make instrument`](#enabling-in-depth-instrumentation-make-instrument).
-- Always active (appear as soon as the tracer is injected — no patch): `payment.authorize` / `account.balance_check` (gateway-api), `fraud.score` + `fraud.score_bucket` + numeric `fraud.score` (fraud-detection), `alert.send` (notification-service), `job.*` tags (batch-processor).
-- Via `make instrument`: `payment.authorize` (transaction-service).
+**Enabled by:** mostly always-on in source; `transaction-service`'s `payment.authorize` and `notification-service`'s `tracer.Start()` / `alert.send` are gated by [`make instrument`](#enabling-in-depth-instrumentation-make-instrument).
+- Always active (appear as soon as the tracer is injected — no patch): `payment.authorize` / `account.balance_check` (gateway-api), `fraud.score` + `fraud.score_bucket` + numeric `fraud.score` (fraud-detection), `job.*` tags (batch-processor).
+- Via `make instrument`: `payment.authorize` (transaction-service), `alert.send` (notification-service — also requires its `tracer.Start()` to be uncommented, part of the same patch).
 
 **Validate:** APM → Traces → filter by `resource_name:payment.authorize` or `operation_name:fraud.score`
 
@@ -355,7 +399,7 @@ Defined in `deploy/terraform/datadog/main.tf` (`datadog_spans_metric`). Docs: ht
 
 ### Step 7 — Continuous Profiler
 
-**Enabled by:** per-service config — **not `make instrument`.** `notification-service` (Go) already calls `profiler.Start()` in source. For the other services, set `DD_PROFILING_ENABLED=true` on the pod. Add it to any service manifest's env block:
+**Enabled by:** per-language mechanism. `notification-service` (Go) is the one exception — its `profiler.Start()` call is gated by [`make instrument`](#enabling-in-depth-instrumentation-make-instrument), not per-service config, since it lives in the same source file/banner as the Go APM tracer. For the other services (Python, Java, Node), set `DD_PROFILING_ENABLED=true` on the pod — **not `make instrument`.** Add it to any of those service manifests' env block:
 
 ```yaml
 - name: DD_PROFILING_ENABLED
