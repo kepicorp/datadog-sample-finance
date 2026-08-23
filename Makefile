@@ -113,17 +113,11 @@ help:
 version:
 	@echo "DD_VERSION=$(DD_VERSION)"
 
-## instrument: Uncomment all Datadog instrumentation blocks across all services.
-##             Applies unified diff patches — fully reversible with make uninstrument.
-##             Idempotent: a second run is a clean no-op (tracked via .instrumentation-applied).
-##             See INSTRUMENTATION.md for what each patch enables.
-##
-##             RUM PREREQUISITE: run 'make tf-apply-dd' FIRST. The RUM applicationId
-##               and clientToken are created by the Datadog Terraform module; this
-##               target injects them into frontend-stub/index.html. Without them the
-##               frontend RUM block keeps its placeholders (a ⚠ warning is printed) —
-##               all other (backend) instrumentation still applies. Just re-run
-##               'make instrument' after 'make tf-apply-dd' to fill in RUM.
+## instrument: Uncomment the APM custom-span instrumentation blocks (transaction-service,
+##             notification-service). Applies unified diff patches — fully reversible
+##             with make uninstrument. Idempotent: a second run is a clean no-op
+##             (tracked via .instrumentation-applied). See INSTRUMENTATION.md for what
+##             each patch enables. APM only — for Browser RUM, see 'make dem'.
 ##
 ##             After patching, redeploy:
 ##               Local:  make build && load images into k3s && kubectl rollout restart deployment -n finance
@@ -140,33 +134,13 @@ instrument:
 		done; \
 		touch .instrumentation-applied; \
 		echo ""; \
-		echo "==> Injecting RUM credentials from Terraform output..."; \
-		TF_DD_DIR="$(CURDIR)/deploy/terraform/datadog"; \
-		if terraform -chdir="$$TF_DD_DIR" output rum_application_id >/dev/null 2>&1; then \
-			RUM_APP_ID=$$(terraform -chdir="$$TF_DD_DIR" output -raw rum_application_id 2>/dev/null); \
-			RUM_TOKEN=$$(terraform -chdir="$$TF_DD_DIR" output -raw rum_client_token 2>/dev/null); \
-			if [ -n "$$RUM_APP_ID" ] && [ -n "$$RUM_TOKEN" ]; then \
-				sed -i '' \
-					"s|'REPLACE_WITH_APPLICATION_ID'|'$$RUM_APP_ID'|g" \
-					frontend-stub/index.html; \
-				sed -i '' \
-					"s|'REPLACE_WITH_CLIENT_TOKEN'|'$$RUM_TOKEN'|g" \
-					frontend-stub/index.html; \
-				echo "  ✓ RUM credentials injected (app_id: $$RUM_APP_ID)"; \
-			else \
-				echo "  ⚠  RUM output is empty — run 'make tf-apply-dd' first, then re-run 'make instrument'"; \
-					fi; \
-				else \
-					echo "  ⚠  Terraform output not available — run 'make tf-apply-dd' first to create the RUM app."; \
-					echo "     RUM block left with placeholders. Re-run 'make instrument' after 'make tf-apply-dd'."; \
-				fi; \
-				echo ""; \
-				echo "✓ Instrumentation enabled. Redeploy to activate:"; \
-				$(print_redeploy_hint); \
-			fi
+		echo "✓ Instrumentation enabled. Redeploy to activate:"; \
+		$(print_redeploy_hint); \
+	fi
 
-## uninstrument: Re-comment all Datadog instrumentation blocks (reverse of make instrument).
-##               Restores every file to its original commented-out state.
+## uninstrument: Re-comment the APM custom-span instrumentation blocks (reverse of make instrument).
+##               Restores every file to its original commented-out state. APM only —
+##               for Browser RUM, see 'make undem'.
 ##
 ##               After patching, redeploy:
 ##                 Local:  make build && load images into k3s && kubectl rollout restart deployment -n finance
@@ -182,14 +156,6 @@ uninstrument:
 			patch -p1 --reverse -s < $$p || true; \
 		done; \
 		rm -f .instrumentation-applied; \
-		echo "==> Restoring RUM credential placeholders..."; \
-		sed -i '' \
-			"s|'[a-f0-9]\{8\}-[a-f0-9]\{4\}-[a-f0-9]\{4\}-[a-f0-9]\{4\}-[a-f0-9]\{12\}'|'REPLACE_WITH_APPLICATION_ID'|g" \
-			frontend-stub/index.html; \
-		sed -i '' \
-			"s|clientToken:             '[a-z0-9]*'|clientToken:             'REPLACE_WITH_CLIENT_TOKEN'|g" \
-			frontend-stub/index.html; \
-		echo "  ✓ RUM placeholders restored"; \
 		echo ""; \
 		echo "✓ Instrumentation disabled. Redeploy to deactivate:"; \
 		$(print_redeploy_hint); \

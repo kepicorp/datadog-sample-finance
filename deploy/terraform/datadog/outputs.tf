@@ -123,14 +123,7 @@ output "log_metrics" {
 }
 
 # ── RUM ────────────────────────────────────────────────────────────────────────────
-
-output "rum_application_id" {
-  description = "RUM application ID for the finance-frontend dashboard. Used by 'make instrument' to populate the RUM SDK snippet."
-  value       = datadog_rum_application.finance_frontend.id
-}
-
-output "rum_client_token" {
-  description = "RUM client token for the finance-frontend dashboard. Used by 'make instrument' to populate the RUM SDK snippet."
-  value       = datadog_rum_application.finance_frontend.client_token
-  sensitive   = true
-}
+# RUM is not created by this Terraform module — see 'make dem' / 'make undem'
+# in the top-level Makefile, which creates the RUM application via a direct
+# Datadog API call and stores its id/client_token in the gitignored
+# .dem-state.json (not a Terraform output).

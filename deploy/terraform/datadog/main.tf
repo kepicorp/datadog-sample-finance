@@ -3396,15 +3396,12 @@ resource "datadog_monitor" "cspm_critical_findings" {
 # =============================================================================
 # RUM Application — Finance Frontend Dashboard
 # =============================================================================
-# Creates a Browser RUM application for the finance-frontend dashboard.
-# The applicationId and clientToken outputs are used by 'make instrument'
-# to populate the RUM SDK snippet in frontend-stub/index.html.
+# RUM is NOT managed by this Terraform module. It is created via a direct
+# Datadog API call by 'make dem' (Digital Experience Monitoring), which also
+# injects the resulting applicationId/clientToken into frontend-stub/index.html.
+# This keeps RUM app lifecycle (create/delete, credential rotation) independent
+# of the rest of the Datadog Terraform resources below.
 #
 # Docs: https://docs.datadoghq.com/real_user_monitoring/browser/
-# Terraform: https://registry.terraform.io/providers/DataDog/datadog/latest/docs/resources/rum_application
+# See: Makefile 'dem'/'undem' targets, INSTRUMENTATION.md
 # =============================================================================
-
-resource "datadog_rum_application" "finance_frontend" {
-  name = "finance-frontend"
-  type = "browser"
-}
