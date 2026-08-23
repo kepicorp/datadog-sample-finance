@@ -22,7 +22,14 @@ import httpx
 
 #
 from ddtrace import patch_all, tracer
-from ddtrace.contrib.logging import patch as patch_logging
+# ── Datadog Log Injection (enable via 'make tags') ────────────────────
+# Uncomment to inject dd.trace_id / dd.span_id into every log record via
+# ddtrace's logging integration — stitches JSON logs to APM traces so
+# "View in APM" works from Log Management.
+# Docs: https://docs.datadoghq.com/tracing/other_telemetry/connect_logs_and_traces/?tab=python
+#
+# from ddtrace.contrib.logging import patch as patch_logging
+# ─────────────────────────────────────────────────────────────────────
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from jose import JWTError, jwt
@@ -30,7 +37,9 @@ from pydantic import BaseModel, Field
 from pythonjsonlogger import jsonlogger
 
 patch_all()  # must be called before importing instrumented libraries
-patch_logging()  # injects dd.trace_id / dd.span_id into every log record
+# ── Datadog Log Injection (enable via 'make tags') ────────────────────
+# patch_logging()  # injects dd.trace_id / dd.span_id into every log record
+# ─────────────────────────────────────────────────────────────────────
 
 # NOTE: custom metrics are NOT emitted via DogStatsD. They are generated from
 # APM spans by span-based metrics defined in deploy/terraform/datadog (e.g.

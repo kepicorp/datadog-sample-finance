@@ -5,9 +5,13 @@ const tracer = require("dd-trace").init({
   env: process.env.DD_ENV || "development",
   version: process.env.DD_VERSION || "0.0.0",
   hostname: process.env.DD_AGENT_HOST || "datadog-agent",
+  // ── Datadog Log Injection (enable via 'make tags') ──────────────────
+  // Uncomment to stitch pino JSON logs to APM traces via dd.trace_id /
+  // dd.span_id — enables "View in APM" from Log Management.
+  // Docs: https://docs.datadoghq.com/tracing/other_telemetry/connect_logs_and_traces/?tab=nodejs
   //
-  //
-  //
+  // logInjection: true,
+  // ─────────────────────────────────────────────────────────────────────
 });
 
 ("use strict");
