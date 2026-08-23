@@ -69,6 +69,10 @@ dist/
 *.so
 *.dylib
 vendor/
+# `go build ./...` run from inside notification-service/ produces an
+# extensionless binary named after the module dir — not caught by the
+# patterns above.
+/notification-service/notification-service
 
 # ── IDEs & editors ───────────────────────────────────────────────────────────
 .idea/
