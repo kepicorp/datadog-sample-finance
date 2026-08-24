@@ -94,9 +94,16 @@ define create_frontend_cm
 endef
 
 # Print the "redeploy to activate" hint shared by instrument/uninstrument.
+# NOTE: 'kubectl rollout restart' alone recreates pods from whatever Deployment
+# spec is ALREADY stored in the cluster — it does NOT re-read the local YAML,
+# so it cannot pick up the DD_ENV/DD_SERVICE/DD_VERSION env vars, UST labels, or
+# annotations these patches just uncommented. 'make deploy-k8s' (local) /
+# 'make deploy-k8s-eks' (EKS) re-applies the manifests via 'kubectl apply',
+# which both pushes the patched fields AND triggers the rollout — no separate
+# rollout restart is needed after it.
 define print_redeploy_hint
-	echo "   Local: make build && load images into k3s && kubectl rollout restart deployment -n finance"; \
-	echo "   EKS:   make build-ecr && make deploy-k8s-eks && kubectl rollout restart deployment -n finance"
+	echo "   Local: make build && load images into k3s && make deploy-k8s"; \
+	echo "   EKS:   make build-ecr && make deploy-k8s-eks"
 endef
 
 # Resolve DD_API_KEY / DD_APP_KEY into $$API_KEY / $$APP_KEY / $$DD_KEY_SRC shell vars.
@@ -175,9 +182,10 @@ version:
 ##             + Profiler only — for UST/log injection see 'make tags', for AppSec
 ##             see 'make security', for Browser RUM see 'make dem'.
 ##
-##             After patching, redeploy:
-##               Local:  make build && load images into k3s && kubectl rollout restart deployment -n finance
-##               EKS:    make build-ecr && make deploy-k8s-eks && kubectl rollout restart deployment -n finance
+##             After patching, redeploy (rollout restart alone won't pick up the
+##             new env vars/annotations — the manifests must be re-applied):
+##               Local:  make build && load images into k3s && make deploy-k8s
+##               EKS:    make build-ecr && make deploy-k8s-eks
 instrument:
 	@if [ -f .instrumentation-applied ]; then \
 		echo "Instrumentation already enabled. Run 'make uninstrument' first to reapply."; \
@@ -219,9 +227,10 @@ instrument:
 ##               opposite order from make instrument). Restores every file to its
 ##               original commented-out state.
 ##
-##               After patching, redeploy:
-##                 Local:  make build && load images into k3s && kubectl rollout restart deployment -n finance
-##                 EKS:    make build-ecr && make deploy-k8s-eks && kubectl rollout restart deployment -n finance
+##               After patching, redeploy (rollout restart alone won't pick up the
+##               reverted env vars/annotations — the manifests must be re-applied):
+##                 Local:  make build && load images into k3s && make deploy-k8s
+##                 EKS:    make build-ecr && make deploy-k8s-eks
 uninstrument:
 	@if [ ! -f .instrumentation-applied ]; then \
 		echo "Instrumentation is not currently enabled (nothing to reverse)."; \
@@ -264,9 +273,11 @@ uninstrument:
 ##       created by 'make instrument' — run 'make instrument' first if you
 ##       want notification-service log correlation to actually compile/work.
 ##
-##       After patching, redeploy:
-##         Local:  make build && load images into k3s && kubectl rollout restart deployment -n finance
-##         EKS:    make build-ecr && make deploy-k8s-eks && kubectl rollout restart deployment -n finance
+##       After patching, redeploy (rollout restart alone won't pick up the new
+##       DD_ENV/DD_SERVICE/DD_VERSION env vars/labels — the manifests must be
+##       re-applied):
+##         Local:  make build && load images into k3s && make deploy-k8s
+##         EKS:    make build-ecr && make deploy-k8s-eks
 tags:
 	@if [ -f .tags-applied ]; then \
 		echo "Tags + log injection already enabled. Run 'make untag' first to reapply."; \
@@ -298,9 +309,10 @@ tags:
 ## untag: Re-comment all UST + log-injection blocks (reverse of make tags).
 ##        Restores every file to its original commented-out state.
 ##
-##        After patching, redeploy:
-##          Local:  make build && load images into k3s && kubectl rollout restart deployment -n finance
-##          EKS:    make build-ecr && make deploy-k8s-eks && kubectl rollout restart deployment -n finance
+##        After patching, redeploy (rollout restart alone won't pick up the
+##        reverted env vars/labels — the manifests must be re-applied):
+##          Local:  make build && load images into k3s && make deploy-k8s
+##          EKS:    make build-ecr && make deploy-k8s-eks
 untag:
 	@if [ ! -f .tags-applied ]; then \
 		echo "Tags + log injection are not currently enabled (nothing to reverse)."; \
@@ -836,8 +848,8 @@ create-dd-secret:
 ##      explicitly after 'make create-dd-secret' / 'make deploy-k8s-dd'.
 ##
 ##      After patching, redeploy the Agent to pick up the new mount:
-##        Local: kubectl apply -k deploy/kubernetes/datadog/agent && kubectl rollout restart daemonset/datadog -n datadog
-##        EKS:   kubectl apply -k deploy/kubernetes/overlays/eks-datadog && kubectl rollout restart daemonset/datadog -n datadog
+##        Local: kubectl apply -k deploy/kubernetes/datadog/agent && kubectl rollout restart daemonset/datadog-agent -n datadog
+##        EKS:   kubectl apply -k deploy/kubernetes/overlays/eks-datadog && kubectl rollout restart daemonset/datadog-agent -n datadog
 dbm:
 	@if [ -f .dbm-applied ]; then \
 		echo "DBM already enabled. Run 'make undbm' first to reapply."; \
@@ -868,8 +880,8 @@ dbm:
 		fi; \
 		echo ""; \
 		echo "✓ DBM enabled. Redeploy the Agent to pick up the new mount:"; \
-		echo "    Local: kubectl apply -k deploy/kubernetes/datadog/agent && kubectl rollout restart daemonset/datadog -n datadog"; \
-		echo "    EKS:   kubectl apply -k deploy/kubernetes/overlays/eks-datadog && kubectl rollout restart daemonset/datadog -n datadog"; \
+		echo "    Local: kubectl apply -k deploy/kubernetes/datadog/agent && kubectl rollout restart daemonset/datadog-agent -n datadog"; \
+		echo "    EKS:   kubectl apply -k deploy/kubernetes/overlays/eks-datadog && kubectl rollout restart daemonset/datadog-agent -n datadog"; \
 	fi
 
 ## undbm: Disable Database Monitoring (DBM) — reverse of make dbm. Re-comments
@@ -898,8 +910,8 @@ undbm:
 		rm -f .dbm-applied; \
 		echo ""; \
 		echo "✓ DBM disabled. Redeploy the Agent to deactivate:"; \
-		echo "    Local: kubectl apply -k deploy/kubernetes/datadog/agent && kubectl rollout restart daemonset/datadog -n datadog"; \
-		echo "    EKS:   kubectl apply -k deploy/kubernetes/overlays/eks-datadog && kubectl rollout restart daemonset/datadog -n datadog"; \
+		echo "    Local: kubectl apply -k deploy/kubernetes/datadog/agent && kubectl rollout restart daemonset/datadog-agent -n datadog"; \
+		echo "    EKS:   kubectl apply -k deploy/kubernetes/overlays/eks-datadog && kubectl rollout restart daemonset/datadog-agent -n datadog"; \
 	fi
 
 ## security: Enable Application/Cloud Security (ASM Threats+SCA, CWS, CSPM).
@@ -911,9 +923,10 @@ undbm:
 ##           tracked via .security-applied — a second run is a clean no-op.
 ##           Fully reversible with make unsecurity.
 ##
-##           After patching, redeploy:
-##             Agent: kubectl apply -k deploy/kubernetes/datadog/agent && kubectl rollout restart daemonset/datadog -n datadog
-##             Apps:  make build && load images into k3s && kubectl rollout restart deployment -n finance
+##           After patching, redeploy (rollout restart alone won't pick up the
+##           new DD_APPSEC_ENABLED env var — the manifests must be re-applied):
+##             Agent: kubectl apply -k deploy/kubernetes/datadog/agent && kubectl rollout restart daemonset/datadog-agent -n datadog
+##             Apps:  make build && load images into k3s && make deploy-k8s
 security:
 	@if [ -f .security-applied ]; then \
 		echo "Security already enabled. Run 'make unsecurity' first to reapply."; \
@@ -936,8 +949,8 @@ security:
 		touch .security-applied; \
 		echo ""; \
 		echo "✓ Security enabled. Redeploy to activate:"; \
-		echo "    Agent: kubectl apply -k deploy/kubernetes/datadog/agent && kubectl rollout restart daemonset/datadog -n datadog"; \
-		echo "    Apps:  make build && load images into k3s && kubectl rollout restart deployment -n finance"; \
+		echo "    Agent: kubectl apply -k deploy/kubernetes/datadog/agent && kubectl rollout restart daemonset/datadog-agent -n datadog"; \
+		echo "    Apps:  make build && load images into k3s && make deploy-k8s"; \
 	fi
 
 ## unsecurity: Disable Application/Cloud Security (reverse of make security).
@@ -957,8 +970,8 @@ unsecurity:
 		rm -f .security-applied; \
 		echo ""; \
 		echo "✓ Security disabled. Redeploy to deactivate:"; \
-		echo "    Agent: kubectl apply -k deploy/kubernetes/datadog/agent && kubectl rollout restart daemonset/datadog -n datadog"; \
-		echo "    Apps:  make build && load images into k3s && kubectl rollout restart deployment -n finance"; \
+		echo "    Agent: kubectl apply -k deploy/kubernetes/datadog/agent && kubectl rollout restart daemonset/datadog-agent -n datadog"; \
+		echo "    Apps:  make build && load images into k3s && make deploy-k8s"; \
 	fi
 
 ## dd-secrets: Print eval-ready 'export TF_VAR_datadog_api_key=...' commands for use with
