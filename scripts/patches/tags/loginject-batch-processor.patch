@@ -18,6 +18,6 @@
 +            # ── Datadog log injection (Java MDC via dd-trace-java) ───────────
 +            - name: DD_LOGS_INJECTION
 +              value: "true"
-             # ── APPLICATION SECURITY MANAGEMENT (ASM) ───────────────────────
-             # Enables AppSec threat detection in the tracer. Works alongside
-             # the Agent-side asm.threats feature in datadog-agent.yaml.
+             # ── DATADOG INSTRUMENTATION (Application Security Management) ───
+             # Uncomment via 'make security' to enable AppSec threat detection
+             # in the tracer. Works alongside the Agent-side asm.threats

@@ -9,6 +9,16 @@
 # Run 'make help' for the full list of targets with one-line descriptions.
 # The end-to-end workflows below show the recommended target ordering.
 #
+# IMPORTANT — instrumentation is commented out by default: a fresh
+# 'make deploy-k8s' + 'make deploy-k8s-dd' no longer enables Single Step
+# Instrumentation (Admission Controller injection) or AppSec on any of the
+# 6 service manifests, and no longer enables DBM / ASM / CWS / CSPM on the
+# Datadog Agent — all of these ship commented out in the base manifests.
+# Opt in explicitly: 'make instrument' (APM + Single Step + Profiler),
+# 'make tags' (UST + log injection), 'make dbm' (Database Monitoring),
+# 'make security' (ASM/CWS/CSPM), 'make dem' (Browser RUM). See
+# INSTRUMENTATION.md for the full layer-by-layer breakdown.
+#
 # AWS + K8s workflow:
 #   aws sso login --profile <profile>   # authenticate
 #   make tf-plan-aws                    # review the plan first
@@ -576,7 +586,7 @@ deploy-k8s-eks:
 ##               EKS:   fetches keys from AWS Secrets Manager (via create-dd-secret,
 ##                      requires valid SSO session + staging.tfvars), installs Operator
 ##                      via Helm, applies the Bottlerocket-patched Agent overlay.
-deploy-k8s-dd: create-dd-secret dbm-setup
+deploy-k8s-dd: create-dd-secret
 	@echo "==> Detecting cluster environment..."
 	@IS_EKS=$$(kubectl get nodes -o jsonpath='{.items[0].spec.providerID}' 2>/dev/null | grep -c 'aws:///') ; \
 	IS_BOTTLEROCKET=$$(kubectl get nodes -o jsonpath='{.items[0].status.nodeInfo.osImage}' 2>/dev/null | grep -ic 'bottlerocket') ; \

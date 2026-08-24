@@ -132,6 +132,9 @@ spec:
       mutateUnlabelled: false # false = only inject into pods with admission.datadoghq.com/enabled:true label
       # Set to true to inject into ALL pods in non-excluded namespaces (simpler, but broader)
 
+    # ── DATADOG INSTRUMENTATION (Application/Cloud Security) ─────────────────
+    # Uncomment via 'make security' to enable ASM Threats/SCA, CWS, and CSPM.
+    #
     # ── APPLICATION SECURITY MANAGEMENT (ASM / AppSec) ───────────────────────
     # Detects and blocks web attacks (SQLi, XSS, SSRF, etc.) and tracks
     # business-logic threats (credential stuffing, payment fraud) in real time.
@@ -142,17 +145,19 @@ spec:
     #   - Tracks brute-force on /v1/payments (business logic rules)
     #   - Surfaces threats in Security > Application Security > Threats
     #
-    # Requires: DD_APPSEC_ENABLED=true on each service pod (see service manifests).
+    # Requires: DD_APPSEC_ENABLED=true on each service pod (see service manifests,
+    # also gated behind 'make security').
     # The Agent feature below enables the threat intake pipeline on the Agent side.
     #
     # Docs: https://docs.datadoghq.com/security/application_security/
     # Docs: https://docs.datadoghq.com/security/application_security/enabling/
-    asm:
-      threats:
-        enabled: true
-      sca:
-        enabled: true # Software Composition Analysis — OSS vulnerability scanning
-
+    #
+    # asm:
+    #   threats:
+    #     enabled: true
+    #   sca:
+    #     enabled: true # Software Composition Analysis — OSS vulnerability scanning
+    #
     # ── CLOUD WORKLOAD SECURITY (CWS / CSM Threats) ───────────────────────────
     # Runtime security monitoring at the kernel level via eBPF. Detects:
     #   - Unexpected process execution inside containers (e.g. shell in app pod)
@@ -173,35 +178,44 @@ spec:
     # CWS (eBPF system-probe) and CSPM host benchmarks are the heaviest
     # features here. On small nodes (e.g. EKS t3.medium) they add noticeable
     # CPU/memory and privileged-DaemonSet overhead. If the demo only needs
-    # APM + logs + metrics, comment out the `cws:` and `cspm:` blocks below
-    # (and `asm.sca` if OSS scanning isn't needed). For the full security
-    # suite, prefer t3.large nodes (see deploy/terraform/aws/staging.tfvars).
-    cws:
-      enabled: true
-      syscallMonitorEnabled: true # Audit syscalls for deeper forensic visibility
-
+    # APM + logs + metrics, leave the `cws:` and `cspm:` blocks below
+    # commented out (and `asm.sca` if OSS scanning isn't needed). For the
+    # full security suite, prefer t3.large nodes (see
+    # deploy/terraform/aws/staging.tfvars) before running 'make security'.
+    #
+    # cws:
+    #   enabled: true
+    #   syscallMonitorEnabled: true # Audit syscalls for deeper forensic visibility
+    #
     # ── CSM MISCONFIGURATIONS (CSPM) ──────────────────────────────────────────
     # Continuously evaluates K8s and cloud resources against CIS benchmarks,
     # PCI-DSS, SOC 2, and NIST frameworks.
     # Surfaces misconfigured RBAC, exposed secrets, insecure pod specs, etc.
     #
     # Docs: https://docs.datadoghq.com/security/cloud_security_management/misconfigurations/
-    cspm:
-      enabled: true
-      hostBenchmarks:
-        enabled: true # CIS benchmark checks on the underlying node OS
+    #
+    # cspm:
+    #   enabled: true
+    #   hostBenchmarks:
+    #     enabled: true # CIS benchmark checks on the underlying node OS
+    # ─────────────────────────────────────────────────────────────────────────
 
   # Cluster Agent replicas via override (Operator v2alpha1 >= 1.0)
   override:
     clusterAgent:
       replicas: 2 # HA for production
 
+    # ── DATADOG INSTRUMENTATION (Database Monitoring) ───────────────────────
+    # Uncomment via 'make dbm' to mount the postgres.d check config and inject
+    # the DBM role password below (both required for DBM — a ConfigMap or
+    # env var alone does nothing unless wired in like this).
+    #
     # ── DATABASE MONITORING (DBM) — PostgreSQL check config + password ─────
     # 1. Mounts the datadog-postgres-check ConfigMap (deploy/kubernetes/datadog/
     #    checks/postgres-check.yaml) into conf.d/postgres.d/conf.yaml so the
     #    Agent actually picks up the DBM check (a ConfigMap alone does nothing
     #    unless it's mounted like this).
-    # 2. Injects the 'datadog' DBM role's password (created by 'make dbm-setup')
+    # 2. Injects the 'datadog' DBM role's password (created by 'make dbm')
     #    into the node Agent container as an env var, referenced from the
     #    postgres.d check config via %%env_DD_DBM_POSTGRES_PASSWORD%% templating.
     #    This avoids requiring a full Agent secrets-backend script for a single
@@ -219,30 +233,43 @@ spec:
     #   "exec: java: executable file not found in $PATH"
     # image.jmxEnabled: true switches the Node Agent to the '-jmx' image
     # variant (e.g. 7.80.2-jmx), which bundles a JRE. Required for the
-    # ActiveMQ Artemis check below.
+    # ActiveMQ Artemis check below. Not DBM-gated — kept always-on since the
+    # ActiveMQ JMX check has no separate make target.
     # Docs: https://docs.datadoghq.com/integrations/java
     nodeAgent:
       image:
         jmxEnabled: true
       volumes:
-        - name: postgres-check-config
-          configMap:
-            name: datadog-postgres-check
+        # ── DATADOG INSTRUMENTATION (Database Monitoring) ───────────────────
+        # Uncomment via 'make dbm'.
+        #
+        # - name: postgres-check-config
+        #   configMap:
+        #     name: datadog-postgres-check
+        # ─────────────────────────────────────────────────────────────────────
         - name: activemq-check-config
           configMap:
             name: datadog-activemq-check
       containers:
         agent:
-          env:
-            - name: DD_DBM_POSTGRES_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: datadog-secret
-                  key: dbm-password
+          # ── DATADOG INSTRUMENTATION (Database Monitoring) ─────────────────
+          # Uncomment via 'make dbm' (adds the 'env:' key back with this entry).
+          #
+          # env:
+          #   - name: DD_DBM_POSTGRES_PASSWORD
+          #     valueFrom:
+          #       secretKeyRef:
+          #         name: datadog-secret
+          #         key: dbm-password
+          # ─────────────────────────────────────────────────────────────────
           volumeMounts:
-            - name: postgres-check-config
-              mountPath: /etc/datadog-agent/conf.d/postgres.d/conf.yaml
-              subPath: conf.yaml
+            # ── DATADOG INSTRUMENTATION (Database Monitoring) ───────────────────
+            # Uncomment via 'make dbm'.
+            #
+            # - name: postgres-check-config
+            #   mountPath: /etc/datadog-agent/conf.d/postgres.d/conf.yaml
+            #   subPath: conf.yaml
+            # ─────────────────────────────────────────────────────────────────────
             - name: activemq-check-config
               mountPath: /etc/datadog-agent/conf.d/activemq.d/conf.yaml
               subPath: conf.yaml

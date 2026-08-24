@@ -3,7 +3,7 @@
 @@ -38,15 +38,9 @@
          app: notification-service
          component: service
-         admission.datadoghq.com/enabled: "true"
+         # ─────────────────────────────────────────────────────────────────
 -        # ── DATADOG UST (Unified Service Tagging) ────────────────────────
 -        # Uncomment via 'make tags' to set the tags.datadoghq.com/* pod
 -        # labels used for Deployment Tracking / trace-log-metric correlation.

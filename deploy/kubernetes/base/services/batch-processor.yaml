@@ -64,12 +64,27 @@ spec:
         # init-image tags). More reproducible than "latest" (no surprise major
         # bumps) while still receiving patches; always resolvable — unlike exact
         # patch tags, which don't reliably exist as init-image tags.
-        admission.datadoghq.com/java-lib.version: "v1"
+        # ── DATADOG INSTRUMENTATION (Single Step library version) ────────
+        # Uncomment via 'make instrument' together with the
+        # admission.datadoghq.com/enabled label below — tells the Admission
+        # Controller webhook which tracer library to inject into this pod.
+        # Docs: https://docs.datadoghq.com/tracing/trace_collection/automatic_instrumentation/single-step-apm/
+        #
+        # admission.datadoghq.com/java-lib.version: "v1"
+        # ─────────────────────────────────────────────────────────────────
         ad.datadoghq.com/batch-processor.logs: '[{"source":"java","service":"batch-processor"}]'
       labels:
         app: batch-processor
         component: service
-        admission.datadoghq.com/enabled: "true"
+        # ── DATADOG INSTRUMENTATION (Single Step Instrumentation) ────────
+        # Uncomment via 'make instrument' to opt this pod into the Admission
+        # Controller webhook — injects the Datadog tracer at pod startup
+        # (APM traces, log-trace correlation, runtime metrics; no code
+        # changes, no rebuild required).
+        # Docs: https://docs.datadoghq.com/tracing/trace_collection/automatic_instrumentation/single-step-apm/
+        #
+        # admission.datadoghq.com/enabled: "true"
+        # ─────────────────────────────────────────────────────────────────
         # ── DATADOG UST (Unified Service Tagging) ────────────────────────
         # Uncomment via 'make tags' to set the tags.datadoghq.com/* pod
         # labels used for Deployment Tracking / trace-log-metric correlation.
@@ -148,13 +163,16 @@ spec:
             # - name: DD_LOGS_INJECTION
             #   value: "true"
             # ─────────────────────────────────────────────────────────────────
-            # ── APPLICATION SECURITY MANAGEMENT (ASM) ───────────────────────
-            # Enables AppSec threat detection in the tracer. Works alongside
-            # the Agent-side asm.threats feature in datadog-agent.yaml.
-            # Detects SQLi, XSS, SSRF and business-logic attacks at runtime.
+            # ── DATADOG INSTRUMENTATION (Application Security Management) ───
+            # Uncomment via 'make security' to enable AppSec threat detection
+            # in the tracer. Works alongside the Agent-side asm.threats
+            # feature in datadog-agent.yaml. Detects SQLi, XSS, SSRF and
+            # business-logic attacks at runtime.
             # Docs: https://docs.datadoghq.com/security/application_security/
-            - name: DD_APPSEC_ENABLED
-              value: "true"
+            #
+            # - name: DD_APPSEC_ENABLED
+            #   value: "true"
+            # ─────────────────────────────────────────────────────────────────
             # ── DATA JOBS MONITORING (DJM) ──────────────────────────────────
             # Surfaces Spring Batch job runs under APM > Data Jobs. Equivalent
             # to the -Ddd.data.jobs.enabled=true JVM flag; no rebuild needed.

@@ -32,12 +32,29 @@ spec:
         # documentation). Go APM is enabled in-code via tracer.Start() (see
         # main.go) plus compile-time instrumentation (orchestrion), not here.
         # Docs: https://docs.datadoghq.com/tracing/trace_collection/automatic_instrumentation/single-step-apm/
-        admission.datadoghq.com/go-lib.version: latest
+        # ── DATADOG INSTRUMENTATION (Single Step library version) ────────
+        # Uncomment via 'make instrument' (kept for parity/documentation —
+        # Go does NOT support single-step library injection; the Admission
+        # Controller creates no init container for Go, so this annotation is
+        # effectively a no-op once uncommented. Go APM is enabled in-code via
+        # tracer.Start() in main.go instead, gated by the same
+        # 'make instrument').
+        # Docs: https://docs.datadoghq.com/tracing/trace_collection/automatic_instrumentation/single-step-apm/
+        #
+        # admission.datadoghq.com/go-lib.version: latest
+        # ─────────────────────────────────────────────────────────────────
         ad.datadoghq.com/notification-service.logs: '[{"source":"go","service":"notification-service"}]'
       labels:
         app: notification-service
         component: service
-        admission.datadoghq.com/enabled: "true"
+        # ── DATADOG INSTRUMENTATION (Single Step Instrumentation) ────────
+        # Uncomment via 'make instrument' to opt this pod into the Admission
+        # Controller webhook (no-op for Go — see the library-version
+        # annotation above; kept for parity across all 6 services).
+        # Docs: https://docs.datadoghq.com/tracing/trace_collection/automatic_instrumentation/single-step-apm/
+        #
+        # admission.datadoghq.com/enabled: "true"
+        # ─────────────────────────────────────────────────────────────────
         # ── DATADOG UST (Unified Service Tagging) ────────────────────────
         # Uncomment via 'make tags' to set the tags.datadoghq.com/* pod
         # labels used for Deployment Tracking / trace-log-metric correlation.
@@ -107,13 +124,16 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: status.hostIP
-            # ── APPLICATION SECURITY MANAGEMENT (ASM) ───────────────────────
-            # Enables AppSec threat detection in the tracer. Works alongside
-            # the Agent-side asm.threats feature in datadog-agent.yaml.
-            # Detects SQLi, XSS, SSRF and business-logic attacks at runtime.
+            # ── DATADOG INSTRUMENTATION (Application Security Management) ───
+            # Uncomment via 'make security' to enable AppSec threat detection
+            # in the tracer. Works alongside the Agent-side asm.threats
+            # feature in datadog-agent.yaml. Detects SQLi, XSS, SSRF and
+            # business-logic attacks at runtime.
             # Docs: https://docs.datadoghq.com/security/application_security/
-            - name: DD_APPSEC_ENABLED
-              value: "true"
+            #
+            # - name: DD_APPSEC_ENABLED
+            #   value: "true"
+            # ─────────────────────────────────────────────────────────────────
             # ── DATA STREAMS MONITORING (DSM) ───────────────────────────────
             # JMS consumer on alert.queue. Enabling the flag turns DSM on; for
             # full pipeline stitching a Go consumer checkpoint may be required
