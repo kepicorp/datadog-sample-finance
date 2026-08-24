@@ -191,6 +191,17 @@ spec:
             # Docs: https://docs.datadoghq.com/data_streams/
             - name: DD_DATA_STREAMS_ENABLED
               value: "true"
+            # ── CONTINUOUS PROFILER ──────────────────────────────────────────
+            # Uncomment via 'make instrument' to enable Continuous Profiler for
+            # this service — correlate CPU flame graphs with slow traces.
+            # Single Step Instrumentation already injects dd-trace for Node.js
+            # APM; dd-trace's profiler is enabled by this plain env var, no
+            # code changes needed.
+            # Docs: https://docs.datadoghq.com/profiler/
+            #
+            # - name: DD_PROFILING_ENABLED
+            #   value: "true"
+            # ─────────────────────────────────────────────────────────────────
           # ── Health checks ──────────────────────────────────────────────────
           livenessProbe:
             httpGet:

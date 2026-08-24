@@ -179,6 +179,17 @@ spec:
             # Docs: https://docs.datadoghq.com/data_jobs/
             - name: DD_DATA_JOBS_ENABLED
               value: "true"
+            # ── CONTINUOUS PROFILER ──────────────────────────────────────────
+            # Uncomment via 'make instrument' to enable Continuous Profiler for
+            # this service — correlate CPU flame graphs with slow batch steps.
+            # Single Step Instrumentation already injects dd-java-agent for
+            # Java APM; dd-java-agent honors DD_PROFILING_ENABLED as a plain
+            # env var, no JVM flag / Dockerfile changes needed.
+            # Docs: https://docs.datadoghq.com/profiler/
+            #
+            # - name: DD_PROFILING_ENABLED
+            #   value: "true"
+            # ─────────────────────────────────────────────────────────────────
           # HTTP probes against Spring Boot Actuator — batch-processor now
           # runs an embedded web server (spring-boot-starter-web) to expose
           # the on-demand job trigger endpoints (/jobs/reconciliation,

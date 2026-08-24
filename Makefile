@@ -162,11 +162,18 @@ help:
 version:
 	@echo "DD_VERSION=$(DD_VERSION)"
 
-## instrument: Uncomment the APM custom-span instrumentation blocks (transaction-service,
-##             notification-service). Applies unified diff patches — fully reversible
-##             with make uninstrument. Idempotent: a second run is a clean no-op
-##             (tracked via .instrumentation-applied). See INSTRUMENTATION.md for what
-##             each patch enables. APM only — for Browser RUM, see 'make dem'.
+## instrument: Uncomment In-depth instrumentation — three narrated steps under one
+##             sentinel: (1) the APM custom-span patches (transaction-service,
+##             notification-service — unchanged), (2) Single Step Instrumentation
+##             gating (admission.datadoghq.com/enabled label + <lang>-lib.version
+##             annotation, all 6 services), (3) Continuous Profiler
+##             (DD_PROFILING_ENABLED, 5 services — not notification-service, whose
+##             profiler is already gated by step 1's Go patch). Applies unified diff
+##             patches — fully reversible with make uninstrument. Idempotent: a
+##             second run is a clean no-op (tracked via .instrumentation-applied).
+##             See INSTRUMENTATION.md for what each patch enables. APM + Single Step
+##             + Profiler only — for UST/log injection see 'make tags', for AppSec
+##             see 'make security', for Browser RUM see 'make dem'.
 ##
 ##             After patching, redeploy:
 ##               Local:  make build && load images into k3s && kubectl rollout restart deployment -n finance
@@ -175,10 +182,30 @@ instrument:
 	@if [ -f .instrumentation-applied ]; then \
 		echo "Instrumentation already enabled. Run 'make uninstrument' first to reapply."; \
 	else \
-		echo "Applying instrumentation patches..."; \
+		echo "Step 1: Applying APM custom-span patches (transaction-service, notification-service)..."; \
 		for p in scripts/patches/*.patch; do \
 			svc=$$(basename $$p .patch); \
 			echo "  $$svc"; \
+			patch -p1 --forward -s < $$p || true; \
+		done; \
+		echo ""; \
+		echo "Step 2: Enabling Single Step Instrumentation (Admission Controller) gating..."; \
+		echo "  Why: admission.datadoghq.com/enabled + the <lang>-lib.version annotation"; \
+		echo "  are what opt each pod into tracer injection at startup. Uncommenting now"; \
+		echo "  on all 6 service manifests:"; \
+		for p in scripts/patches/instrument-sso/sso-*.patch; do \
+			svc=$$(basename $$p .patch | sed 's/^sso-//'); \
+			echo "    $$svc"; \
+			patch -p1 --forward -s < $$p || true; \
+		done; \
+		echo ""; \
+		echo "Step 3: Enabling Continuous Profiler (DD_PROFILING_ENABLED)..."; \
+		echo "  Why: correlates CPU flame graphs with slow traces/batch steps. 5 of 6"; \
+		echo "  services (not notification-service — its Go profiler is already gated"; \
+		echo "  by step 1's patch):"; \
+		for p in scripts/patches/instrument-sso/profiler-*.patch; do \
+			svc=$$(basename $$p .patch | sed 's/^profiler-//'); \
+			echo "    $$svc"; \
 			patch -p1 --forward -s < $$p || true; \
 		done; \
 		touch .instrumentation-applied; \
@@ -187,9 +214,10 @@ instrument:
 		$(print_redeploy_hint); \
 	fi
 
-## uninstrument: Re-comment the APM custom-span instrumentation blocks (reverse of make instrument).
-##               Restores every file to its original commented-out state. APM only —
-##               for Browser RUM, see 'make undem'.
+## uninstrument: Reverse all three make instrument steps (Continuous Profiler, then
+##               Single Step Instrumentation gating, then APM custom-span patches —
+##               opposite order from make instrument). Restores every file to its
+##               original commented-out state.
 ##
 ##               After patching, redeploy:
 ##                 Local:  make build && load images into k3s && kubectl rollout restart deployment -n finance
@@ -198,7 +226,19 @@ uninstrument:
 	@if [ ! -f .instrumentation-applied ]; then \
 		echo "Instrumentation is not currently enabled (nothing to reverse)."; \
 	else \
-		echo "Reversing instrumentation patches..."; \
+		echo "Reversing Continuous Profiler patches..."; \
+		for p in scripts/patches/instrument-sso/profiler-*.patch; do \
+			svc=$$(basename $$p .patch | sed 's/^profiler-//'); \
+			echo "  $$svc"; \
+			patch -p1 --reverse -s < $$p || true; \
+		done; \
+		echo "Reversing Single Step Instrumentation gating patches..."; \
+		for p in scripts/patches/instrument-sso/sso-*.patch; do \
+			svc=$$(basename $$p .patch | sed 's/^sso-//'); \
+			echo "  $$svc"; \
+			patch -p1 --reverse -s < $$p || true; \
+		done; \
+		echo "Reversing APM custom-span patches..."; \
 		for p in scripts/patches/*.patch; do \
 			svc=$$(basename $$p .patch); \
 			echo "  $$svc"; \
