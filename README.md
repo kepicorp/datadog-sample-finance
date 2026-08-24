@@ -206,6 +206,8 @@ kubectl logs -n finance deploy/traffic-generator -f   # 200/201 responses, no 40
 ```
 Open the **Finance dashboard** at `http://localhost:30080` and log in as `carol.admin` / `Finance@2025!` (see [Credentials](#credentials) for all users and URLs).
 
+> **First login will fail until you accept Keycloak's self-signed certificate** — see [Miscellaneous](#miscellaneous) for the one-time browser step.
+
 > If the traffic generator logs show `401` / `invalid_client_credentials`, see [TROUBLESHOOTING.md](./TROUBLESHOOTING.md).
 
 ---
