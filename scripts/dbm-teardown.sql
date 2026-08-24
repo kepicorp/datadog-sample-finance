@@ -22,6 +22,13 @@ REVOKE SELECT ON transactions FROM datadog;
 REVOKE SELECT ON pg_stat_database FROM datadog;
 REVOKE pg_monitor FROM datadog;
 
+-- 3b. Revoke the schema usage grant from dbm-setup.sql step 4 (public schema
+--     usage, not the 'datadog' schema — that one is dropped via CASCADE
+--     above). Without this, DROP ROLE below fails: "role datadog cannot be
+--     dropped because some objects depend on it / privileges for schema
+--     public".
+REVOKE USAGE ON SCHEMA public FROM datadog;
+
 -- NOTE: pg_stat_statements is left installed — it's a server-wide extension,
 -- not owned by or scoped to the 'datadog' role, and other checks/queries may
 -- rely on it. Dropping it here would be a bigger, unrelated change than

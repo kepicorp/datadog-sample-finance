@@ -902,6 +902,65 @@ undbm:
 		echo "    EKS:   kubectl apply -k deploy/kubernetes/overlays/eks-datadog && kubectl rollout restart daemonset/datadog -n datadog"; \
 	fi
 
+## security: Enable Application/Cloud Security (ASM Threats+SCA, CWS, CSPM).
+##           Two narrated steps, one sentinel: (1) Agent-side —
+##           scripts/patches/security/agent-security.patch uncomments the
+##           asm/cws/cspm feature blocks in datadog-agent.yaml, (2) App-side —
+##           scripts/patches/security/appsec-<service>.patch (all 6 services)
+##           uncomments each service's DD_APPSEC_ENABLED env entry. Idempotent:
+##           tracked via .security-applied — a second run is a clean no-op.
+##           Fully reversible with make unsecurity.
+##
+##           After patching, redeploy:
+##             Agent: kubectl apply -k deploy/kubernetes/datadog/agent && kubectl rollout restart daemonset/datadog -n datadog
+##             Apps:  make build && load images into k3s && kubectl rollout restart deployment -n finance
+security:
+	@if [ -f .security-applied ]; then \
+		echo "Security already enabled. Run 'make unsecurity' first to reapply."; \
+	else \
+		echo "Step (a): Enabling Agent-side security (ASM Threats/SCA, CWS, CSPM)..."; \
+		echo "  Why: these agent features turn on the threat-intake pipeline, eBPF"; \
+		echo "  runtime monitoring, and CIS benchmark checks. Uncommenting now in"; \
+		echo "  datadog-agent.yaml:"; \
+		patch -p1 --forward -s < scripts/patches/security/agent-security.patch || true; \
+		echo ""; \
+		echo "Step (b): Enabling App-side AppSec (DD_APPSEC_ENABLED)..."; \
+		echo "  Why: the tracer needs DD_APPSEC_ENABLED=true to actually instrument"; \
+		echo "  requests for SQLi/XSS/SSRF/business-logic threats. Uncommenting now"; \
+		echo "  on all 6 service manifests:"; \
+		for p in scripts/patches/security/appsec-*.patch; do \
+			svc=$$(basename $$p .patch | sed 's/^appsec-//'); \
+			echo "    $$svc"; \
+			patch -p1 --forward -s < $$p || true; \
+		done; \
+		touch .security-applied; \
+		echo ""; \
+		echo "✓ Security enabled. Redeploy to activate:"; \
+		echo "    Agent: kubectl apply -k deploy/kubernetes/datadog/agent && kubectl rollout restart daemonset/datadog -n datadog"; \
+		echo "    Apps:  make build && load images into k3s && kubectl rollout restart deployment -n finance"; \
+	fi
+
+## unsecurity: Disable Application/Cloud Security (reverse of make security).
+##             Restores every file to its original commented-out state.
+unsecurity:
+	@if [ ! -f .security-applied ]; then \
+		echo "Security is not currently enabled (nothing to reverse)."; \
+	else \
+		echo "Reversing App-side AppSec patches..."; \
+		for p in scripts/patches/security/appsec-*.patch; do \
+			svc=$$(basename $$p .patch | sed 's/^appsec-//'); \
+			echo "  $$svc"; \
+			patch -p1 --reverse -s < $$p || true; \
+		done; \
+		echo "Reversing Agent-side security config..."; \
+		patch -p1 --reverse -s < scripts/patches/security/agent-security.patch || true; \
+		rm -f .security-applied; \
+		echo ""; \
+		echo "✓ Security disabled. Redeploy to deactivate:"; \
+		echo "    Agent: kubectl apply -k deploy/kubernetes/datadog/agent && kubectl rollout restart daemonset/datadog -n datadog"; \
+		echo "    Apps:  make build && load images into k3s && kubectl rollout restart deployment -n finance"; \
+	fi
+
 ## dd-secrets: Print eval-ready 'export TF_VAR_datadog_api_key=...' commands for use with
 ##             tf-apply-dd / tf-plan-dd. Resolves the keys in priority order:
 ##               1. AWS Secrets Manager  — if an SSO session for aws_profile is active
