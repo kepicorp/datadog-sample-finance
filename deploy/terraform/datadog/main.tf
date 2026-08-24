@@ -137,6 +137,23 @@ resource "datadog_logs_index" "finance_app" {
     query = local.finance_log_filter
   }
 
+  # Best practice: don't pay to index verbose DEBUG-level noise. The status
+  # remapper processor below (in datadog_logs_custom_pipeline.finance_app)
+  # maps each service's level/severity field to Datadog's standard 'status'
+  # facet, so this can filter on status:debug directly. sample_rate = 1
+  # means 100% of matching logs are excluded (dropped before indexing/
+  # billing) — set it lower (e.g. 0.1) instead of 1 if you want to keep a
+  # small sample of DEBUG logs for troubleshooting rather than none at all.
+  # Docs: https://docs.datadoghq.com/logs/log_configuration/indexes/#exclusion-filters
+  exclusion_filter {
+    name       = "Drop DEBUG-level logs"
+    is_enabled = true
+    filter {
+      query       = "status:debug"
+      sample_rate = 1
+    }
+  }
+
   # Daily quota — prevent runaway log ingestion from crashing the budget.
   # NOTE: the Datadog API's daily_limit is denominated in BYTES, not MB.
   # 500 MB/day for staging == 500,000,000 bytes. A previous value of

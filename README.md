@@ -109,7 +109,7 @@ kubectl get nodes   # 1 node Ready
 
 ### Option B — AWS EKS
 
-Additionally requires AWS CLI ≥ 2.x and an SSO profile (`aws configure sso`). See [AWS EKS section](#aws--eks-via-terraform).
+Additionally requires AWS CLI ≥ 2.x and an SSO profile (`aws configure sso`). See the "AWS EKS via Terraform" section below.
 
 ### Common tools
 
@@ -287,14 +287,13 @@ helm install datadog-operator datadog/datadog-operator \
 make deploy-k8s-dd   # creates the datadog-secret from .env, then deploys the Agent
 ```
 
-APM traces, logs, and metrics appear in Datadog within ~2 minutes. No code changes needed — the Admission Controller injects the tracer library automatically via init containers.
+The Datadog Agent and Cluster Agent are now running, but Single Step Instrumentation ships commented out by default — run `make instrument` next to enable it (see [INSTRUMENTATION.md](./INSTRUMENTATION.md)) before expecting APM traces to appear.
 
 > #### ✅ Verify before continuing
 > - [ ] `kubectl get pods -n datadog` — Agent DaemonSet pods and `datadog-cluster-agent` all `Running`
 > - [ ] `kubectl get datadogagent -n datadog` — shows `Running` for both Agent and ClusterAgent
-> - [ ] Admission Controller enabled: `kubectl get pod -n finance -l app=gateway-api -o jsonpath='{.items[0].spec.initContainers[*].name}'` — shows `datadog-lib-python-init` (or the equivalent per-language init container)
 >
-> If init containers are missing, see [INSTRUMENTATION.md's Admission Controller troubleshooting](./INSTRUMENTATION.md#admission-controller-injection-not-working).
+> Init containers (`datadog-lib-python-init` etc.) only appear on app pods after `make instrument` has run — see [INSTRUMENTATION.md's Admission Controller troubleshooting](./INSTRUMENTATION.md#admission-controller-injection-not-working) if they're still missing at that point.
 
 Watch traces flowing:
 ```bash
