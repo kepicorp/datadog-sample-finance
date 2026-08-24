@@ -70,16 +70,16 @@ Supporting infrastructure:
 | PostgreSQL 15 | `postgres:15` | Primary ledger database |
 | Redis 7 | `redis:7` | Session store and cache |
 | ActiveMQ Artemis | `apache/activemq-artemis` | JMS 2.0 broker (mirrors IBM MQ / TIBCO patterns) |
-| | `quay.io/keycloak/keycloak:26.0` | OIDC for gateway-api · SAML SSO for Datadog |
+| Keycloak 26 | `quay.io/keycloak/keycloak:26.0` | OIDC for gateway-api · SAML SSO for Datadog |
 | NGINX | `nginx:1.25` | Reverse proxy · frontend dashboard |
 
 ---
 
 ## Prerequisites
 
-The app runs on Kubernetes. You need either a local cluster or an AWS account.
+The app runs on Kubernetes. You need either a local cluster or an AWS account — both are fully supported paths, pick whichever fits your setup.
 
-### Option A — Local Kubernetes (recommended)
+### Option A — Local Kubernetes
 
 | Tool | Install | Notes |
 |---|---|---|
@@ -89,33 +89,25 @@ The app runs on Kubernetes. You need either a local cluster or an AWS account.
 | **k3d** | `brew install k3d && k3d cluster create finance` | k3s in Docker. Fast startup. |
 | **minikube** | `brew install minikube && minikube start` | Feature-rich, good driver support. |
 
-**Docker Desktop quickstart:**
 ```bash
-# 1. Open Docker Desktop → Settings → Kubernetes → Enable Kubernetes → Apply
+# Docker Desktop quickstart
+# 1. Docker Desktop → Settings → Kubernetes → Enable Kubernetes → Apply
 # 2. Install kubectl and helm
 brew install kubectl helm
 kubectl get nodes   # 1 node Ready
 ```
 
-> **Image availability by tool:**
-> - **Docker Desktop / Rancher Desktop** — images built with `docker build` are available inside the cluster immediately. No extra step needed.
-> - **kind** — `kind load docker-image finance-sample-app-<svc>:latest`
-> - **k3d** — `k3d image import finance-sample-app-<svc>:latest`
-> - **minikube** — `minikube image load finance-sample-app-<svc>:latest`
-> - **Colima (with Kubernetes)** — its k3s uses containerd, so import into the `k8s.io` namespace (not just Docker): `docker save finance-sample-app-<svc>:latest | colima ssh -- sudo ctr -n k8s.io image import -`
+> **Image loading:** Docker Desktop / Rancher Desktop pick up locally built images automatically. Other tools need an explicit load step — see [Redeploy & Teardown](#redeploy--teardown).
 
-> **NOTE**
-> Please note that synthetics test will not work with local k8s unless you set up internal location as your network is not reachable by public cloud.
+> **Note:** Synthetic tests won't work against a local cluster unless you configure a private location — your cluster isn't reachable from Datadog's public testing infrastructure.
 
 ### Option B — AWS EKS
 
-Additionally requires AWS CLI ≥ 2.x and an SSO profile (`aws configure sso`). See the "AWS EKS via Terraform" section below.
+Additionally requires AWS CLI ≥ 2.x and an SSO profile (`aws configure sso`). See [Redeploy & Teardown → AWS EKS](#aws-eks).
 
 ### Common tools
 
-Required for **both** local and AWS EKS — Terraform isn't just for AWS: it's also
-how you apply the Datadog resources (monitors, dashboard, synthetics, log
-pipeline) via `make tf-apply-dd`, regardless of where the app itself runs.
+Required for **both** local and AWS EKS — Terraform isn't just for AWS: it's also how you apply the Datadog resources (monitors, dashboard, synthetics, log pipeline) via `make tf-apply-dd`, regardless of where the app itself runs.
 
 ```bash
 brew install kubectl helm terraform
@@ -126,16 +118,7 @@ You also need a **Datadog account** with:
 - API key: https://app.datadoghq.com/organization-settings/api-keys
 - App key: https://app.datadoghq.com/organization-settings/application-keys
 
-> ⚠️ **Application Key value, not Application Key ID.** The Application Keys page
-> prominently shows the **Key ID** in the main list — that is NOT what you want.
-> Click into the key (or use the "copy" icon next to a *newly created* key) to
-> reveal the actual **key value**, a much longer string. Using the Key ID for
-> `DD_APP_KEY` / `TF_VAR_datadog_app_key` causes `401 Unauthorized` errors on
-> every Terraform apply, with no indication of what's actually wrong.
-> ```
-> DD_APP_KEY=ddapp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx   ✅ correct (key VALUE)
-> DD_APP_KEY=a1b2c3d4-e5f6-7890-abcd-ef1234567890             ❌ wrong (key ID — looks like a UUID)
-> ```
+> ⚠️ **Application Key value, not Application Key ID.** The Application Keys page shows the **Key ID** in the main list — that's not what you want. Click into the key (or use the copy icon on a *newly created* key) to get the actual **key value**. Using the Key ID causes `401 Unauthorized` on every Terraform apply.
 
 Add both to `.env` (copied from `.env.example` — git-ignored):
 ```bash
@@ -172,13 +155,11 @@ All credentials for local development are pre-set in `.env` and `deploy/kubernet
 | **Keycloak finance realm account** | `https://localhost:30443/realms/finance/account/` | Self-service account page for realm users |
 | **ActiveMQ management console** | `kubectl port-forward svc/activemq-artemis 8161:8161 -n finance` then `http://localhost:8161` | Broker metrics and queue management (not proxied through nginx) |
 
-> ⚠ **Self-signed certificate — accept it before logging in.** The Finance dashboard's login flow calls Keycloak directly at `https://localhost:30443`, which nginx serves with a self-signed cert (local-only — EKS uses a real ACM certificate instead, see [AWS EKS deployment](#aws-eks-via-terraform)). Before your first login attempt, visit `https://localhost:30443` in your browser and accept the security warning (**Advanced → Accept the Risk** in Firefox, **Advanced → Proceed** in Chrome). You only need to do this once per browser profile — skipping it makes dashboard login fail with a `NetworkError` / "Failed to fetch" style error. This does **not** affect the in-cluster traffic generator, which talks to Keycloak over plain HTTP via its ClusterIP service name and never goes through the self-signed HTTPS proxy.
+> The Keycloak login flow hits a self-signed certificate — see [Miscellaneous](#miscellaneous) before your first login.
 
 ### Finance realm users and roles
 
-Pre-imported into the `finance` Keycloak realm. Log in via the Finance dashboard at `http://localhost:30080` — it redirects to Keycloak at `https://localhost:30443` automatically.
-
-All users share the password **`Finance@2025!`**.
+Pre-imported into the `finance` Keycloak realm. Log in via the Finance dashboard at `http://localhost:30080` — it redirects to Keycloak automatically. All users share the password **`Finance@2025!`**.
 
 | Username | Role | Dashboard capabilities |
 |---|---|---|
@@ -187,8 +168,6 @@ All users share the password **`Finance@2025!`**.
 | `carol.admin` | `finance-admin` | Everything trader can do · **Make deposits** · **Approve/reject payments** · Create accounts |
 | `dave.auditor` | `finance-auditor` | View accounts list · Check balances · Read-only |
 | `eve.compliance` | `finance-compliance` | View accounts · **Approve or reject pending payments** |
-
-#### What each dashboard card shows per role
 
 | Dashboard card | analyst | trader | admin | auditor | compliance |
 |---|---|---|---|---|---|
@@ -211,13 +190,7 @@ Set in `.env` — read automatically by `make create-dd-secret`:
 
 > **Security:** `.env` is git-ignored and must never be committed. All values in `02-secrets.yaml` are development-only defaults — rotate everything before any staging or production deployment.
 
-The `datadog-secret` K8s Secret (`datadog` namespace) is created automatically by `make deploy-k8s-dd` (via `make create-dd-secret`) from the values above — locally from `.env`, on EKS from AWS Secrets Manager. To verify what's stored:
-
-```bash
-kubectl get secret datadog-secret -n datadog \
-  -o jsonpath='{.data}' | python3 -m json.tool
-# Expected keys: api-key, app-key, dbm-password
-```
+The `datadog-secret` K8s Secret (`datadog` namespace) is created automatically by `make deploy-k8s-dd` from the values above — locally from `.env`, on EKS from AWS Secrets Manager.
 
 **GitOps / production:** use the External Secrets Operator to sync from AWS Secrets Manager or Vault instead of `.env`. An `ExternalSecret` manifest is in `deploy/kubernetes/datadog/secrets/datadog-secrets.yaml`. Docs: https://external-secrets.io/
 
@@ -228,84 +201,37 @@ kubectl get secret datadog-secret -n datadog \
 The app runs cleanly with no Datadog config. No API key needed for the first run.
 
 ```bash
-# 1. Build all service images
-make build
-
-# 2. Load images into the cluster (skip this step on Docker Desktop / Rancher Desktop)
-# kind:     kind load docker-image finance-sample-app-<svc>:latest
-# k3d:      k3d image import finance-sample-app-<svc>:latest
-# minikube: minikube image load finance-sample-app-<svc>:latest
-# Colima:   docker save finance-sample-app-<svc>:latest | colima ssh -- sudo ctr -n k8s.io image import -
-
-# 3. Deploy
-make deploy-k8s
+make build            # build all service images
+make deploy-k8s       # deploy the app + in-cluster traffic generator
 ```
 
-The stack is ready when all pods are Running:
+> Loading images into non-Docker-Desktop clusters (kind/k3d/minikube/Colima) needs an extra step — see [Redeploy & Teardown](#redeploy--teardown).
+
+**Confirm it's working:**
 ```bash
-kubectl get pods -n finance
+kubectl get pods -n finance                          # all 12 pods Running
+kubectl logs -n finance deploy/traffic-generator -f   # 200/201 responses, no 401 storms
 ```
+Open the **Finance dashboard** at `http://localhost:30080` and log in as `carol.admin` / `Finance@2025!` (see [Credentials](#credentials) for all users and URLs).
 
-Traffic starts flowing automatically from the in-cluster `traffic-generator` pod:
-```bash
-kubectl logs -n finance deploy/traffic-generator -f
-```
-
-**Finance dashboard:** `http://localhost:30080` — log in with any finance realm user (e.g. `carol.admin` / `Finance@2025!`).
-
-**Keycloak admin console:** `https://localhost:30443/admin/master/console/#/finance` — log in as `admin` / `Finance@Admin2025!`.
-
-See [Credentials](#credentials) for all users, roles, and URLs.
-
-> #### ✅ Verify before continuing
-> - [ ] `kubectl get pods -n finance` — all 12 pods `Running` (incl. `traffic-generator`)
-> - [ ] `kubectl logs -n finance deploy/traffic-generator -f` — shows successful (non-401) requests
-> - [ ] Finance dashboard loads at `http://localhost:30080` and login succeeds
->
-> If the traffic generator logs show `401` / `invalid_client_credentials`, the
-> `KEYCLOAK_CLIENT_SECRET` env var on the `traffic-generator` Deployment doesn't
-> match the real `app-secrets` secret — check `kubectl get deployment
-> traffic-generator -n finance -o yaml | grep -A3 KEYCLOAK_CLIENT_SECRET`.
+> If the traffic generator logs show `401` / `invalid_client_credentials`, see [TROUBLESHOOTING.md](./TROUBLESHOOTING.md).
 
 ---
 
 ## Adding Datadog
 
 ```bash
-# Deploy the Datadog Agent (creates the secret automatically from .env, then deploys Operator + DaemonSet)
-make deploy-k8s-dd
+make deploy-k8s-dd   # installs the Datadog Operator (if absent), creates the secret, deploys the Agent
 ```
 
-`make deploy-k8s-dd` installs the Datadog Operator automatically (via Helm) if it's absent, then creates `datadog-secret` and deploys the Agent. To install the Operator manually instead:
+The Agent and Cluster Agent are now running, but instrumentation ships commented out by default — run `make instrument` next (see [Instrumentation](#instrumentation)) before expecting APM traces.
 
+**Confirm it's working:**
 ```bash
-helm repo add datadog https://helm.datadoghq.com
-helm install datadog-operator datadog/datadog-operator \
-  --namespace datadog --create-namespace \
-  --set watchNamespaces='{datadog,finance}'
-
-make deploy-k8s-dd   # creates the datadog-secret from .env, then deploys the Agent
-```
-
-The Datadog Agent and Cluster Agent are now running, but Single Step Instrumentation ships commented out by default — run `make instrument` next to enable it (see [INSTRUMENTATION.md](./INSTRUMENTATION.md)) before expecting APM traces to appear.
-
-> #### ✅ Verify before continuing
-> - [ ] `kubectl get pods -n datadog` — Agent DaemonSet pods and `datadog-cluster-agent` all `Running`
-> - [ ] `kubectl get datadogagent -n datadog` — shows `Running` for both Agent and ClusterAgent
->
-> Init containers (`datadog-lib-python-init` etc.) only appear on app pods after `make instrument` has run — see [INSTRUMENTATION.md's Admission Controller troubleshooting](./INSTRUMENTATION.md#admission-controller-injection-not-working) if they're still missing at that point.
-
-Watch traces flowing:
-```bash
+kubectl get pods -n datadog                           # Agent DaemonSet + datadog-cluster-agent Running
 kubectl exec -n datadog daemonset/datadog-agent -c trace-agent -- agent status | grep "Traces received"
 ```
-
-> #### ✅ Verify before continuing
-> - [ ] `agent status | grep "Traces received"` shows a non-zero count
-> - [ ] APM > Services in Datadog shows all 6 services within ~2 minutes
-> - [ ] Clicking into a trace shows a connected flame graph across services (e.g. `gateway-api` → `account-service`)
-
-> **Note:** `make test` / `make test-traffic` run from your laptop and need manual port-forwards first — see [INSTRUMENTATION.md's Makefile targets](./INSTRUMENTATION.md#makefile-targets) for the commands. You normally don't need either: the in-cluster `traffic-generator` pod already generates continuous traffic with no port-forward required.
+Then check **APM > Services** in Datadog — all 6 services should appear within ~2 minutes, with a connected flame graph across services.
 
 ---
 
@@ -314,15 +240,10 @@ kubectl exec -n datadog daemonset/datadog-agent -c trace-agent -- agent status |
 Traffic is generated **automatically** by the `traffic-generator` Deployment running inside the cluster. It starts with the app and runs continuously — no scripts needed from your laptop.
 
 ```bash
-# Watch live output
-kubectl logs -n finance deploy/traffic-generator -f
-
-# Pause / resume
-kubectl scale deployment traffic-generator --replicas=0 -n finance
-kubectl scale deployment traffic-generator --replicas=1 -n finance
-
-# Tune rate (requests per second)
-kubectl set env deployment/traffic-generator TRAFFIC_RATE=5 -n finance
+kubectl logs -n finance deploy/traffic-generator -f                       # watch live output
+kubectl scale deployment traffic-generator --replicas=0 -n finance        # pause
+kubectl scale deployment traffic-generator --replicas=1 -n finance        # resume
+kubectl set env deployment/traffic-generator TRAFFIC_RATE=5 -n finance    # tune rate (req/s)
 ```
 
 Traffic mix:
@@ -339,128 +260,38 @@ Traffic mix:
 
 ## Instrumentation
 
-Instrumentation is layered. Full guide: **[INSTRUMENTATION.md](./INSTRUMENTATION.md)**.
+Instrumentation is layered and fully reversible — a fresh `make deploy-k8s` + `make deploy-k8s-dd` deploys the app and Agent cleanly with everything below commented out. Full guide: **[INSTRUMENTATION.md](./INSTRUMENTATION.md)**.
 
-Nothing is automatic anymore — a fresh `make deploy-k8s` + `make deploy-k8s-dd` deploys the app and Agent cleanly with Single Step Instrumentation, DBM, and ASM/CWS/CSPM all commented out. Each opt-in stage below is independently reversible:
+- **`make tags`** — Unified Service Tagging + log-trace correlation on all six services.
+- **`make dbm`** — Database Monitoring for PostgreSQL (Agent config + read-only DB role).
+- **`make instrument`** — APM custom spans, Single Step Instrumentation, Continuous Profiler, Data Streams/Data Jobs Monitoring.
+- **`make dem`** — Digital Experience Monitoring (Browser RUM + Session Replay) for the frontend.
+- **`make security`** — Application/Cloud Security (ASM, CWS, CSPM).
+- **`make tf-apply-dd`** — Datadog resources: monitors, SLOs, dashboard, synthetics, log pipeline.
 
-- **Tags + log injection — `make tags`.** Uncomments Unified Service Tagging (pod labels + `DD_ENV`/`DD_SERVICE`/`DD_VERSION`) on all six manifests, and log-trace correlation for services with a baked-in/self-managed tracer (Python, Node, Java, Go). See [`make tags`](./INSTRUMENTATION.md#make-tags).
-- **Database Monitoring — `make dbm`.** Agent-side `postgres.d` config + a dedicated read-only PostgreSQL `datadog` role. See [`make dbm`](./INSTRUMENTATION.md#make-dbm).
-- **In-depth instrumentation — `make instrument`.** Uncomments the `transaction-service` `payment.authorize` span and the `notification-service` (Go) APM tracer/profiler/`alert.send` span, **plus** Single Step Instrumentation gating (all 6 manifests), Continuous Profiler (5 of 6 services), and Data Streams/Data Jobs Monitoring (4 JMS services + `batch-processor`; `fraud-detection` also needs a rebuild). (Other custom spans are always-on in source; **custom metrics are span-based**, created by `make tf-apply-dd` — no DogStatsD.) See [`make instrument`](./INSTRUMENTATION.md#make-instrument).
-- **Digital Experience Monitoring — `make dem`.** Creates the Browser RUM application via a direct Datadog API call (not Terraform) and injects the credentials into `frontend-stub/index.html`. Independent of `make instrument`/`make tags`/`make tf-apply-dd`. See [`make dem`](./INSTRUMENTATION.md#make-dem).
-- **Application/Cloud Security — `make security`.** ASM Threats/SCA, CWS, CSPM (Agent-side) + `DD_APPSEC_ENABLED` on all 6 services. See [`make security`](./INSTRUMENTATION.md#make-security).
-- **Datadog resources — `make tf-apply-dd`.** Creates the monitors, SLOs, dashboard, synthetics, and log pipeline. RUM is no longer part of this Terraform module — see `make dem` above. See [`make tf-apply-dd`](./INSTRUMENTATION.md#make-tf-apply-dd).
-
-Per-stage breakdown and validation steps live in each section of [INSTRUMENTATION.md](./INSTRUMENTATION.md), linked above.
+Each stage has a matching `make un<stage>` to reverse it. Run `make help` for the full target list with descriptions, and see [Redeploy & Teardown](#redeploy--teardown) for what to do after enabling a stage.
 
 ---
 
-## Testing everything manually
+## Redeploy & Teardown
 
-The fastest way to exercise the whole stack end-to-end. Every target is
-idempotent — safe to re-run. For what "healthy" looks like at each phase, use the
-**✅ Verify before continuing** checklists in [Quick Start](#quick-start) and
-[Adding Datadog](#adding-datadog).
+Run **`make help`** any time for the full list of targets with descriptions — this section covers the pattern, not every command.
 
-### Local (Docker Desktop / Rancher / kind / k3d / minikube / Colima)
+Every instrumentation stage above patches source files or manifests; **none of it takes effect until you redeploy**. The redeploy shape depends on what changed:
 
-```bash
-make build                     # build the 6 service images
+| What changed | Local | EKS |
+|---|---|---|
+| App code / image (`make build`) | `make deploy-k8s` | `make build-ecr && make deploy-k8s-eks` |
+| Manifest env vars / labels (`tags`, `instrument`, `security`) | `make build && make deploy-k8s` (rollout restart alone won't pick up new env vars/labels) | `make build-ecr && make deploy-k8s-eks` |
+| Agent-side config (`dbm`, `security`'s Agent half) | `kubectl apply -k deploy/kubernetes/datadog/agent && kubectl rollout restart daemonset/datadog-agent -n datadog` | same, via the EKS Agent overlay |
+| Frontend only (`dem`) | recreate the `frontend-dashboard` ConfigMap from `frontend-stub/index.html` and `kubectl rollout restart deployment/frontend -n finance` | same, after patching the Keycloak public URL — see [AWS EKS](#aws-eks) |
+| Datadog resources (`tf-apply-dd`) | no redeploy — Terraform applies directly | same |
 
-# Load images into the cluster (see Prerequisites for your tool):
-#   Docker Desktop / Rancher Desktop — automatic, skip this step
-#   Colima (its Kubernetes uses containerd) — import into the k8s.io namespace:
-#     for svc in gateway-api account-service transaction-service fraud-detection notification-service batch-processor; do \
-#       docker save "finance-sample-app-${svc}:latest" | colima ssh -- sudo ctr -n k8s.io image import -; done
-#   kind: kind load docker-image …   k3d: k3d image import …   minikube: minikube image load …
+Image loading into non-Docker-Desktop local clusters: `kind load docker-image`, `k3d image import`, `minikube image load`, or for Colima (containerd) `docker save ... | colima ssh -- sudo ctr -n k8s.io image import -`.
 
-make deploy-k8s                # app + in-cluster traffic generator
-kubectl get pods -n finance    # wait for all 12 pods Running
-make deploy-k8s-dd             # Datadog Agent (reads DD_API_KEY / DD_APP_KEY from .env)
+Exact commands per stage are in each target's `make help` entry and in [INSTRUMENTATION.md](./INSTRUMENTATION.md).
 
-# Tags + log injection — UST on all 6 manifests + log-trace correlation
-# for Python/Node/Java/Go's baked-in tracers (separate from make instrument)
-make tags
-make build && make deploy-k8s  # rebuild + re-apply manifests (a bare rollout restart
-                                # won't pick up the new env vars/labels)
-make untag                     # reverse Tags + log injection at any time
-
-# Database Monitoring — Agent-side postgres.d config + PostgreSQL 'datadog' role
-make dbm
-kubectl apply -k deploy/kubernetes/datadog/agent && kubectl rollout restart daemonset/datadog-agent -n datadog
-make undbm                     # reverse Database Monitoring at any time
-
-# In-depth instrumentation — APM custom spans (transaction-service payment.authorize,
-# notification-service Go tracer/profiler/alert.send) + Single Step Instrumentation
-# gating (all 6 manifests) + Continuous Profiler (5 of 6 services) + Data
-# Streams/Data Jobs Monitoring (4 JMS services + batch-processor).
-# (custom metrics are span-based via 'make tf-apply-dd' — no DogStatsD)
-make instrument
-make build && make deploy-k8s  # rebuild, reload images (see load step), re-apply manifests
-                                # (a bare rollout restart won't pick up the new env vars/labels)
-make uninstrument              # reverse In-depth instrumentation at any time
-
-# Digital Experience Monitoring — creates the Browser RUM application via a
-# direct Datadog API call (not Terraform), then injects the credentials into
-# frontend-stub/index.html. Independent of make instrument/make tags.
-make dem
-kubectl create configmap frontend-dashboard \
-  --from-file=index.html=frontend-stub/index.html \
-  -n finance --dry-run=client -o yaml | kubectl apply -f -
-kubectl rollout restart deployment/frontend -n finance
-make undem                     # reverse DEM at any time (deletes the RUM app)
-
-# Application/Cloud Security — ASM Threats/SCA, CWS, CSPM (Agent-side) +
-# DD_APPSEC_ENABLED (all 6 services)
-make security
-kubectl apply -k deploy/kubernetes/datadog/agent && kubectl rollout restart daemonset/datadog-agent -n datadog
-make build && make deploy-k8s  # rebuild + re-apply manifests (a bare rollout restart
-                                # won't pick up the new DD_APPSEC_ENABLED env var)
-make unsecurity                # reverse Security at any time
-
-# Datadog Terraform resources — monitors, SLOs, dashboard, synthetics, log pipeline.
-# No longer creates RUM (that's make dem, above) — independent, any order relative to it.
-cp deploy/terraform/datadog/staging.tfvars.example deploy/terraform/datadog/staging.tfvars   # first time only
-eval "$(make dd-secrets)"       # exports TF_VAR_* keys; locally reads DD_API_KEY / DD_APP_KEY from .env
-                                # (falls back to .env even if you're logged into AWS)
-make tf-apply-dd
-
-make teardown                  # full local cleanup (namespaces + volumes)
-make tf-destroy-dd             # remove the Datadog Terraform resources when done
-```
-
-> **Local log-index note:** the Datadog log index created by `make tf-apply-dd` filters on
-> `kube_cluster_name:finance-app`. A local cluster usually reports a different cluster name, so
-> local logs may not land in that dedicated index — APM, monitors, dashboard, and synthetics
-> all still work regardless.
-
-### AWS EKS
-
-```bash
-aws sso login --profile <profile>
-make tf-plan-aws && make tf-apply-aws            # provisions EKS/VPC/ECR/IAM/NLB (~15–20 min)
-make tf-configure-kubectl && kubectl get nodes
-eval "$(cd deploy/terraform/aws && terraform output -raw ecr_login_command)"
-make build-ecr && make deploy-k8s-eks
-# then point Keycloak at the NLB — run the numbered step 8 block under "AWS EKS via Terraform" below
-make deploy-k8s-dd                               # pulls DD keys from AWS Secrets Manager
-eval "$(make dd-secrets)" && make tf-apply-dd
-make tf-destroy-aws                              # single-command teardown when done
-```
-
-### How to confirm it works
-
-| Check | Where to look |
-|---|---|
-| App is serving traffic | `kubectl logs -n finance deploy/traffic-generator -f` — 200/201 responses, no 401 storms |
-| Dashboard + login | `http://localhost:30080` (EKS: `cd deploy/terraform/aws && terraform output -raw frontend_url`) — log in as `carol.admin` / `Finance@2025!` |
-| Scripted e2e test | `make test` (needs a port-forward — see [INSTRUMENTATION.md](./INSTRUMENTATION.md#makefile-targets)) |
-| APM traces | Datadog → **APM → Services** (filter `env:staging`); open a trace → connected flame graph across services |
-| Log–trace correlation | Datadog → **Logs** — every line carries `dd.trace_id` / `dd.service` |
-| Async pipeline & DB | **Data Streams** (JMS producer→consumer), **Database Monitoring** (Postgres query metrics) |
-
----
-
-## Deployment Targets
+### Directory layout
 
 ```
 deploy/
@@ -473,158 +304,66 @@ deploy/
     datadog/       Monitors, SLOs, dashboard, synthetic tests
 ```
 
-### Local Kubernetes (Docker Desktop / kind / k3d / minikube)
+### AWS EKS
 
 ```bash
-make build
-# load images if needed — see Prerequisites above (skip on Docker Desktop)
-make deploy-k8s       # deploys app + traffic-generator
-make deploy-k8s-dd    # creates Datadog secret from .env then deploys Agent
-make teardown         # full reset (namespaces + volumes)
-```
-
-### AWS EKS via Terraform
-
-```bash
-# 1. Authenticate
-aws sso login --profile <your-profile>
-
-# 2. Configure Terraform
-cp deploy/terraform/aws/staging.tfvars.example deploy/terraform/aws/staging.tfvars
-# edit: aws_profile, aws_region, cluster_name
-
-# 3. Provision AWS infrastructure (~15–20 min)
-#    Creates: EKS cluster, VPC, ECR repos, IAM roles, Secrets Manager entries
-make tf-plan-aws
-make tf-apply-aws
-
-# 4. Configure kubectl
-make tf-configure-kubectl
-kubectl get nodes   # verify cluster is reachable
-
-# 5. Build and push images to ECR (cross-compile for linux/amd64 on Apple Silicon)
+aws sso login --profile <profile>
+cp deploy/terraform/aws/staging.tfvars.example deploy/terraform/aws/staging.tfvars   # edit aws_profile/region/cluster_name
+make tf-plan-aws && make tf-apply-aws            # provisions EKS/VPC/ECR/IAM/NLB (~15–20 min)
+make tf-configure-kubectl && kubectl get nodes
 eval "$(cd deploy/terraform/aws && terraform output -raw ecr_login_command)"
-make build-ecr
+make build-ecr && make deploy-k8s-eks
+```
 
-# 6. (Optional) Configure a custom domain + ACM certificate for HTTPS on the NLB.
-#    Without this, the dashboard is HTTP-only at the NLB hostname (fine for a demo).
-#    Edit staging.tfvars: domain_name = "finance.example.com", then make tf-apply-aws,
-#    then add a CNAME in your DNS: finance.example.com → <nlb-hostname>.
-#    See deploy/terraform/aws/variables.tf for domain_name.
-
-# 7. Deploy the app to EKS (generates the Kustomize overlay from live Terraform
-#    output — ECR image URLs, ACM cert annotations if domain_name is set)
-make deploy-k8s-eks
-
-# 8. Point Keycloak's public URL at the Terraform-managed NLB.
-#    The NLB (aws_lb.frontend) was already created in step 3, so its hostname is
-#    known immediately — no waiting for AWS to assign a LoadBalancer hostname like
-#    the old Kubernetes-provisioned ELB required.
+Point Keycloak's public URL at the Terraform-managed NLB (not automated — Terraform doesn't own the frontend ConfigMap):
+```bash
 FE_URL=$(cd deploy/terraform/aws && terraform output -raw frontend_url)
-kubectl patch configmap app-config -n finance --type=merge \
-  -p "{\"data\":{\"KEYCLOAK_PUBLIC_URL\":\"$FE_URL\"}}"
+kubectl patch configmap app-config -n finance --type=merge -p "{\"data\":{\"KEYCLOAK_PUBLIC_URL\":\"$FE_URL\"}}"
 sed "s|https://localhost:30443|$FE_URL|g" frontend-stub/index.html > /tmp/finance-index.html
-kubectl create configmap frontend-dashboard --from-file=index.html=/tmp/finance-index.html \
-  -n finance --dry-run=client -o yaml | kubectl apply -f -
+kubectl create configmap frontend-dashboard --from-file=index.html=/tmp/finance-index.html -n finance --dry-run=client -o yaml | kubectl apply -f -
 kubectl rollout restart deployment/keycloak deployment/frontend -n finance
-# Dashboard: terraform output -raw frontend_url
-# Keycloak (self-signed passthrough, always available): terraform output -raw frontend_keycloak_https_url
+```
 
-# 9. Add Datadog (auto-fetches keys from Secrets Manager)
-#    Prerequisites: deploy/terraform/aws/staging.tfvars must have aws_region + aws_profile.
-#    Populate secrets first if not done:
-#    aws secretsmanager put-secret-value --secret-id finance-app/staging/dd-api-key \
-#      --secret-string "<key>" --profile <profile> --region <region>
+Then add Datadog and apply resources — same targets as local, EKS auto-fetches keys from Secrets Manager:
+```bash
 make deploy-k8s-dd
-
-# 10. Apply Datadog Terraform resources
-eval "$(make dd-secrets)"
-make tf-apply-dd
-
-# 11. Enable In-depth instrumentation
-make instrument
-make build-ecr
-make deploy-k8s-eks
-kubectl rollout restart deployment -n finance
-
-# 11b. Enable Digital Experience Monitoring (Browser RUM + Session Replay)
-make dem
-sed "s|https://localhost:30443|$FE_URL|g" frontend-stub/index.html > /tmp/finance-index.html
-kubectl create configmap frontend-dashboard --from-file=index.html=/tmp/finance-index.html \
-  -n finance --dry-run=client -o yaml | kubectl apply -f -
-kubectl rollout restart deployment/frontend -n finance
-
-# 12. Tear down when done
-make tf-destroy-aws   # single-pass terraform destroy — see below for why this is now reliable
+eval "$(make dd-secrets)" && make tf-apply-dd
 ```
 
-#### Teardown is reliable — no manual ELB cleanup needed
+Optional custom domain + ACM certificate: set `domain_name` in `staging.tfvars`, `make tf-apply-aws`, then CNAME your domain to the NLB hostname — see `deploy/terraform/aws/variables.tf`.
 
-`make tf-destroy-aws` (→ `scripts/aws-force-destroy.sh`) handles dependency ordering automatically:
-
-| Step | Action | Why |
-|---|---|---|
-| 0 | Best-effort ELB/security-group safety net | Defense-in-depth only — normally a no-op (see below) |
-| 1 | Delete EKS node groups via CLI | Avoids `ResourceInUseException` |
-| 2 | Delete EKS add-ons via CLI | Required before cluster deletion |
-| 3 | Delete EKS cluster | |
-| 4 | Force-delete Secrets Manager secrets | Avoids re-apply failures |
-| 5 | Delete ECR repositories | |
-| 6 | `terraform destroy` | VPC, subnets, IAM, KMS, CloudWatch, the frontend NLB, target groups |
-
-> **Why teardown no longer needs manual ELB cleanup:** the `frontend` Service is `type: NodePort` on both local and EKS — it never calls the AWS API. Public exposure is handled entirely by `aws_lb.frontend`, a first-class Terraform resource, so `terraform destroy` always finds and removes it in the correct dependency order. This replaced an older design where `type: LoadBalancer` let Kubernetes' cloud-controller-manager silently create a Classic ELB that Terraform never tracked — if the EKS cluster was deleted first, that ELB (and its security group) became permanently orphaned and blocked VPC/subnet deletion. Step 0 above is kept purely as a defense-in-depth safety net in case a future change reintroduces a `LoadBalancer` Service elsewhere.
-
----
-
-## Teardown (local)
+### Stop / teardown
 
 ```bash
-make teardown
+make teardown         # local — removes finance + datadog namespaces, PVCs, Operator Helm release
+make tf-destroy-aws   # EKS — single-pass destroy, handles EKS/ECR/Secrets Manager ordering automatically
+make tf-destroy-dd    # removes the Datadog Terraform resources (monitors, dashboard, synthetics, log pipeline)
 ```
 
-Removes: finance + datadog namespaces (including all PVCs), Datadog Operator Helm release, and any orphaned Docker volumes from previous Compose runs.
+Start fresh after local teardown with `make build && make deploy-k8s && make deploy-k8s-dd`.
 
-Start fresh after:
-```bash
-make build && make deploy-k8s && make deploy-k8s-dd
-```
+> **Local log-index note:** the Datadog log index from `make tf-apply-dd` filters on `kube_cluster_name:finance-app`. A local cluster usually reports a different cluster name, so local logs may not land in that index — APM, monitors, dashboard, and synthetics still work regardless.
 
 ---
 
-## Security Notes
+## Miscellaneous
 
-- **Secrets:** `DD_API_KEY` and `DD_APP_KEY` are never committed. Local: stored in `.env` (git-ignored), loaded by `make create-dd-secret`. EKS: fetched from AWS Secrets Manager automatically.
-- **K8s Secret:** `datadog-secret` in the `datadog` namespace holds `api-key`, `app-key`, and `dbm-password`. Created by `make create-dd-secret`.
-- **PII masking:** Financial data (card numbers, IBANs, account balances) must not appear in trace tags or log messages. Configure `obfuscation_config` and `replace_tags` in the Agent for production.
-- **DBM user:** The PostgreSQL monitoring user must be read-only (`pg_monitor` role only). Setup SQL is in the header of `deploy/kubernetes/datadog/checks/postgres-check.yaml`.
-- **RUM Session Replay:** The frontend enables `defaultPrivacyLevel: 'mask-user-input'` — do not disable for environments with real financial data.
-- **Keycloak:** Sample passwords in `identity-provider/realm-export/` are for development only. Rotate before any staging or production use.
+### Security notes
 
----
+- `DD_API_KEY` / `DD_APP_KEY` are never committed — local: `.env` (git-ignored); EKS: AWS Secrets Manager.
+- `datadog-secret` (namespace `datadog`) holds `api-key`, `app-key`, `dbm-password`.
+- Financial data (card numbers, IBANs, balances) must never appear in trace tags or log messages — configure `obfuscation_config` / `replace_tags` in the Agent for production.
+- The DBM monitoring user is read-only (`pg_monitor` only) — setup SQL is in the header of `deploy/kubernetes/datadog/checks/postgres-check.yaml`.
+- RUM Session Replay uses `defaultPrivacyLevel: 'mask-user-input'` — don't disable it where real financial data is involved.
+- Keycloak sample passwords (`identity-provider/realm-export/`) are dev-only — rotate before staging/production.
 
-## Identity Provider
+### Identity provider
 
-Keycloak **26.0** provides:
-- **OIDC for gateway-api** — JWT Bearer token validation per request
-- **SAML 2.0 SSO for Datadog** — mirrors enterprise IdPs (Okta, Azure AD, PingFederate)
-- **Finance roles** — `finance-analyst`, `finance-trader`, `finance-admin`, `finance-auditor`, `finance-compliance`
+Keycloak 26 provides OIDC for `gateway-api` and SAML 2.0 SSO for Datadog (mirroring Okta/Azure AD/PingFederate), with finance roles (`finance-analyst`, `finance-trader`, `finance-admin`, `finance-auditor`, `finance-compliance`). Wiring that SAML SSO into a real Datadog org is out of scope here — see the [Datadog SAML SSO docs](https://docs.datadoghq.com/account_management/saml/) if you want to try it. Full guide: `identity-provider/README.md`.
 
-Keycloak is proxied through **nginx over HTTPS** on port **30443** — nginx terminates TLS with a self-signed certificate and forwards plain HTTP to `keycloak:8080` internally. This allows Keycloak 26 to set `Secure` session cookies correctly (required by browsers).
+> ⚠️ **Self-signed certificate.** Keycloak is proxied through nginx over HTTPS on `https://localhost:30443` with a self-signed cert (EKS uses a real ACM certificate instead). Before your first dashboard login, visit `https://localhost:30443` directly and accept the browser security warning (**Advanced → Accept the Risk** in Firefox, **Advanced → Proceed** in Chrome) — once per browser profile. Skipping this makes dashboard login fail with a `NetworkError` / "Failed to fetch". This doesn't affect the in-cluster traffic generator, which talks to Keycloak over plain HTTP internally.
 
-> **First visit:** browsers will show a security warning for the self-signed certificate at `https://localhost:30443`. Click **Advanced → Accept the Risk** (Firefox) or **Advanced → Proceed** (Chrome) once — you won't be asked again.
-
-`KEYCLOAK_PUBLIC_URL` in `deploy/kubernetes/base/01-config.yaml` is the single source of truth for Keycloak's public URL. It is used by `KC_HOSTNAME_URL` on the Keycloak pod and injected into the finance dashboard at deploy time. On EKS, patch it to the NLB hostname after deploy (see AWS EKS workflow above).
-
-| URL | Credentials |
-|---|---|
-| **Admin console:** `https://localhost:30443/admin/master/console/#/finance` | `admin` / `Finance@Admin2025!` |
-| **Realm account page:** `https://localhost:30443/realms/finance/account/` | any finance realm user |
-
-Full guide: `identity-provider/README.md`
-
----
-
-## Key Datadog Documentation
+### Key Datadog documentation
 
 | Topic | URL |
 |---|---|
