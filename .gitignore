@@ -120,6 +120,10 @@ deploy/kubernetes/overlays/eks/kustomization.yaml
 .instrumentation-applied
 # Idempotency marker for make tags/untag — never committed.
 .tags-applied
+# Idempotency marker for make dbm/undbm — never committed.
+.dbm-applied
+# Idempotency marker for make security/unsecurity — never committed.
+.security-applied
 # Idempotency marker for make dem/undem — never committed.
 .dem-applied
 # Cached RUM application id/client_token from make dem — contains a live

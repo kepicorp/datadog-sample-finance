@@ -28,7 +28,7 @@
 #   make deploy-k8s-eks                 # deploy app (includes gp3 StorageClass)
 #   make deploy-k8s-dd                  # deploy Datadog Agent (auto-detects EKS)
 
-.PHONY: all build build-ecr version test test-traffic deploy-k8s deploy-k8s-eks deploy-k8s-dd undeploy-k8s teardown instrument uninstrument tags untag dem undem create-dd-secret dbm-setup tf-plan-aws tf-apply-aws tf-configure-kubectl frontend-url tf-destroy-aws dd-secrets tf-plan-dd tf-apply-dd tf-destroy-dd help
+.PHONY: all build build-ecr version test test-traffic deploy-k8s deploy-k8s-eks deploy-k8s-dd undeploy-k8s teardown instrument uninstrument tags untag dbm undbm security unsecurity dem undem create-dd-secret tf-plan-aws tf-apply-aws tf-configure-kubectl frontend-url tf-destroy-aws dd-secrets tf-plan-dd tf-apply-dd tf-destroy-dd help
 
 # Resolve DD_VERSION once so all targets share the same value.
 # Falls back to 'dev' when git is not available (e.g. in a bare CI image).
@@ -778,28 +778,88 @@ create-dd-secret:
 	echo "   Keys stored: api-key, app-key$$([ -n "$$DBM_PASSWORD" ] && echo ', dbm-password' || echo ' (dbm-password not set)')"; \
 	echo "   Verify: kubectl get secret datadog-secret -n datadog -o jsonpath='{.data}' | python3 -m json.tool"
 
-## dbm-setup: Create/refresh the Datadog DBM role in PostgreSQL (query metrics + explain plans).
-##            Runs scripts/dbm-setup.sql in the postgres-ledger pod. Idempotent.
-##            Password source (in order): the datadog-secret 'dbm-password' key, else
-##            DATADOG_DBM_PASSWORD in .env. If neither is set, DBM setup is skipped
-##            (DBM stays off). Auto-run by 'make deploy-k8s-dd'; requires postgres-ledger running.
-dbm-setup:
-	@DBM_PASSWORD=$$(kubectl get secret datadog-secret -n datadog -o jsonpath='{.data.dbm-password}' 2>/dev/null | base64 -d 2>/dev/null); \
-	if [ -z "$$DBM_PASSWORD" ] && [ -f .env ]; then \
-		DBM_PASSWORD=$$(grep '^DATADOG_DBM_PASSWORD=' .env | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'"); \
-	fi; \
-	if [ -z "$$DBM_PASSWORD" ]; then \
-		echo "==> dbm-setup: no DBM password (datadog-secret dbm-password / DATADOG_DBM_PASSWORD) — skipping (DBM stays off)."; \
-	elif ! kubectl get statefulset postgres-ledger -n finance >/dev/null 2>&1; then \
-		echo "⚠  dbm-setup: postgres-ledger not found in namespace finance — run 'make deploy-k8s' first. Skipping."; \
+## dbm: Enable Database Monitoring (DBM) for postgres-ledger. Two-step, narrated:
+##      (a) uncomments the Agent-side postgres.d check config + the
+##      DD_DBM_POSTGRES_PASSWORD wiring in datadog-agent.yaml (applies
+##      scripts/patches/dbm/dbm-agent.patch — a ConfigMap/env var alone does
+##      nothing unless mounted like this), (b) creates/refreshes the
+##      read-only 'datadog' PostgreSQL role + pg_stat_statements + the
+##      explain_statement function (scripts/dbm-setup.sql) in the
+##      postgres-ledger pod. Idempotent: tracked via .dbm-applied — a second
+##      run is a clean no-op. Fully reversible with make undbm.
+##
+##      Password source (in order): the datadog-secret 'dbm-password' key,
+##      else DATADOG_DBM_PASSWORD in .env. If neither is set, step (b) is
+##      skipped (DBM stays off at the DB level even though the Agent-side
+##      patch is applied) — this was previously 'make dbm-setup', auto-run
+##      by 'make deploy-k8s-dd'; it is no longer auto-run, so run 'make dbm'
+##      explicitly after 'make create-dd-secret' / 'make deploy-k8s-dd'.
+##
+##      After patching, redeploy the Agent to pick up the new mount:
+##        Local: kubectl apply -k deploy/kubernetes/datadog/agent && kubectl rollout restart daemonset/datadog -n datadog
+##        EKS:   kubectl apply -k deploy/kubernetes/overlays/eks-datadog && kubectl rollout restart daemonset/datadog -n datadog
+dbm:
+	@if [ -f .dbm-applied ]; then \
+		echo "DBM already enabled. Run 'make undbm' first to reapply."; \
 	else \
-		echo "==> dbm-setup: creating/refreshing Datadog DBM role in postgres-ledger..."; \
-		if kubectl exec -i -n finance statefulset/postgres-ledger -- \
-			psql -U finance -d ledger -v ON_ERROR_STOP=1 -v dbm_password="$$DBM_PASSWORD" -f - < scripts/dbm-setup.sql; then \
-			echo "✓ DBM role 'datadog' ready (pg_monitor + pg_stat_statements + explain_statement)."; \
-		else \
-			echo "⚠  dbm-setup: SQL failed — check postgres-ledger is Ready. DBM will not authenticate until this succeeds."; \
+		echo "Step (a): Enabling Agent-side Database Monitoring config..."; \
+		echo "  Why: DD_DBM_POSTGRES_PASSWORD + the postgres.d check ConfigMap mount"; \
+		echo "  are what let the Agent authenticate to Postgres and collect query"; \
+		echo "  metrics/samples. Uncommenting now in datadog-agent.yaml:"; \
+		patch -p1 --forward -s < scripts/patches/dbm/dbm-agent.patch || true; \
+		touch .dbm-applied; \
+		echo ""; \
+		echo "Step (b): Creating/refreshing the PostgreSQL 'datadog' monitoring role..."; \
+		DBM_PASSWORD=$$(kubectl get secret datadog-secret -n datadog -o jsonpath='{.data.dbm-password}' 2>/dev/null | base64 -d 2>/dev/null); \
+		if [ -z "$$DBM_PASSWORD" ] && [ -f .env ]; then \
+			DBM_PASSWORD=$$(grep '^DATADOG_DBM_PASSWORD=' .env | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'"); \
 		fi; \
+		if [ -z "$$DBM_PASSWORD" ]; then \
+			echo "  ⚠  no DBM password (datadog-secret dbm-password / DATADOG_DBM_PASSWORD) — skipping (DBM stays off at the DB level)."; \
+		elif ! kubectl get statefulset postgres-ledger -n finance >/dev/null 2>&1; then \
+			echo "  ⚠  postgres-ledger not found in namespace finance — run 'make deploy-k8s' first. Skipping."; \
+		else \
+			if kubectl exec -i -n finance statefulset/postgres-ledger -- \
+				psql -U finance -d ledger -v ON_ERROR_STOP=1 -v dbm_password="$$DBM_PASSWORD" -f - < scripts/dbm-setup.sql; then \
+				echo "  ✓ DBM role 'datadog' ready (pg_monitor + pg_stat_statements + explain_statement)."; \
+			else \
+				echo "  ⚠  SQL failed — check postgres-ledger is Ready. DBM will not authenticate until this succeeds."; \
+			fi; \
+		fi; \
+		echo ""; \
+		echo "✓ DBM enabled. Redeploy the Agent to pick up the new mount:"; \
+		echo "    Local: kubectl apply -k deploy/kubernetes/datadog/agent && kubectl rollout restart daemonset/datadog -n datadog"; \
+		echo "    EKS:   kubectl apply -k deploy/kubernetes/overlays/eks-datadog && kubectl rollout restart daemonset/datadog -n datadog"; \
+	fi
+
+## undbm: Disable Database Monitoring (DBM) — reverse of make dbm. Re-comments
+##        the Agent-side postgres.d config (reverses dbm-agent.patch) and runs
+##        scripts/dbm-teardown.sql to revoke the 'datadog' PostgreSQL role's
+##        grants and drop the role (pg_stat_statements extension is left
+##        installed — it's server-wide, not scoped to this role).
+undbm:
+	@if [ ! -f .dbm-applied ]; then \
+		echo "DBM is not currently enabled (nothing to reverse)."; \
+	else \
+		echo "Step (a): Reversing the PostgreSQL 'datadog' monitoring role..."; \
+		if kubectl get statefulset postgres-ledger -n finance >/dev/null 2>&1; then \
+			if kubectl exec -i -n finance statefulset/postgres-ledger -- \
+				psql -U finance -d ledger -v ON_ERROR_STOP=1 -f - < scripts/dbm-teardown.sql; then \
+				echo "  ✓ DBM role 'datadog' revoked/dropped."; \
+			else \
+				echo "  ⚠  SQL failed — check postgres-ledger is Ready. Continuing to reverse the Agent-side config anyway."; \
+			fi; \
+		else \
+			echo "  ⚠  postgres-ledger not found in namespace finance — skipping SQL teardown."; \
+		fi; \
+		echo ""; \
+		echo "Step (b): Reversing Agent-side Database Monitoring config..."; \
+		patch -p1 --reverse -s < scripts/patches/dbm/dbm-agent.patch || true; \
+		rm -f .dbm-applied; \
+		echo ""; \
+		echo "✓ DBM disabled. Redeploy the Agent to deactivate:"; \
+		echo "    Local: kubectl apply -k deploy/kubernetes/datadog/agent && kubectl rollout restart daemonset/datadog -n datadog"; \
+		echo "    EKS:   kubectl apply -k deploy/kubernetes/overlays/eks-datadog && kubectl rollout restart daemonset/datadog -n datadog"; \
 	fi
 
 ## dd-secrets: Print eval-ready 'export TF_VAR_datadog_api_key=...' commands for use with
