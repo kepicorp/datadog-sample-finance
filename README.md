@@ -89,14 +89,6 @@ The app runs on Kubernetes. You need either a local cluster or an AWS account �
 | **k3d** | `brew install k3d && k3d cluster create finance` | k3s in Docker. Fast startup. |
 | **minikube** | `brew install minikube && minikube start` | Feature-rich, good driver support. |
 
-```bash
-# Docker Desktop quickstart
-# 1. Docker Desktop → Settings → Kubernetes → Enable Kubernetes → Apply
-# 2. Install kubectl and helm
-brew install kubectl helm
-kubectl get nodes   # 1 node Ready
-```
-
 > **Image loading:** Docker Desktop / Rancher Desktop pick up locally built images automatically. Other tools need an explicit load step — see [Redeploy & Teardown](#redeploy--teardown).
 
 > **Note:** Synthetic tests won't work against a local cluster unless you configure a private location — your cluster isn't reachable from Datadog's public testing infrastructure.
