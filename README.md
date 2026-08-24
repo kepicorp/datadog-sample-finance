@@ -207,9 +207,19 @@ Set in `.env` — read automatically by `make create-dd-secret`:
 |---|---|
 | `DD_API_KEY` | https://app.datadoghq.com/organization-settings/api-keys |
 | `DD_APP_KEY` | https://app.datadoghq.com/organization-settings/application-keys |
-| `DATADOG_DBM_PASSWORD` | Password you set for the PostgreSQL `datadog` monitoring user (Step 9 in INSTRUMENTATION.md) |
+| `DATADOG_DBM_PASSWORD` | Password you choose for the PostgreSQL `datadog` monitoring user — see [`make dbm` in INSTRUMENTATION.md](./INSTRUMENTATION.md#make-dbm) |
 
 > **Security:** `.env` is git-ignored and must never be committed. All values in `02-secrets.yaml` are development-only defaults — rotate everything before any staging or production deployment.
+
+The `datadog-secret` K8s Secret (`datadog` namespace) is created automatically by `make deploy-k8s-dd` (via `make create-dd-secret`) from the values above — locally from `.env`, on EKS from AWS Secrets Manager. To verify what's stored:
+
+```bash
+kubectl get secret datadog-secret -n datadog \
+  -o jsonpath='{.data}' | python3 -m json.tool
+# Expected keys: api-key, app-key, dbm-password
+```
+
+**GitOps / production:** use the External Secrets Operator to sync from AWS Secrets Manager or Vault instead of `.env`. An `ExternalSecret` manifest is in `deploy/kubernetes/datadog/secrets/datadog-secrets.yaml`. Docs: https://external-secrets.io/
 
 ---
 
@@ -266,6 +276,17 @@ See [Credentials](#credentials) for all users, roles, and URLs.
 make deploy-k8s-dd
 ```
 
+`make deploy-k8s-dd` installs the Datadog Operator automatically (via Helm) if it's absent, then creates `datadog-secret` and deploys the Agent. To install the Operator manually instead:
+
+```bash
+helm repo add datadog https://helm.datadoghq.com
+helm install datadog-operator datadog/datadog-operator \
+  --namespace datadog --create-namespace \
+  --set watchNamespaces='{datadog,finance}'
+
+make deploy-k8s-dd   # creates the datadog-secret from .env, then deploys the Agent
+```
+
 APM traces, logs, and metrics appear in Datadog within ~2 minutes. No code changes needed — the Admission Controller injects the tracer library automatically via init containers.
 
 > #### ✅ Verify before continuing
@@ -291,7 +312,19 @@ kubectl exec -n datadog daemonset/datadog-agent -c trace-agent -- agent status |
 
 ## Traffic Generator
 
-Traffic is generated **automatically** by the `traffic-generator` Deployment running inside the cluster. It starts with the app and runs continuously — no scripts needed from your laptop. See [INSTRUMENTATION.md's Traffic Generator section](./INSTRUMENTATION.md#traffic-generator) for the watch/pause/resume/tune-rate commands.
+Traffic is generated **automatically** by the `traffic-generator` Deployment running inside the cluster. It starts with the app and runs continuously — no scripts needed from your laptop.
+
+```bash
+# Watch live output
+kubectl logs -n finance deploy/traffic-generator -f
+
+# Pause / resume
+kubectl scale deployment traffic-generator --replicas=0 -n finance
+kubectl scale deployment traffic-generator --replicas=1 -n finance
+
+# Tune rate (requests per second)
+kubectl set env deployment/traffic-generator TRAFFIC_RATE=5 -n finance
+```
 
 Traffic mix:
 
@@ -309,13 +342,16 @@ Traffic mix:
 
 Instrumentation is layered. Full guide: **[INSTRUMENTATION.md](./INSTRUMENTATION.md)**.
 
-- **Single Step Instrumentation — automatic.** Deploy the Agent (`make deploy-k8s-dd`) and the Admission Controller injects the tracer into every pod: APM traces, log–trace correlation, and runtime metrics, plus agent-side DBM, ActiveMQ JMX, and ASM/CWS/CSPM. No code changes.
-- **In-depth instrumentation — `make instrument`.** Uncomments the `transaction-service` `payment.authorize` span and the `notification-service` (Go) APM tracer/profiler/`alert.send` span. APM only. (Other custom spans are always-on in source; **custom metrics are span-based**, created by `make tf-apply-dd` — no DogStatsD.) See [Enabling In-depth instrumentation](./INSTRUMENTATION.md#enabling-in-depth-instrumentation-make-instrument).
-- **Tags + log injection — `make tags`.** Uncomments Unified Service Tagging (pod labels + `DD_ENV`/`DD_SERVICE`/`DD_VERSION`) on all six manifests, and log-trace correlation for services with a baked-in/self-managed tracer (Python, Node, Java, Go). Separate, independently reversible from `make instrument` — see [Enabling Tags + Log Injection](./INSTRUMENTATION.md#enabling-tags--log-injection-make-tags).
-- **Digital Experience Monitoring — `make dem`.** Creates the Browser RUM application via a direct Datadog API call (not Terraform) and injects the credentials into `frontend-stub/index.html`. Independent of `make instrument`/`make tags`/`make tf-apply-dd`. See [Enabling Digital Experience Monitoring](./INSTRUMENTATION.md#enabling-digital-experience-monitoring-make-dem).
-- **Datadog resources.** `make tf-apply-dd` creates the monitors, SLOs, dashboard, synthetics, and log pipeline. RUM is no longer part of this Terraform module — see `make dem` above.
+Nothing is automatic anymore — a fresh `make deploy-k8s` + `make deploy-k8s-dd` deploys the app and Agent cleanly with Single Step Instrumentation, DBM, and ASM/CWS/CSPM all commented out. Each opt-in stage below is independently reversible:
 
-Per-signal breakdown and validation steps: [INSTRUMENTATION.md → Signal reference](./INSTRUMENTATION.md#signal-reference).
+- **Tags + log injection — `make tags`.** Uncomments Unified Service Tagging (pod labels + `DD_ENV`/`DD_SERVICE`/`DD_VERSION`) on all six manifests, and log-trace correlation for services with a baked-in/self-managed tracer (Python, Node, Java, Go). See [`make tags`](./INSTRUMENTATION.md#make-tags).
+- **Database Monitoring — `make dbm`.** Agent-side `postgres.d` config + a dedicated read-only PostgreSQL `datadog` role. See [`make dbm`](./INSTRUMENTATION.md#make-dbm).
+- **In-depth instrumentation — `make instrument`.** Uncomments the `transaction-service` `payment.authorize` span and the `notification-service` (Go) APM tracer/profiler/`alert.send` span, **plus** Single Step Instrumentation gating (all 6 manifests) and Continuous Profiler (5 of 6 services). (Other custom spans are always-on in source; **custom metrics are span-based**, created by `make tf-apply-dd` — no DogStatsD.) See [`make instrument`](./INSTRUMENTATION.md#make-instrument).
+- **Digital Experience Monitoring — `make dem`.** Creates the Browser RUM application via a direct Datadog API call (not Terraform) and injects the credentials into `frontend-stub/index.html`. Independent of `make instrument`/`make tags`/`make tf-apply-dd`. See [`make dem`](./INSTRUMENTATION.md#make-dem).
+- **Application/Cloud Security — `make security`.** ASM Threats/SCA, CWS, CSPM (Agent-side) + `DD_APPSEC_ENABLED` on all 6 services. See [`make security`](./INSTRUMENTATION.md#make-security).
+- **Datadog resources — `make tf-apply-dd`.** Creates the monitors, SLOs, dashboard, synthetics, and log pipeline. RUM is no longer part of this Terraform module — see `make dem` above. See [`make tf-apply-dd`](./INSTRUMENTATION.md#make-tf-apply-dd).
+
+Per-stage breakdown and validation steps live in each section of [INSTRUMENTATION.md](./INSTRUMENTATION.md), linked above.
 
 ---
 
@@ -342,19 +378,25 @@ make deploy-k8s                # app + in-cluster traffic generator
 kubectl get pods -n finance    # wait for all 12 pods Running
 make deploy-k8s-dd             # Datadog Agent (reads DD_API_KEY / DD_APP_KEY from .env)
 
-# In-depth instrumentation — transaction-service payment.authorize span,
-# notification-service (Go) tracer/profiler/alert.send span. APM only.
-# (custom metrics are span-based via 'make tf-apply-dd' — no DogStatsD)
-make instrument
-make build                     # rebuild, then reload images (see load step) and restart:
-kubectl rollout restart deployment -n finance
-make uninstrument              # reverse In-depth instrumentation at any time
-
 # Tags + log injection — UST on all 6 manifests + log-trace correlation
 # for Python/Node/Java/Go's baked-in tracers (separate from make instrument)
 make tags
 make build && kubectl rollout restart deployment -n finance
 make untag                     # reverse Tags + log injection at any time
+
+# Database Monitoring — Agent-side postgres.d config + PostgreSQL 'datadog' role
+make dbm
+kubectl apply -k deploy/kubernetes/datadog/agent && kubectl rollout restart daemonset/datadog -n datadog
+make undbm                     # reverse Database Monitoring at any time
+
+# In-depth instrumentation — APM custom spans (transaction-service payment.authorize,
+# notification-service Go tracer/profiler/alert.send) + Single Step Instrumentation
+# gating (all 6 manifests) + Continuous Profiler (5 of 6 services).
+# (custom metrics are span-based via 'make tf-apply-dd' — no DogStatsD)
+make instrument
+make build                     # rebuild, then reload images (see load step) and restart:
+kubectl rollout restart deployment -n finance
+make uninstrument              # reverse In-depth instrumentation at any time
 
 # Digital Experience Monitoring — creates the Browser RUM application via a
 # direct Datadog API call (not Terraform), then injects the credentials into
@@ -365,6 +407,13 @@ kubectl create configmap frontend-dashboard \
   -n finance --dry-run=client -o yaml | kubectl apply -f -
 kubectl rollout restart deployment/frontend -n finance
 make undem                     # reverse DEM at any time (deletes the RUM app)
+
+# Application/Cloud Security — ASM Threats/SCA, CWS, CSPM (Agent-side) +
+# DD_APPSEC_ENABLED (all 6 services)
+make security
+kubectl apply -k deploy/kubernetes/datadog/agent && kubectl rollout restart daemonset/datadog -n datadog
+make build && kubectl rollout restart deployment -n finance
+make unsecurity                # reverse Security at any time
 
 # Datadog Terraform resources — monitors, SLOs, dashboard, synthetics, log pipeline.
 # No longer creates RUM (that's make dem, above) — independent, any order relative to it.
@@ -575,11 +624,28 @@ Full guide: `identity-provider/README.md`
 
 ## Key Datadog Documentation
 
-For the full reference table (APM, DogStatsD, Profiler, DBM, DSM, Data Jobs, RUM, Synthetics, ASM/CWS/CSPM, and more), see [INSTRUMENTATION.md's Key references](./INSTRUMENTATION.md#key-references). Quick links to get started:
-
 | Topic | URL |
 |---|---|
 | Unified Service Tagging | https://docs.datadoghq.com/getting_started/tagging/unified_service_tagging/ |
 | Single-step instrumentation | https://docs.datadoghq.com/tracing/trace_collection/automatic_instrumentation/single-step-apm/ |
+| Admission Controller | https://docs.datadoghq.com/containers/cluster_agent/admission_controller/ |
 | APM setup | https://docs.datadoghq.com/tracing/trace_collection/ |
+| Custom instrumentation | https://docs.datadoghq.com/tracing/trace_collection/custom_instrumentation/ |
+| Log correlation | https://docs.datadoghq.com/tracing/other_telemetry/connect_logs_and_traces/ |
+| Generate metrics from spans | https://docs.datadoghq.com/tracing/trace_pipeline/generate_metrics/ |
+| Continuous Profiler | https://docs.datadoghq.com/profiler/ |
+| Database Monitoring | https://docs.datadoghq.com/database_monitoring/ |
+| DBM — PostgreSQL self-hosted | https://docs.datadoghq.com/database_monitoring/setup_postgres/selfhosted/ |
+| DBM + APM correlation | https://docs.datadoghq.com/database_monitoring/connect_dbm_and_apm/ |
+| Data Streams Monitoring | https://docs.datadoghq.com/data_streams/ |
+| Data Jobs Monitoring | https://docs.datadoghq.com/data_jobs/ |
+| ActiveMQ integration | https://docs.datadoghq.com/integrations/activemq/ |
+| Browser RUM | https://docs.datadoghq.com/real_user_monitoring/browser/ |
+| RUM Session Replay | https://docs.datadoghq.com/real_user_monitoring/session_replay/ |
+| RUM Privacy / PII masking | https://docs.datadoghq.com/real_user_monitoring/session_replay/privacy_options/ |
+| Synthetic Monitoring | https://docs.datadoghq.com/synthetics/ |
+| Synthetic API tests | https://docs.datadoghq.com/synthetics/api_tests/ |
+| Synthetic → APM correlation | https://docs.datadoghq.com/synthetics/apm/ |
+| Continuous Testing (CI/CD) | https://docs.datadoghq.com/continuous_testing/cicd_integrations/ |
+| Application Security (ASM) | https://docs.datadoghq.com/security/application_security/ |
 | Datadog SAML SSO | https://docs.datadoghq.com/account_management/saml/ |
