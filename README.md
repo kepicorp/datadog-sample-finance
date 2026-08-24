@@ -345,7 +345,7 @@ Nothing is automatic anymore — a fresh `make deploy-k8s` + `make deploy-k8s-dd
 
 - **Tags + log injection — `make tags`.** Uncomments Unified Service Tagging (pod labels + `DD_ENV`/`DD_SERVICE`/`DD_VERSION`) on all six manifests, and log-trace correlation for services with a baked-in/self-managed tracer (Python, Node, Java, Go). See [`make tags`](./INSTRUMENTATION.md#make-tags).
 - **Database Monitoring — `make dbm`.** Agent-side `postgres.d` config + a dedicated read-only PostgreSQL `datadog` role. See [`make dbm`](./INSTRUMENTATION.md#make-dbm).
-- **In-depth instrumentation — `make instrument`.** Uncomments the `transaction-service` `payment.authorize` span and the `notification-service` (Go) APM tracer/profiler/`alert.send` span, **plus** Single Step Instrumentation gating (all 6 manifests) and Continuous Profiler (5 of 6 services). (Other custom spans are always-on in source; **custom metrics are span-based**, created by `make tf-apply-dd` — no DogStatsD.) See [`make instrument`](./INSTRUMENTATION.md#make-instrument).
+- **In-depth instrumentation — `make instrument`.** Uncomments the `transaction-service` `payment.authorize` span and the `notification-service` (Go) APM tracer/profiler/`alert.send` span, **plus** Single Step Instrumentation gating (all 6 manifests), Continuous Profiler (5 of 6 services), and Data Streams/Data Jobs Monitoring (4 JMS services + `batch-processor`; `fraud-detection` also needs a rebuild). (Other custom spans are always-on in source; **custom metrics are span-based**, created by `make tf-apply-dd` — no DogStatsD.) See [`make instrument`](./INSTRUMENTATION.md#make-instrument).
 - **Digital Experience Monitoring — `make dem`.** Creates the Browser RUM application via a direct Datadog API call (not Terraform) and injects the credentials into `frontend-stub/index.html`. Independent of `make instrument`/`make tags`/`make tf-apply-dd`. See [`make dem`](./INSTRUMENTATION.md#make-dem).
 - **Application/Cloud Security — `make security`.** ASM Threats/SCA, CWS, CSPM (Agent-side) + `DD_APPSEC_ENABLED` on all 6 services. See [`make security`](./INSTRUMENTATION.md#make-security).
 - **Datadog resources — `make tf-apply-dd`.** Creates the monitors, SLOs, dashboard, synthetics, and log pipeline. RUM is no longer part of this Terraform module — see `make dem` above. See [`make tf-apply-dd`](./INSTRUMENTATION.md#make-tf-apply-dd).
@@ -380,21 +380,23 @@ make deploy-k8s-dd             # Datadog Agent (reads DD_API_KEY / DD_APP_KEY fr
 # Tags + log injection — UST on all 6 manifests + log-trace correlation
 # for Python/Node/Java/Go's baked-in tracers (separate from make instrument)
 make tags
-make build && kubectl rollout restart deployment -n finance
+make build && make deploy-k8s  # rebuild + re-apply manifests (a bare rollout restart
+                                # won't pick up the new env vars/labels)
 make untag                     # reverse Tags + log injection at any time
 
 # Database Monitoring — Agent-side postgres.d config + PostgreSQL 'datadog' role
 make dbm
-kubectl apply -k deploy/kubernetes/datadog/agent && kubectl rollout restart daemonset/datadog -n datadog
+kubectl apply -k deploy/kubernetes/datadog/agent && kubectl rollout restart daemonset/datadog-agent -n datadog
 make undbm                     # reverse Database Monitoring at any time
 
 # In-depth instrumentation — APM custom spans (transaction-service payment.authorize,
 # notification-service Go tracer/profiler/alert.send) + Single Step Instrumentation
-# gating (all 6 manifests) + Continuous Profiler (5 of 6 services).
+# gating (all 6 manifests) + Continuous Profiler (5 of 6 services) + Data
+# Streams/Data Jobs Monitoring (4 JMS services + batch-processor).
 # (custom metrics are span-based via 'make tf-apply-dd' — no DogStatsD)
 make instrument
-make build                     # rebuild, then reload images (see load step) and restart:
-kubectl rollout restart deployment -n finance
+make build && make deploy-k8s  # rebuild, reload images (see load step), re-apply manifests
+                                # (a bare rollout restart won't pick up the new env vars/labels)
 make uninstrument              # reverse In-depth instrumentation at any time
 
 # Digital Experience Monitoring — creates the Browser RUM application via a
@@ -410,8 +412,9 @@ make undem                     # reverse DEM at any time (deletes the RUM app)
 # Application/Cloud Security — ASM Threats/SCA, CWS, CSPM (Agent-side) +
 # DD_APPSEC_ENABLED (all 6 services)
 make security
-kubectl apply -k deploy/kubernetes/datadog/agent && kubectl rollout restart daemonset/datadog -n datadog
-make build && kubectl rollout restart deployment -n finance
+kubectl apply -k deploy/kubernetes/datadog/agent && kubectl rollout restart daemonset/datadog-agent -n datadog
+make build && make deploy-k8s  # rebuild + re-apply manifests (a bare rollout restart
+                                # won't pick up the new DD_APPSEC_ENABLED env var)
 make unsecurity                # reverse Security at any time
 
 # Datadog Terraform resources — monitors, SLOs, dashboard, synthetics, log pipeline.

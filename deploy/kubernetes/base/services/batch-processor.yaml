@@ -174,11 +174,14 @@ spec:
             #   value: "true"
             # ─────────────────────────────────────────────────────────────────
             # ── DATA JOBS MONITORING (DJM) ──────────────────────────────────
-            # Surfaces Spring Batch job runs under APM > Data Jobs. Equivalent
-            # to the -Ddd.data.jobs.enabled=true JVM flag; no rebuild needed.
+            # Uncomment via 'make instrument' to surface Spring Batch job runs
+            # under APM > Data Jobs. Equivalent to the
+            # -Ddd.data.jobs.enabled=true JVM flag; no rebuild needed.
             # Docs: https://docs.datadoghq.com/data_jobs/
-            - name: DD_DATA_JOBS_ENABLED
-              value: "true"
+            #
+            # - name: DD_DATA_JOBS_ENABLED
+            #   value: "true"
+            # ─────────────────────────────────────────────────────────────────
             # ── CONTINUOUS PROFILER ──────────────────────────────────────────
             # Uncomment via 'make instrument' to enable Continuous Profiler for
             # this service — correlate CPU flame graphs with slow batch steps.

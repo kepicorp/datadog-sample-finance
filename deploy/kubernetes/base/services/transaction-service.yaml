@@ -185,12 +185,15 @@ spec:
             #   value: "true"
             # ─────────────────────────────────────────────────────────────────
             # ── DATA STREAMS MONITORING (DSM) ───────────────────────────────
-            # JMS pipeline visibility in Data Streams. This service produces to
-            # ActiveMQ; full producer→consumer stitching across the Python/Go
-            # consumers may need manual checkpoints (see docs).
+            # Uncomment via 'make instrument' to enable JMS pipeline
+            # visibility in Data Streams. This service produces to ActiveMQ;
+            # full producer→consumer stitching across the Python/Go consumers
+            # may need manual checkpoints (see docs).
             # Docs: https://docs.datadoghq.com/data_streams/
-            - name: DD_DATA_STREAMS_ENABLED
-              value: "true"
+            #
+            # - name: DD_DATA_STREAMS_ENABLED
+            #   value: "true"
+            # ─────────────────────────────────────────────────────────────────
             # ── CONTINUOUS PROFILER ──────────────────────────────────────────
             # Uncomment via 'make instrument' to enable Continuous Profiler for
             # this service — correlate CPU flame graphs with slow traces.

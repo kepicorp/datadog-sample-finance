@@ -185,11 +185,14 @@ spec:
             #   value: "true"
             # ─────────────────────────────────────────────────────────────────
             # ── DATA STREAMS MONITORING (DSM) ───────────────────────────────
-            # End-to-end JMS pipeline visibility (producer → consumer latency,
-            # queue lag) in Data Streams. dd-trace-java auto-instruments JMS.
+            # Uncomment via 'make instrument' to enable end-to-end JMS pipeline
+            # visibility (producer → consumer latency, queue lag) in Data
+            # Streams. dd-trace-java auto-instruments JMS.
             # Docs: https://docs.datadoghq.com/data_streams/
-            - name: DD_DATA_STREAMS_ENABLED
-              value: "true"
+            #
+            # - name: DD_DATA_STREAMS_ENABLED
+            #   value: "true"
+            # ─────────────────────────────────────────────────────────────────
             # ── CONTINUOUS PROFILER ──────────────────────────────────────────
             # Uncomment via 'make instrument' to enable Continuous Profiler for
             # this service — correlate CPU flame graphs with slow traces.

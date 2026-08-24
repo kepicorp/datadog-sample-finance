@@ -139,12 +139,17 @@ spec:
             #   value: "true"
             # ─────────────────────────────────────────────────────────────────
             # ── DATA STREAMS MONITORING (DSM) ───────────────────────────────
-            # JMS consumer on fraud.score.queue. Enabling the flag turns DSM on;
-            # for full pipeline stitching a Python consumer checkpoint
-            # (ddtrace set_consume_checkpoint) may be required (see docs).
+            # Uncomment via 'make instrument' — JMS consumer on
+            # fraud.score.queue. Enabling the flag turns DSM on; for full
+            # pipeline stitching a Python consumer checkpoint (ddtrace
+            # set_consume_checkpoint) may be required (see docs). Also
+            # requires ddtrace[data_streams] in requirements.txt (same
+            # 'make instrument' step) + an image rebuild.
             # Docs: https://docs.datadoghq.com/data_streams/python/
-            - name: DD_DATA_STREAMS_ENABLED
-              value: "true"
+            #
+            # - name: DD_DATA_STREAMS_ENABLED
+            #   value: "true"
+            # ─────────────────────────────────────────────────────────────────
             # ── CONTINUOUS PROFILER ──────────────────────────────────────────
             # Uncomment via 'make instrument' to enable Continuous Profiler for
             # this service — correlate CPU flame graphs with slow traces.

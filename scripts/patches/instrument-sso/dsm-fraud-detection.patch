@@ -1,0 +1,12 @@
+--- a/deploy/kubernetes/base/services/fraud-detection.yaml
++++ b/deploy/kubernetes/base/services/fraud-detection.yaml
+@@ -148,7 +148,7 @@
+             # Docs: https://docs.datadoghq.com/data_streams/python/
+             #
+-            # - name: DD_DATA_STREAMS_ENABLED
+-            #   value: "true"
++            - name: DD_DATA_STREAMS_ENABLED
++              value: "true"
+             # ─────────────────────────────────────────────────────────────────
+             # ── CONTINUOUS PROFILER ──────────────────────────────────────────
+             # Uncomment via 'make instrument' to enable Continuous Profiler for

@@ -169,23 +169,32 @@ help:
 version:
 	@echo "DD_VERSION=$(DD_VERSION)"
 
-## instrument: Uncomment In-depth instrumentation — three narrated steps under one
+## instrument: Uncomment In-depth instrumentation — four narrated steps under one
 ##             sentinel: (1) the APM custom-span patches (transaction-service,
 ##             notification-service — unchanged), (2) Single Step Instrumentation
 ##             gating (admission.datadoghq.com/enabled label + <lang>-lib.version
 ##             annotation, all 6 services), (3) Continuous Profiler
 ##             (DD_PROFILING_ENABLED, 5 services — not notification-service, whose
-##             profiler is already gated by step 1's Go patch). Applies unified diff
-##             patches — fully reversible with make uninstrument. Idempotent: a
-##             second run is a clean no-op (tracked via .instrumentation-applied).
-##             See INSTRUMENTATION.md for what each patch enables. APM + Single Step
-##             + Profiler only — for UST/log injection see 'make tags', for AppSec
-##             see 'make security', for Browser RUM see 'make dem'.
+##             profiler is already gated by step 1's Go patch), (4) Data Streams /
+##             Data Jobs Monitoring (DD_DATA_STREAMS_ENABLED on account-service,
+##             fraud-detection, notification-service, transaction-service;
+##             DD_DATA_JOBS_ENABLED on batch-processor — gateway-api has neither,
+##             it doesn't produce/consume JMS). Also prints a Service Catalog note
+##             (service.datadog.yaml already ships for all 6 services — static,
+##             nothing to patch). Applies unified diff patches — fully reversible
+##             with make uninstrument. Idempotent: a second run is a clean no-op
+##             (tracked via .instrumentation-applied). See INSTRUMENTATION.md for
+##             what each patch enables. APM + Single Step + Profiler + DSM/DJM
+##             only — for UST/log injection see 'make tags', for AppSec see
+##             'make security', for Browser RUM see 'make dem'.
 ##
 ##             After patching, redeploy (rollout restart alone won't pick up the
 ##             new env vars/annotations — the manifests must be re-applied):
 ##               Local:  make build && load images into k3s && make deploy-k8s
 ##               EKS:    make build-ecr && make deploy-k8s-eks
+##             fraud-detection's DSM extra is a baked pip dependency (not just an
+##             env var) — it needs the same rebuild step above, a plain
+##             kubectl apply is not enough even locally.
 instrument:
 	@if [ -f .instrumentation-applied ]; then \
 		echo "Instrumentation already enabled. Run 'make uninstrument' first to reapply."; \
@@ -216,16 +225,35 @@ instrument:
 			echo "    $$svc"; \
 			patch -p1 --forward -s < $$p || true; \
 		done; \
+		echo ""; \
+		echo "Step 4: Enabling Data Streams / Data Jobs Monitoring..."; \
+		echo "  Why: DSM traces JMS producer→consumer latency and queue lag; DJM"; \
+		echo "  surfaces Spring Batch job runs under APM > Data Jobs. gateway-api has"; \
+		echo "  neither (no JMS produce/consume):"; \
+		for p in scripts/patches/instrument-sso/dsm-*.patch scripts/patches/instrument-sso/djm-*.patch; do \
+			svc=$$(basename $$p .patch | sed -e 's/^dsm-//' -e 's/^djm-//'); \
+			echo "    $$svc"; \
+			patch -p1 --forward -s < $$p || true; \
+		done; \
+		echo "  Note: fraud-detection's DSM extra is baked into requirements.txt —"; \
+		echo "  needs 'make build' + redeploy, not just a redeploy, to take effect."; \
+		echo ""; \
+		echo "Service Catalog: service.datadog.yaml already ships for all 6 services"; \
+		echo "  (static, git-committed metadata — team ownership, links, lifecycle/"; \
+		echo "  tier). Nothing to patch; Datadog's GitHub integration auto-scans the"; \
+		echo "  repo tree for these files once installed. See INSTRUMENTATION.md."; \
 		touch .instrumentation-applied; \
 		echo ""; \
 		echo "✓ Instrumentation enabled. Redeploy to activate:"; \
 		$(print_redeploy_hint); \
 	fi
 
-## uninstrument: Reverse all three make instrument steps (Continuous Profiler, then
-##               Single Step Instrumentation gating, then APM custom-span patches —
-##               opposite order from make instrument). Restores every file to its
-##               original commented-out state.
+## uninstrument: Reverse all four make instrument steps (Data Streams/Data Jobs
+##               Monitoring, then Continuous Profiler, then Single Step
+##               Instrumentation gating, then APM custom-span patches — opposite
+##               order from make instrument). Restores every file to its original
+##               commented-out state. Service Catalog files are static and
+##               unaffected either way.
 ##
 ##               After patching, redeploy (rollout restart alone won't pick up the
 ##               reverted env vars/annotations — the manifests must be re-applied):
@@ -235,6 +263,12 @@ uninstrument:
 	@if [ ! -f .instrumentation-applied ]; then \
 		echo "Instrumentation is not currently enabled (nothing to reverse)."; \
 	else \
+		echo "Reversing Data Streams / Data Jobs Monitoring patches..."; \
+		for p in scripts/patches/instrument-sso/dsm-*.patch scripts/patches/instrument-sso/djm-*.patch; do \
+			svc=$$(basename $$p .patch | sed -e 's/^dsm-//' -e 's/^djm-//'); \
+			echo "  $$svc"; \
+			patch -p1 --reverse -s < $$p || true; \
+		done; \
 		echo "Reversing Continuous Profiler patches..."; \
 		for p in scripts/patches/instrument-sso/profiler-*.patch; do \
 			svc=$$(basename $$p .patch | sed 's/^profiler-//'); \

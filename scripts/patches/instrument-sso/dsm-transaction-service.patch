@@ -1,0 +1,12 @@
+--- a/deploy/kubernetes/base/services/transaction-service.yaml
++++ b/deploy/kubernetes/base/services/transaction-service.yaml
+@@ -192,7 +192,7 @@
+             # Docs: https://docs.datadoghq.com/data_streams/
+             #
+-            # - name: DD_DATA_STREAMS_ENABLED
+-            #   value: "true"
++            - name: DD_DATA_STREAMS_ENABLED
++              value: "true"
+             # ─────────────────────────────────────────────────────────────────
+             # ── CONTINUOUS PROFILER ──────────────────────────────────────────
+             # Uncomment via 'make instrument' to enable Continuous Profiler for

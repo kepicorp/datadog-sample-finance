@@ -11,7 +11,7 @@ Everything below is opt-in and commented out by default. The full pipeline, in o
 ```bash
 make tags          # Unified Service Tagging + log injection
 make dbm           # Database Monitoring (PostgreSQL)
-make instrument    # APM custom spans + Single Step Instrumentation + Continuous Profiler
+make instrument    # APM custom spans + Single Step Instrumentation + Continuous Profiler + DSM/DJM
 make dem           # Digital Experience Monitoring (Browser RUM)
 make security      # ASM + CWS + CSPM
 make tf-apply-dd   # Dashboards, monitors, SLOs, synthetics
@@ -48,14 +48,17 @@ Two narrated steps, applied via unified diff patches under `scripts/patches/tags
 ```bash
 make tags               # apply UST + log injection patches
 make build               # rebuild the service images
-kubectl rollout restart deployment -n finance
+make deploy-k8s          # re-applies the patched manifests (a bare rollout restart
+                          # won't pick up the new env vars/labels — see EKS note below)
 ```
+
+> **EKS:** replace `make deploy-k8s` with `make deploy-k8s-eks`.
 
 ### Reverse it
 
 ```bash
 make untag               # re-comments all UST + log-injection patches
-make build               # then reload images (if needed) + kubectl rollout restart deployment -n finance
+make build               # then reload images (if needed) + make deploy-k8s (or make deploy-k8s-eks on EKS)
 ```
 
 ### Validate
@@ -84,8 +87,8 @@ DBM needs the Agent to authenticate to Postgres via a dedicated read-only role t
 ```bash
 make dbm
 # Redeploy the Agent to pick up the new mount:
-#   Local: kubectl apply -k deploy/kubernetes/datadog/agent && kubectl rollout restart daemonset/datadog -n datadog
-#   EKS:   kubectl apply -k deploy/kubernetes/overlays/eks-datadog && kubectl rollout restart daemonset/datadog -n datadog
+#   Local: kubectl apply -k deploy/kubernetes/datadog/agent && kubectl rollout restart daemonset/datadog-agent -n datadog
+#   EKS:   kubectl apply -k deploy/kubernetes/overlays/eks-datadog && kubectl rollout restart daemonset/datadog-agent -n datadog
 ```
 
 ### Reverse it
@@ -111,7 +114,7 @@ kubectl exec -n datadog daemonset/datadog-agent -c agent -- agent status
 
 ## `make instrument`
 
-Applies reversible unified-diff patches in three narrated steps under one sentinel (`.instrumentation-applied`). Reversing (`make uninstrument`) runs the same three steps in the opposite order.
+Applies reversible unified-diff patches in four narrated steps under one sentinel (`.instrumentation-applied`), plus a Service Catalog reminder. Reversing (`make uninstrument`) runs the same four steps in the opposite order.
 
 ### 1. APM custom spans
 
@@ -209,23 +212,39 @@ Common causes:
 
 **Validate:** APM → Profiles — flame graphs appear within ~1 minute. Correlates CPU flame graphs with slow payment traces or slow batch job steps.
 
+### 4. Data Streams / Data Jobs Monitoring
+
+`scripts/patches/instrument-sso/dsm-*.patch` + `djm-batch-processor.patch` — uncomments `DD_DATA_STREAMS_ENABLED=true` on the four JMS services (`account-service`, `transaction-service`, `fraud-detection`, `notification-service`) and `DD_DATA_JOBS_ENABLED=true` on `batch-processor`. `gateway-api` has neither block — it doesn't produce or consume JMS messages.
+
+DSM gives producer→consumer latency and consumer-lag visibility across the payment → fraud → notification flow. `account-service` (Java) auto-instruments JMS producer/consumer checkpoints; the Node.js producer and Python/Go consumers may need manual checkpoints for complete end-to-end stitching (see the commented-out `set_consume_checkpoint` block in `fraud-detection/listener.py` — an optional follow-up, not applied by this patch). DJM surfaces Spring Batch job runs under APM → Data Jobs — primarily built for Spark/Databricks workloads, so for a plain Spring Batch app the step 1 APM spans + `job.*` tags already cover most needs.
+
+> **`fraud-detection` needs a rebuild, not just a redeploy.** Its DSM support is a baked pip dependency (`ddtrace[data_streams]` in `requirements.txt`, patched by `dsm-fraud-detection-requirements.patch`), unlike the other four services' plain env-var toggle. After `make instrument`, `fraud-detection` specifically needs `make build` (or `make build-ecr`) + image reload before DSM data appears — the env var alone isn't enough.
+
+**Validate:** Data Streams → pathway map shows `fraud.score.queue` and `alert.queue` (docs: https://docs.datadoghq.com/data_streams/). APM → Data Jobs after a reconciliation run (docs: https://docs.datadoghq.com/data_jobs/).
+
+### Service Catalog reminder
+
+`make instrument` also prints a reminder that `service.datadog.yaml` already ships for all 6 services — there's no patch step for it, since these are static, git-committed metadata files with no on/off switch. See [Service Catalog: `service.datadog.yaml`](#service-catalog-servicedatadogyaml) below for the schema and how Datadog picks them up.
+
 ### Workflow
 
 ```bash
-make instrument          # applies all 3 steps
+make instrument          # applies all 4 steps
 make build                # rebuild the service images
 # → reload the rebuilt images into your cluster (Colima/kind/k3d/minikube) — see the README runbook.
 #   Docker Desktop / Rancher Desktop need no reload.
-kubectl rollout restart deployment -n finance
+make deploy-k8s           # re-applies the patched manifests (a bare rollout restart won't
+                           # pick up the new env vars/labels/annotations — it only recreates
+                           # pods from whatever spec is already stored in the API server)
 ```
 
-> **EKS:** replace the local image reload with `make build-ecr && make deploy-k8s-eks`, then `kubectl rollout restart deployment -n finance`.
+> **EKS:** replace `make build` + `make deploy-k8s` with `make build-ecr && make deploy-k8s-eks`.
 
 ### Reverse it
 
 ```bash
-make uninstrument       # reverses in opposite order: profiler → SSI gating → APM spans
-make build               # then reload images (if needed) + kubectl rollout restart deployment -n finance
+make uninstrument       # reverses in opposite order: DSM/DJM → profiler → SSI gating → APM spans
+make build               # then reload images (if needed) + make deploy-k8s (or make deploy-k8s-eks on EKS)
 ```
 
 ### Regenerating patches
@@ -240,7 +259,7 @@ for p in scripts/patches/*.patch; do
 done
 ```
 
-**`scripts/patches/tags/*.patch` are hand-authored, not regenerated by this script.** `generate-patches.py`'s uncomment engine only understands Python/JS/Go/Java source syntax — it has no YAML support. If you modify a `tags/` patch's source, edit the corresponding `scripts/patches/tags/*.patch` unified diff by hand and re-validate with the same `patch --dry-run` loop.
+**`scripts/patches/tags/*.patch` and `scripts/patches/instrument-sso/*.patch` (`sso-`, `profiler-`, `dsm-`, `djm-`) are hand-authored, not regenerated by this script.** `generate-patches.py`'s uncomment engine only understands Python/JS/Go/Java source syntax — it has no YAML support (and `dsm-fraud-detection-requirements.patch` targets a `requirements.txt`, not source). If you modify one of these patches' underlying file, edit the corresponding unified diff by hand and re-validate with the same `patch --dry-run` loop.
 
 ---
 
@@ -388,9 +407,12 @@ These agent features turn on the threat-intake pipeline, eBPF runtime monitoring
 ```bash
 make security
 # Redeploy to activate:
-#   Agent: kubectl apply -k deploy/kubernetes/datadog/agent && kubectl rollout restart daemonset/datadog -n datadog
-#   Apps:  make build && load images into k3s && kubectl rollout restart deployment -n finance
+#   Agent: kubectl apply -k deploy/kubernetes/datadog/agent && kubectl rollout restart daemonset/datadog-agent -n datadog
+#   Apps:  make build && load images into k3s && make deploy-k8s
+#          (a bare rollout restart won't pick up the new DD_APPSEC_ENABLED env var)
 ```
+
+> **EKS:** replace the Apps line with `make build-ecr && make deploy-k8s-eks`.
 
 ### Reverse it
 
@@ -521,17 +543,7 @@ kubectl apply -f deploy/kubernetes/datadog/checks/activemq-check.yaml
 
 **Validate:** Infrastructure → Metrics → search `activemq.queue.size`.
 
-### Data Streams Monitoring (DSM), JMS pipeline
-
-`DD_DATA_STREAMS_ENABLED=true` is already set on the four JMS services (`account-service`, `transaction-service`, `fraud-detection`, `notification-service`) — no `make` target gates this. Gives producer→consumer latency and consumer-lag visibility across the payment → fraud → notification flow. `account-service` (Java) auto-instruments JMS producer/consumer checkpoints; the Node.js producer and Python/Go consumers may need manual checkpoints for complete end-to-end stitching.
-
-**Validate:** Data Streams → pathway map shows `fraud.score.queue` and `alert.queue`. Docs: https://docs.datadoghq.com/data_streams/
-
-### Data Jobs Monitoring (DJM), batch-processor
-
-`DD_DATA_JOBS_ENABLED=true` is already set on `batch-processor` (equivalent to `-Ddd.data.jobs.enabled=true`) — no `make` target gates this. Surfaces Spring Batch job runs under APM → Data Jobs. Primarily built for Spark/Databricks workloads; for a plain Spring Batch app the APM spans + `job.*` tags already cover most needs.
-
-**Validate:** APM → Data Jobs after a reconciliation run. Docs: https://docs.datadoghq.com/data_jobs/
+> Data Streams Monitoring and Data Jobs Monitoring used to be always-on here too — they're now gated behind `make instrument` (step 4). See [`make instrument`](#make-instrument) above.
 
 ---
 
