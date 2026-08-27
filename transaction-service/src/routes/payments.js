@@ -89,13 +89,27 @@ router.post("/", async (req, res) => {
 
   // Step 2: publish fraud-scoring event (best-effort — JMS unavailability
   // must not cause payment loss; the payment is already stored above).
+  //
+  // ── WORKSHOP SCENARIO 3 (fraud queue producer surge) ─────────────────
+  // FRAUD_QUEUE_DUPLICATE_FACTOR defaults to 1 (no behavior change). Set to
+  // e.g. 3 via `make scenario-3` to simulate a "loop bug" duplicating every
+  // payment's fraud-scoring publish — the queue backs up on the producer
+  // side while fraud-detection (the consumer) keeps processing normally,
+  // which is exactly what Data Streams Monitoring should surface as a
+  // producer/consumer throughput mismatch. Reset via `make unscenario-3`.
+  const duplicateFactor = parseInt(
+    process.env.FRAUD_QUEUE_DUPLICATE_FACTOR || "1",
+    10,
+  );
   try {
-    await producer.send("fraud.score.queue", {
-      payment_id,
-      amount,
-      currency,
-      account_id,
-    });
+    for (let i = 0; i < duplicateFactor; i++) {
+      await producer.send("fraud.score.queue", {
+        payment_id,
+        amount,
+        currency,
+        account_id,
+      });
+    }
   } catch (err) {
     logger.warn({ err, payment_id }, "fraud-scoring.publish.failed");
   }

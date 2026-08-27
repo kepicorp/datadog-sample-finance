@@ -121,6 +121,44 @@ async function commit({ payment_id, amount, currency, account_id }) {
   try {
     const db = getPool();
 
+    // ── WORKSHOP SCENARIO 1 (missing index on the ledger) ────────────
+    // Payment-velocity check: look at the account's most recent activity
+    // before writing the new payment, so we can flag unusually rapid
+    // repeated payments. This read runs against idx_transactions_account_id
+    // (deploy/kubernetes/base/infrastructure/postgres-init.yaml) and is fast
+    // as long as that index exists. `make scenario-1` drops it, turning this
+    // into a full table scan on the ledger — the slow db.query span the
+    // workshop's APM/DBM investigation is built around. `make unscenario-1`
+    // restores it.
+    const velocitySpan = tracer.startSpan("ledger.velocity_check", {
+      childOf: tracer.scope().active(),
+      tags: {
+        "db.instance": "postgres-ledger",
+        "db.type": "postgresql",
+        "db.statement":
+          "SELECT id, amount, created_at FROM transactions WHERE account_id = $1 ORDER BY created_at DESC LIMIT 5",
+        "resource.name": "ledger.velocity_check",
+      },
+    });
+    try {
+      const recentActivity = await db.query(
+        `SELECT id, amount, created_at
+           FROM transactions
+          WHERE account_id = $1
+          ORDER BY created_at DESC
+          LIMIT 5`,
+        [account_id],
+      );
+      if (recentActivity.rows.length >= 5) {
+        logger.warn(
+          { account_id, "db.instance": "postgres-ledger" },
+          "ledger.velocity_check.high_activity",
+        );
+      }
+    } finally {
+      velocitySpan.finish();
+    }
+
     await db.query(
       `INSERT INTO transactions (id, amount, currency, account_id, status)
        VALUES ($1, $2, $3, $4, 'pending')

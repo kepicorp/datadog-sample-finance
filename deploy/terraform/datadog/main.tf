@@ -1457,6 +1457,43 @@ resource "datadog_monitor" "ledger_commit_errors" {
   tags              = local.common_tags
 }
 
+# ── Monitor 9: Reconciliation job low record count ──────────────────────────
+# Fires when the end-of-day-reconciliation job completes successfully but
+# processes far fewer records than expected — the monitor the workshop's
+# Scenario 2 ("nightly reconciliation fails silently") discussion question
+# asks facilitators to set up. Wired to the finance.batch.records_processed
+# span-based metric (see the "Custom metrics" section above).
+resource "datadog_monitor" "reconciliation_low_record_count" {
+  name    = "[Finance] Reconciliation job processed unexpectedly few records — ${var.cluster_name}"
+  type    = "metric alert"
+  message = <<-EOT
+    ## Reconciliation job record count anomaly
+
+    The end-of-day-reconciliation job completed successfully but processed
+    far fewer records than expected — this can mean a subset of accounts was
+    silently excluded (e.g. a data integrity issue in the reader query), not
+    that there was simply less activity to reconcile.
+
+    **Triage steps:**
+    1. Check [Data Jobs Monitoring](https://app.datadoghq.com/data-jobs) for the job's step-level record counts
+    2. Check batch-processor logs for the run's records.read/records.written line
+    3. Check DBM for the reconciliation query's actual row count vs. expected
+
+    @slack-finance-alerts
+  EOT
+
+  query = "avg(last_1h):avg:finance.batch.records_processed{job_name:end-of-day-reconciliation,${local.env_filter}} < 5"
+
+  monitor_thresholds {
+    critical = 5
+    warning  = 20
+  }
+
+  notify_no_data    = false
+  renotify_interval = 60
+  tags              = local.common_tags
+}
+
 # =============================================================================
 # SERVICE LEVEL OBJECTIVES (SLOs)
 # =============================================================================

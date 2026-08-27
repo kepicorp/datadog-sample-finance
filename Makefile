@@ -28,7 +28,7 @@
 #   make deploy-k8s-eks                 # deploy app (includes gp3 StorageClass)
 #   make deploy-k8s-dd                  # deploy Datadog Agent (auto-detects EKS)
 
-.PHONY: all build build-ecr version test test-traffic deploy-k8s deploy-k8s-eks deploy-k8s-dd undeploy-k8s teardown instrument uninstrument tags untag dbm undbm security unsecurity dem undem create-dd-secret tf-plan-aws tf-apply-aws tf-configure-kubectl frontend-url tf-destroy-aws dd-secrets tf-plan-dd tf-apply-dd tf-destroy-dd help
+.PHONY: all build build-ecr version test test-traffic deploy-k8s deploy-k8s-eks deploy-k8s-dd undeploy-k8s teardown instrument uninstrument tags untag dbm undbm security unsecurity dem undem create-dd-secret tf-plan-aws tf-apply-aws tf-configure-kubectl frontend-url tf-destroy-aws dd-secrets tf-plan-dd tf-apply-dd tf-destroy-dd scenario-1 unscenario-1 scenario-2 unscenario-2 scenario-3 unscenario-3 help
 
 # Resolve DD_VERSION once so all targets share the same value.
 # Falls back to 'dev' when git is not available (e.g. in a bare CI image).
@@ -1006,6 +1006,113 @@ unsecurity:
 		echo "✓ Security disabled. Redeploy to deactivate:"; \
 		echo "    Agent: kubectl apply -k deploy/kubernetes/datadog/agent && kubectl rollout restart daemonset/datadog-agent -n datadog"; \
 		echo "    Apps:  make build && load images into k3s && make deploy-k8s"; \
+	fi
+
+## scenario-1: [Workshop] Inject Scenario 1 (payments slow / missing index). Drops
+##             idx_transactions_account_id on the live postgres-ledger pod
+##             (scripts/scenarios/scenario1-drop-index.sql), turning
+##             transaction-service's ledger.velocity_check query into a full
+##             table scan. Requires make instrument to already be applied (that's
+##             what makes the slow db.query span visible in APM/DBM). Idempotent:
+##             tracked via .scenario-1-applied. Reverse with make unscenario-1.
+scenario-1:
+	@if [ -f .scenario-1-applied ]; then \
+		echo "Scenario 1 already injected. Run 'make unscenario-1' first to reapply."; \
+	elif ! kubectl get statefulset postgres-ledger -n finance >/dev/null 2>&1; then \
+		echo "postgres-ledger not found in namespace finance — run 'make deploy-k8s' first."; \
+	else \
+		echo "Dropping idx_transactions_account_id on postgres-ledger..."; \
+		if kubectl exec -i -n finance statefulset/postgres-ledger -- \
+			psql -U finance -d ledger -v ON_ERROR_STOP=1 -f - < scripts/scenarios/scenario1-drop-index.sql; then \
+			touch .scenario-1-applied; \
+			echo ""; \
+			echo "✓ Scenario 1 injected. Generate payment traffic and look for a slow"; \
+			echo "  ledger.velocity_check span in APM → click 'View in DBM' for the plan."; \
+		else \
+			echo "⚠  SQL failed — check postgres-ledger is Ready."; \
+		fi; \
+	fi
+
+## unscenario-1: [Workshop] Reset Scenario 1 — restores idx_transactions_account_id
+##               (scripts/scenarios/scenario1-restore-index.sql).
+unscenario-1:
+	@if [ ! -f .scenario-1-applied ]; then \
+		echo "Scenario 1 is not currently injected (nothing to reset)."; \
+	else \
+		echo "Restoring idx_transactions_account_id on postgres-ledger..."; \
+		if kubectl exec -i -n finance statefulset/postgres-ledger -- \
+			psql -U finance -d ledger -v ON_ERROR_STOP=1 -f - < scripts/scenarios/scenario1-restore-index.sql; then \
+			rm -f .scenario-1-applied; \
+			echo "✓ Scenario 1 reset. Index restored."; \
+		else \
+			echo "⚠  SQL failed — check postgres-ledger is Ready."; \
+		fi; \
+	fi
+
+## scenario-2: [Workshop] Inject Scenario 2 (nightly reconciliation fails silently).
+##             Sets RECONCILIATION_SCENARIO_ENABLED=true on batch-processor and
+##             rolls it out, which makes ReconciliationJob's reader silently
+##             exclude an account range — the job still completes successfully,
+##             but job.records_processed drops. Trigger a run with:
+##               kubectl exec -n finance deploy/batch-processor -- curl -s -X POST localhost:8080/jobs/reconciliation
+##             (or let scripts/generate-traffic.py's scenario_batch_job fire it).
+##             Idempotent: tracked via .scenario-2-applied. Reverse with make unscenario-2.
+scenario-2:
+	@if [ -f .scenario-2-applied ]; then \
+		echo "Scenario 2 already injected. Run 'make unscenario-2' first to reapply."; \
+	elif ! kubectl get deployment batch-processor -n finance >/dev/null 2>&1; then \
+		echo "batch-processor deployment not found in namespace finance — run 'make deploy-k8s' first."; \
+	else \
+		kubectl set env deployment/batch-processor -n finance RECONCILIATION_SCENARIO_ENABLED=true; \
+		kubectl rollout restart deployment/batch-processor -n finance; \
+		touch .scenario-2-applied; \
+		echo ""; \
+		echo "✓ Scenario 2 injected. Trigger POST /jobs/reconciliation and watch"; \
+		echo "  job.records_processed drop in Data Jobs Monitoring — job still shows COMPLETED."; \
+	fi
+
+## unscenario-2: [Workshop] Reset Scenario 2 — unsets RECONCILIATION_SCENARIO_ENABLED
+##               on batch-processor and rolls it out.
+unscenario-2:
+	@if [ ! -f .scenario-2-applied ]; then \
+		echo "Scenario 2 is not currently injected (nothing to reset)."; \
+	else \
+		kubectl set env deployment/batch-processor -n finance RECONCILIATION_SCENARIO_ENABLED-; \
+		kubectl rollout restart deployment/batch-processor -n finance; \
+		rm -f .scenario-2-applied; \
+		echo "✓ Scenario 2 reset."; \
+	fi
+
+## scenario-3: [Workshop] Inject Scenario 3 (fraud queue backing up / producer surge).
+##             Sets FRAUD_QUEUE_DUPLICATE_FACTOR=3 on transaction-service and rolls
+##             it out, tripling every payment's publish to fraud.score.queue while
+##             fraud-detection (the consumer) keeps processing normally — DSM should
+##             show a producer/consumer throughput mismatch, not a consumer problem.
+##             Idempotent: tracked via .scenario-3-applied. Reverse with make unscenario-3.
+scenario-3:
+	@if [ -f .scenario-3-applied ]; then \
+		echo "Scenario 3 already injected. Run 'make unscenario-3' first to reapply."; \
+	elif ! kubectl get deployment transaction-service -n finance >/dev/null 2>&1; then \
+		echo "transaction-service deployment not found in namespace finance — run 'make deploy-k8s' first."; \
+	else \
+		kubectl set env deployment/transaction-service -n finance FRAUD_QUEUE_DUPLICATE_FACTOR=3; \
+		kubectl rollout restart deployment/transaction-service -n finance; \
+		touch .scenario-3-applied; \
+		echo ""; \
+		echo "✓ Scenario 3 injected. Generate payment traffic and watch fraud.score.queue"; \
+		echo "  producer throughput climb in DSM while the consumer stays flat."; \
+	fi
+
+## unscenario-3: [Workshop] Reset Scenario 3 — sets FRAUD_QUEUE_DUPLICATE_FACTOR back
+##               to 1 on transaction-service and rolls it out.
+unscenario-3:
+	@if [ ! -f .scenario-3-applied ]; then \
+		echo "Scenario 3 is not currently injected (nothing to reset)."; \
+	else \
+		kubectl set env deployment/transaction-service -n finance FRAUD_QUEUE_DUPLICATE_FACTOR=1; \
+		kubectl rollout restart deployment/transaction-service -n finance; \
+		rm -f .scenario-3-applied; \
+		echo "✓ Scenario 3 reset."; \
 	fi
 
 ## dd-secrets: Print eval-ready 'export TF_VAR_datadog_api_key=...' commands for use with
