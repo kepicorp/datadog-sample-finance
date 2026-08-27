@@ -1,4 +1,4 @@
-# Finance Sample App — Datadog Observability
+# Meridian Financial — Datadog Observability Sample App
 #
 # DD_VERSION is auto-set to the git short SHA for Deployment Tracking.
 # This ties every container image to an exact commit so that anomalies
@@ -151,7 +151,7 @@ all: build
 
 ## help: Show this help message (all available make targets with descriptions).
 help:
-	@echo "Finance Sample App - Datadog Observability"
+	@echo "Meridian Financial - Datadog Observability Sample App"
 	@echo ""
 	@echo "Usage: make <target>"
 	@echo ""

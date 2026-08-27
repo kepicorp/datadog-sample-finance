@@ -1,4 +1,4 @@
-# Finance Sample App — Troubleshooting Guide
+# Meridian Financial — Troubleshooting Guide
 
 When something isn't working, resist the urge to chase the first error message
 you see. This app has six layers between "I ran a command" and "I see data in

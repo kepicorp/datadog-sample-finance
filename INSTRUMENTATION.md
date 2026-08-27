@@ -1,4 +1,4 @@
-# Finance Sample App — Instrumentation Guide
+# Meridian Financial — Instrumentation Guide
 
 This guide covers **what each observability signal enables and how to turn it on**, one pipeline stage at a time. Building images, loading them into the cluster, and deploying the app (local vs EKS) are covered once in the [README runbook](../README.md#testing-everything-manually) — those deployment mechanics are not repeated here.
 

@@ -1,6 +1,6 @@
-# Finance Sample App — Datadog Observability
+# Meridian Financial — Datadog Observability Sample App
 
-A hands-on observability learning environment built on a realistic financial platform. Six microservices spanning Python, Java, Node.js, and Go — pre-wired for Datadog but shipping with all instrumentation **commented out** so engineers can enable each layer progressively.
+A hands-on observability learning environment built on a realistic financial platform, modeling the fictional customer **Meridian Financial**. Six microservices spanning Python, Java, Node.js, and Go — pre-wired for Datadog but shipping with all instrumentation **commented out** so engineers can enable each layer progressively.
 
 > Something not working? See **[TROUBLESHOOTING.md](./TROUBLESHOOTING.md)** for a layer-by-layer diagnostic model (Infrastructure → Application → Identity → Instrumentation → Telemetry → Backend) instead of chasing symptoms.
 
@@ -28,7 +28,8 @@ A hands-on observability learning environment built on a realistic financial pla
           │  Java / Spring Boot · :8081    │   │  Node.js / Express · :8082      │
           │  Account CRUD · balance        │   │  Payment initiation · ledger    │
           └────────────────┬───────────────┘   └──────────┬─────────────────────┘
-                           │  JMS → fraud.score.queue      │  JMS → alert.queue
+                           │  JMS → fraud.score.queue,     │  JMS → fraud.score.queue
+                           │  alert.queue                  │
                            │                               │
                      ┌─────▼───────────────────────────────▼───────────────┐
                      │           ActiveMQ Artemis  (JMS 2.0 broker)         │
@@ -48,6 +49,10 @@ A hands-on observability learning environment built on a realistic financial pla
                      │     PostgreSQL  (ledger DB)   Redis  (session cache)  │
                      └──────────────────────────────────────────────────────┘
 ```
+
+Same architecture, rendered as a diagram:
+
+![Meridian Financial sample app architecture](./docs/architecture-overview.png)
 
 ---
 
