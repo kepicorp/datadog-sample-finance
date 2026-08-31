@@ -626,7 +626,7 @@ Two AWS-specific integration points Terraform doesn't own: Keycloak's public URL
 \texttt{app-config} ConfigMap and the frontend HTML to point at the NLB) and Keycloak's allowed
 CORS origins (the realm import hardcodes \texttt{localhost} -- patch via \texttt{kcadm.sh} after
 the NLB hostname is known). Both are detailed in Module 8's full write-up
-(\texttt{doc/Module-8-AWS-EKS-Deployment.md}).
+(\texttt{docs/Module-8-AWS-EKS-Deployment.md}).
 
 \tipbox{Both patches are \textbf{in-memory only} -- Keycloak runs \texttt{start-dev} with an
 in-process H2 database, so any pod restart wipes them back to \texttt{localhost}-only. If login
