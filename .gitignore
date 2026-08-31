@@ -129,6 +129,11 @@ deploy/kubernetes/overlays/eks/kustomization.yaml
 # Cached RUM application id/client_token from make dem — contains a live
 # Datadog credential (client_token), never committed.
 .dem-state.json
+# Idempotency markers for make scenario-N/unscenario-N (workshop fault
+# injection) — never committed.
+.scenario-1-applied
+.scenario-2-applied
+.scenario-3-applied
 
 # ── AI agent / Claude files ──────────────────────────────────────────────────
 # Local agent instructions and workspace — not committed.

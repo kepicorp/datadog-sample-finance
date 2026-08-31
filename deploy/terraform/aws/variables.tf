@@ -171,8 +171,12 @@ variable "domain_name" {
     certificate for the NLB hostname itself (AWS issues a cert automatically
     when you use AWS-managed certificates with ALB/NLB).
 
-    When using a custom domain, add a CNAME in your DNS provider pointing
-    finance.example.com → <nlb-hostname>.
+    When using a custom domain AND route53_zone_id (below) is also set,
+    Terraform creates both the ACM validation CNAME and an alias record
+    pointing domain_name at the NLB — no manual DNS step needed. If you
+    manage the domain outside Route 53, leave route53_zone_id empty, add
+    the CNAME from the acm_validation_records output yourself, and point
+    finance.example.com → <nlb-hostname> manually in your DNS provider.
 
     Examples:
       domain_name = "finance.example.com"   # custom domain
@@ -186,11 +190,14 @@ variable "route53_zone_id" {
   description = <<-EOT
     Route 53 hosted zone ID for domain_name's DNS zone. Required only when
     domain_name is set AND you manage that domain's DNS in Route 53 — it is
-    used to create the ACM DNS validation CNAME record automatically.
+    used to create both the ACM DNS validation CNAME record and the alias
+    record pointing domain_name at the frontend NLB, automatically.
 
     If you use another DNS provider, leave this empty, use the
-    acm_validation_records output to add the CNAME manually, and delete
-    the aws_route53_record.acm_validation resource in main.tf.
+    acm_validation_records output to add the CNAME manually, point
+    domain_name at the NLB hostname (frontend_lb_dns_name output) yourself,
+    and delete the aws_route53_record.acm_validation / aws_route53_record.frontend
+    resources in main.tf.
   EOT
   type        = string
   default     = ""

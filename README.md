@@ -1,6 +1,6 @@
-# Finance Sample App — Datadog Observability
+# Meridian Financial — Datadog Observability Sample App
 
-A hands-on observability learning environment built on a realistic financial platform. Six microservices spanning Python, Java, Node.js, and Go — pre-wired for Datadog but shipping with all instrumentation **commented out** so engineers can enable each layer progressively.
+A hands-on observability learning environment built on a realistic financial platform, modeling the fictional customer **Meridian Financial**. Six microservices spanning Python, Java, Node.js, and Go — pre-wired for Datadog but shipping with all instrumentation **commented out** so engineers can enable each layer progressively.
 
 > Something not working? See **[TROUBLESHOOTING.md](./TROUBLESHOOTING.md)** for a layer-by-layer diagnostic model (Infrastructure → Application → Identity → Instrumentation → Telemetry → Backend) instead of chasing symptoms.
 
@@ -28,7 +28,8 @@ A hands-on observability learning environment built on a realistic financial pla
           │  Java / Spring Boot · :8081    │   │  Node.js / Express · :8082      │
           │  Account CRUD · balance        │   │  Payment initiation · ledger    │
           └────────────────┬───────────────┘   └──────────┬─────────────────────┘
-                           │  JMS → fraud.score.queue      │  JMS → alert.queue
+                           │  JMS → fraud.score.queue,     │  JMS → fraud.score.queue
+                           │  alert.queue                  │
                            │                               │
                      ┌─────▼───────────────────────────────▼───────────────┐
                      │           ActiveMQ Artemis  (JMS 2.0 broker)         │
@@ -48,6 +49,10 @@ A hands-on observability learning environment built on a realistic financial pla
                      │     PostgreSQL  (ledger DB)   Redis  (session cache)  │
                      └──────────────────────────────────────────────────────┘
 ```
+
+Same architecture, rendered as a diagram:
+
+![Meridian Financial sample app architecture](./docs/architecture-overview.png)
 
 ---
 
@@ -309,14 +314,33 @@ eval "$(cd deploy/terraform/aws && terraform output -raw ecr_login_command)"
 make build-ecr && make deploy-k8s-eks
 ```
 
-Point Keycloak's public URL at the Terraform-managed NLB (not automated — Terraform doesn't own the frontend ConfigMap):
+Point Keycloak's public URL at the Terraform-managed NLB (not automated — Terraform doesn't own the frontend ConfigMap). **Never use `frontend_url`** for this — nginx only proxies Keycloak on its own dedicated listener(s), not the dashboard's (see `deploy/kubernetes/base/services/frontend.yaml`'s routing table). Pick whichever of these two matches your setup:
+
+| Your setup | Output to use | What you get |
+|---|---|---|
+| No `domain_name` set | `frontend_keycloak_https_url` | Self-signed cert on `:8443` — accept the one-time browser security warning |
+| `domain_name` **is** set | `frontend_keycloak_acm_url` | Real ACM cert on `:9443` — no browser warning at all, same trust level as the dashboard |
+
 ```bash
-FE_URL=$(cd deploy/terraform/aws && terraform output -raw frontend_url)
+FE_URL=$(cd deploy/terraform/aws && terraform output -raw frontend_keycloak_https_url)   # or frontend_keycloak_acm_url
 kubectl patch configmap app-config -n finance --type=merge -p "{\"data\":{\"KEYCLOAK_PUBLIC_URL\":\"$FE_URL\"}}"
 sed "s|https://localhost:30443|$FE_URL|g" frontend-stub/index.html > /tmp/finance-index.html
 kubectl create configmap frontend-dashboard --from-file=index.html=/tmp/finance-index.html -n finance --dry-run=client -o yaml | kubectl apply -f -
 kubectl rollout restart deployment/keycloak deployment/frontend -n finance
 ```
+> If you set `domain_name` and want the fully warning-free experience, use `frontend_keycloak_acm_url` here — it adds a second Keycloak listener (`:9443`, ACM-terminated) alongside the always-present self-signed `:8443` one, so both paths keep working regardless of which you pick.
+
+**Also update the Keycloak client's allowed origins** — `identity-provider/realm-export/finance-realm.json` is imported verbatim and hardcodes `localhost` origins (the NLB hostname isn't known until after `tf-apply-aws`, so it can't be templated into the static import file). Skipping this step makes dashboard login fail with `NetworkError when attempting to fetch resource` (Keycloak rejects the OIDC redirect/CORS from an origin that isn't allow-listed):
+```bash
+DASH_URL=$(cd deploy/terraform/aws && terraform output -raw frontend_url)
+KC_POD=$(kubectl get pod -n finance -l app=keycloak -o jsonpath='{.items[0].metadata.name}')
+kubectl exec -n finance "$KC_POD" -- /opt/keycloak/bin/kcadm.sh config credentials --server http://localhost:8080 --realm master --user admin --password 'Finance@Admin2025!'
+CLIENT_ID=$(kubectl exec -n finance "$KC_POD" -- /opt/keycloak/bin/kcadm.sh get clients -r finance -q clientId=finance-gateway --fields id --format csv --noquotes)
+kubectl exec -n finance "$KC_POD" -- /opt/keycloak/bin/kcadm.sh update "clients/$CLIENT_ID" -r finance \
+  -s "redirectUris=[\"http://localhost:30080/*\",\"https://localhost:30443/*\",\"http://gateway-api:8080/*\",\"$DASH_URL/*\",\"$FE_URL/*\"]" \
+  -s "webOrigins=[\"http://localhost:30080\",\"https://localhost:30443\",\"http://gateway-api:8080\",\"$DASH_URL\",\"$FE_URL\"]"
+```
+> This patches the running realm only, in memory — Keycloak runs in `start-dev` mode with an in-process H2 database (see `deploy/kubernetes/base/infrastructure/keycloak.yaml`), so **any** Keycloak pod restart wipes it back to the static import file's `localhost`-only origins. That includes `kubectl rollout restart deployment/keycloak` itself, `make tags`/`instrument`/`security`/`dbm` redeploys (they restart the Agent/app but can also cycle Keycloak depending on what you touch), node replacement, or the pod simply crashing. If login suddenly starts failing with `Failed to fetch` again after working before, re-run this patch — nothing else has usually gone wrong.
 
 Then add Datadog and apply resources — same targets as local, EKS auto-fetches keys from Secrets Manager:
 ```bash
@@ -324,7 +348,50 @@ make deploy-k8s-dd
 eval "$(make dd-secrets)" && make tf-apply-dd
 ```
 
-Optional custom domain + ACM certificate: set `domain_name` in `staging.tfvars`, `make tf-apply-aws`, then CNAME your domain to the NLB hostname — see `deploy/terraform/aws/variables.tf`.
+#### Optional: custom domain + trusted ACM certificate
+
+Both `domain_name` and `route53_zone_id` in `staging.tfvars` are optional
+(default `""`) — without them you get a working deployment on the raw NLB
+hostname over plain HTTP, no DNS setup required. Set `domain_name` if you
+want a real, browser-trusted HTTPS cert on the dashboard instead (a domain
+you own is a hard AWS requirement here — ACM cannot issue a publicly-trusted
+certificate for the NLB's own `*.elb.<region>.amazonaws.com` hostname, since
+that domain belongs to AWS, not you).
+
+**If you manage that domain in Route 53 and it's in the same AWS account**
+(`route53_zone_id` set too): nothing further needed — `make tf-apply-aws`
+creates the ACM certificate, the DNS validation record(s), and the
+`domain_name` → NLB alias record all automatically.
+
+**If you manage DNS anywhere else** (another registrar, a different AWS
+account, Cloudflare, etc.) — set `domain_name` only, leave `route53_zone_id`
+empty, then add two things to your DNS yourself:
+
+1. **ACM validation record(s)** — prove you own the domain. Run
+   `make tf-apply-aws` once (the certificate is created but stays
+   `PENDING_VALIDATION`), then:
+   ```bash
+   cd deploy/terraform/aws && terraform output -json acm_validation_records
+   ```
+   For each entry, add a **CNAME** record: name = `cname_name`, value =
+   `cname_value` (TTL 300 is fine). There's one entry for `domain_name`
+   itself and one for `www.<domain_name>` (always requested as a SAN —
+   you can ignore the `www.` one if you don't use it, but the record still
+   needs to exist for the certificate to finish validating).
+2. **The record that actually routes traffic** — a **CNAME** (or an ALIAS/
+   ANAME record if your provider supports one at the zone apex and
+   `domain_name` *is* the apex) pointing `domain_name` at the NLB hostname:
+   ```bash
+   terraform output -raw frontend_lb_dns_name
+   ```
+
+Then re-run `make tf-apply-aws` — Terraform waits (up to 10 minutes) for
+ACM to see the validation CNAME and finish issuing the certificate before
+continuing; if it times out because DNS hasn't propagated yet, just run
+`make tf-apply-aws` again once the record is live.
+
+See `deploy/terraform/aws/variables.tf` (`domain_name` / `route53_zone_id`)
+for the full reference.
 
 ### Stop / teardown
 

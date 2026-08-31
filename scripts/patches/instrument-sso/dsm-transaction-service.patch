@@ -10,3 +10,22 @@
              # ─────────────────────────────────────────────────────────────────
              # ── CONTINUOUS PROFILER ──────────────────────────────────────────
              # Uncomment via 'make instrument' to enable Continuous Profiler for
+--- a/transaction-service/src/messaging/producer.js
++++ b/transaction-service/src/messaging/producer.js
+@@ -117,11 +117,11 @@
+       // is safe to leave uncommented once applied.
+       // Docs: https://docs.datadoghq.com/data_streams/
+       //
+-      // tracer.dataStreamsCheckpointer.setProduceCheckpoint(
+-      //   "jms",
+-      //   destination,
+-      //   headers,
+-      // );
++      tracer.dataStreamsCheckpointer.setProduceCheckpoint(
++        "jms",
++        destination,
++        headers,
++      );
+       // ─────────────────────────────────────────────────────────────────
+ 
+       const frame = client.send(headers);

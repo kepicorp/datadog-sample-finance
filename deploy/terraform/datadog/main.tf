@@ -1392,6 +1392,51 @@ resource "datadog_monitor" "fraud_queue_depth" {
   tags              = local.common_tags
 }
 
+# ── Monitor 6b: Fraud queue producer rate surge (Workshop Scenario 3) ──────
+# fraud_queue_depth above only fires once fraud-detection falls BEHIND — at
+# demo-scale traffic, the consumer trivially keeps up even at 3x the normal
+# publish rate (Scenario 3's FRAUD_QUEUE_DUPLICATE_FACTOR), so depth never
+# climbs above ~0 and that monitor never fires. This one instead watches the
+# PRODUCER rate directly (messages_added), so it catches "someone tripled the
+# publish rate" even when the consumer is fast enough to hide the symptom
+# depth-wise — the actual point of Scenario 3 (it's a producer problem, not
+# a consumer one). "change alert": % increase over the prior 10m window.
+resource "datadog_monitor" "fraud_queue_producer_surge" {
+  name    = "[Finance] Fraud score queue producer rate surge — ${var.cluster_name}"
+  type    = "metric alert"
+  message = <<-EOT
+    ## Fraud score queue publish rate has surged
+
+    fraud.score.queue's message production rate jumped {{value}}% versus the
+    prior 10 minutes. Queue depth may look normal if fraud-detection is
+    keeping up — that does NOT mean nothing is wrong. Check whether a
+    producer (transaction-service, account-service) started publishing
+    duplicates or retrying excessively before scaling the consumer.
+
+    **Triage steps:**
+    1. APM > Data Streams — check which producer's throughput moved
+    2. APM > Deployment Tracking on transaction-service / account-service —
+       correlate the jump with a recent rollout
+    3. `kubectl logs -n finance deploy/transaction-service` for repeated
+       publishes per payment
+
+    @slack-finance-alerts
+  EOT
+
+  query = <<-EOT
+    change(sum(last_10m),last_10m):sum:activemq.artemis.queue.messages_added{${local.env_filter},queue:_fraud.score.queue}.as_count() > 100
+  EOT
+
+  monitor_thresholds {
+    critical = 100
+    warning  = 50
+  }
+
+  notify_no_data    = false
+  renotify_interval = 30
+  tags              = local.common_tags
+}
+
 # ── Monitor 7: Stuck pending transactions (DBM custom query) ───────────────
 # Uses the custom_query defined in the postgres Agent config.
 # Fires when transactions are stuck in 'pending' for > 5 minutes.
@@ -1454,6 +1499,43 @@ resource "datadog_monitor" "ledger_commit_errors" {
 
   notify_no_data    = false
   renotify_interval = 30
+  tags              = local.common_tags
+}
+
+# ── Monitor 9: Reconciliation job low record count ──────────────────────────
+# Fires when the end-of-day-reconciliation job completes successfully but
+# processes far fewer records than expected — the monitor the workshop's
+# Scenario 2 ("nightly reconciliation fails silently") discussion question
+# asks facilitators to set up. Wired to the finance.batch.records_processed
+# span-based metric (see the "Custom metrics" section above).
+resource "datadog_monitor" "reconciliation_low_record_count" {
+  name    = "[Finance] Reconciliation job processed unexpectedly few records — ${var.cluster_name}"
+  type    = "metric alert"
+  message = <<-EOT
+    ## Reconciliation job record count anomaly
+
+    The end-of-day-reconciliation job completed successfully but processed
+    far fewer records than expected — this can mean a subset of accounts was
+    silently excluded (e.g. a data integrity issue in the reader query), not
+    that there was simply less activity to reconcile.
+
+    **Triage steps:**
+    1. Check [Data Jobs Monitoring](https://app.datadoghq.com/data-jobs) for the job's step-level record counts
+    2. Check batch-processor logs for the run's records.read/records.written line
+    3. Check DBM for the reconciliation query's actual row count vs. expected
+
+    @slack-finance-alerts
+  EOT
+
+  query = "avg(last_1h):avg:finance.batch.records_processed{job_name:end-of-day-reconciliation,${local.env_filter}} < 5"
+
+  monitor_thresholds {
+    critical = 5
+    warning  = 20
+  }
+
+  notify_no_data    = false
+  renotify_interval = 60
   tags              = local.common_tags
 }
 

@@ -176,3 +176,34 @@ data:
     CREATE SEQUENCE IF NOT EXISTS BATCH_STEP_EXECUTION_SEQ MAXVALUE 9223372036854775807 NO CYCLE;
     CREATE SEQUENCE IF NOT EXISTS BATCH_JOB_EXECUTION_SEQ MAXVALUE 9223372036854775807 NO CYCLE;
     CREATE SEQUENCE IF NOT EXISTS BATCH_JOB_SEQ MAXVALUE 9223372036854775807 NO CYCLE;
+
+  03-seed-data.sql: |
+    -- ── Historical transaction volume (for Scenario 1 — missing index) ────
+    -- Scenario 1 (make scenario-1) drops idx_transactions_account_id to turn
+    -- ledger.js's ledger.velocity_check query into a full table scan. On a
+    -- freshly-deployed cluster with only the traffic-generator's live volume
+    -- (a couple hundred rows after a few minutes), that scan is still
+    -- sub-millisecond — too fast to show up as a visibly slow span in APM.
+    -- This seeds ~300k backdated rows (server-side, via generate_series, so
+    -- it's fast — a few seconds, not a large ConfigMap) so the full scan
+    -- Scenario 1 induces is actually observable (tens of milliseconds).
+    --
+    -- Backdated 1–180 days so this does NOT get picked up by
+    -- ReconciliationJob's WHERE settled_at >= CURRENT_DATE - INTERVAL '1 day'
+    -- (Scenario 2) — this seed data is for Scenario 1 only, and must not
+    -- inflate the "today's settlements" count Scenario 2 depends on.
+    --
+    -- account_id derived from gs % 3000 so ~100 rows share each of ~3000
+    -- synthetic accounts (id format matches the app's own acc-<8 hex chars>
+    -- convention, so seeded and live rows are indistinguishable).
+    INSERT INTO transactions (id, account_id, amount, currency, status, created_at, settled_at)
+    SELECT
+        'seed-' || md5(gs::text) AS id,
+        'acc-' || substr(md5((gs % 3000)::text), 1, 8) AS account_id,
+        round((random() * 5000 + 10)::numeric, 2) AS amount,
+        (ARRAY['EUR', 'USD', 'GBP', 'JPY', 'CHF'])[floor(random() * 5 + 1)] AS currency,
+        'settled' AS status,
+        now() - (random() * interval '180 days' + interval '1 day') AS created_at,
+        now() - (random() * interval '180 days') AS settled_at
+    FROM generate_series(1, 300000) AS gs
+    ON CONFLICT (id) DO NOTHING;
