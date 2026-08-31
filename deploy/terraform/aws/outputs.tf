@@ -59,6 +59,11 @@ output "frontend_keycloak_https_url" {
   value       = "https://${aws_lb.frontend.dns_name}:8443"
 }
 
+output "frontend_keycloak_acm_url" {
+  description = "Browser-trusted HTTPS URL for Keycloak (real ACM cert, no security warning) — only set when domain_name is configured. Use this instead of frontend_keycloak_https_url for KEYCLOAK_PUBLIC_URL when you want no self-signed-cert click-through at all."
+  value       = var.domain_name != "" ? "https://${var.domain_name}:9443" : ""
+}
+
 output "deploy_command" {
   description = "Run this after configuring kubectl to deploy the Finance app to EKS."
   value       = "make deploy-k8s"

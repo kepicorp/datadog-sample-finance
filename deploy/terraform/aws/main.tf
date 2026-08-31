@@ -300,6 +300,17 @@ module "eks" {
       type        = "ingress"
       cidr_blocks = ["0.0.0.0/0"]
     }
+    # Only ever reached via aws_lb_listener.frontend_keycloak_acm below
+    # (domain_name-gated), but the node SG itself isn't conditional on that
+    # — harmless to always allow, matches the pattern of the two rules above.
+    ingress_frontend_nlb_keycloak_acm = {
+      description = "Public HTTP for Keycloak proxy NodePort, ACM-terminated at the NLB (Terraform-managed NLB)"
+      protocol    = "tcp"
+      from_port   = 30444
+      to_port     = 30444
+      type        = "ingress"
+      cidr_blocks = ["0.0.0.0/0"]
+    }
   }
 
   tags = {
@@ -664,10 +675,15 @@ resource "aws_acm_certificate" "frontend" {
 # Terraform outputs them as acm_validation_records for easy copy-paste.
 # The certificate remains in PENDING_VALIDATION until the CNAMEs are added.
 resource "aws_route53_record" "acm_validation" {
-  # Only created if domain_name is set AND you manage the zone in Route 53.
-  # If you use another DNS provider, use the acm_validation_records output
-  # to add the CNAMEs manually and comment out this resource.
-  for_each = var.domain_name != "" ? {
+  # Only created if domain_name is set AND you manage that zone in Route 53
+  # (route53_zone_id set too). BUG FIX: this used to key off domain_name
+  # alone, so setting domain_name with an external DNS provider (Route 53
+  # zone not in this account) failed plan/apply with "zone_id must not be
+  # empty" instead of cleanly skipping this resource. If you use another
+  # DNS provider, leave route53_zone_id empty and use the
+  # acm_validation_records output to add the CNAMEs manually — see
+  # README.md's "Optional: custom domain + trusted ACM certificate".
+  for_each = var.domain_name != "" && var.route53_zone_id != "" ? {
     for dvo in aws_acm_certificate.frontend[0].domain_validation_options :
     dvo.domain_name => {
       name   = dvo.resource_record_name
@@ -682,18 +698,12 @@ resource "aws_route53_record" "acm_validation" {
   ttl             = 60
   records         = [each.value.record]
 
-  # zone_id: set var.route53_zone_id to your Route 53 hosted zone ID in
-  # staging.tfvars when domain_name is set and you manage that zone in
-  # Route 53. If you don't use Route 53, delete this resource and add the
-  # CNAMEs manually using the acm_validation_records output.
-  #
   # NOTE: this must never be a literal empty string — the AWS provider
   # rejects an empty zone_id during `terraform plan`/`validate` even when
-  # for_each evaluates to zero instances (domain_name unset). The fallback
-  # placeholder below is inert: it's only ever assigned to an instance when
-  # for_each is non-empty, i.e. when domain_name (and therefore normally
-  # route53_zone_id too) is actually set.
-  zone_id = var.domain_name != "" ? var.route53_zone_id : "unused-no-custom-domain"
+  # for_each evaluates to zero instances. The fallback placeholder below is
+  # inert: it's only ever assigned to an instance when for_each is
+  # non-empty, i.e. when route53_zone_id is actually set.
+  zone_id = var.route53_zone_id != "" ? var.route53_zone_id : "unused-no-custom-domain"
 }
 
 resource "aws_acm_certificate_validation" "frontend" {
@@ -704,6 +714,26 @@ resource "aws_acm_certificate_validation" "frontend" {
 
   timeouts {
     create = "10m"
+  }
+}
+
+# Points domain_name itself at the NLB. The ACM validation CNAME above only
+# proves domain ownership to AWS — it does not make the domain resolve to
+# anything. Without this record, the certificate is valid but
+# https://<domain_name> has nowhere to go. An alias record (not a CNAME) is
+# used since Route 53 aliases work at the zone apex and don't incur a
+# lookup charge, unlike a CNAME to the NLB's own DNS name.
+resource "aws_route53_record" "frontend" {
+  count = var.domain_name != "" && var.route53_zone_id != "" ? 1 : 0
+
+  zone_id = var.route53_zone_id
+  name    = var.domain_name
+  type    = "A"
+
+  alias {
+    name                   = aws_lb.frontend.dns_name
+    zone_id                = aws_lb.frontend.zone_id
+    evaluate_target_health = true
   }
 }
 
@@ -791,6 +821,31 @@ resource "aws_lb_target_group" "frontend_https" {
   }
 }
 
+# Backs the plain-HTTP Keycloak proxy (nodePort 30444) that only exists to
+# be fronted by a TLS listener using a real ACM cert — see
+# aws_lb_listener.frontend_keycloak_acm below. Only useful when domain_name
+# is set, but harmless to always create (mirrors frontend_http/frontend_https
+# above, which are also unconditional).
+resource "aws_lb_target_group" "frontend_keycloak_acm" {
+  name        = "${var.cluster_name}-fe-kc-acm"
+  port        = 30444
+  protocol    = "TCP"
+  vpc_id      = module.vpc.vpc_id
+  target_type = "instance"
+
+  health_check {
+    protocol            = "TCP"
+    port                = "traffic-port"
+    healthy_threshold   = 3
+    unhealthy_threshold = 3
+    interval            = 10
+  }
+
+  tags = {
+    Name = "${var.cluster_name}-fe-kc-acm"
+  }
+}
+
 # Plain HTTP — always present, matches local's http://localhost:30080.
 resource "aws_lb_listener" "frontend_http" {
   load_balancer_arn = aws_lb.frontend.arn
@@ -836,6 +891,35 @@ resource "aws_lb_listener" "frontend_keycloak" {
   }
 }
 
+# Keycloak, but with a publicly-trusted ACM cert instead of the self-signed
+# one above — only when domain_name is set. The NLB terminates TLS here and
+# forwards plain HTTP to nginx on :30444 (a dedicated port separate from the
+# dashboard's own :30080/:443, since Keycloak needs its own origin — see
+# deploy/kubernetes/base/services/frontend.yaml's routing table for why a
+# sub-path proxy under the dashboard's origin doesn't work: Keycloak
+# generates unprefixed absolute URLs in its OIDC discovery document, so a
+# reverse proxy under e.g. /auth/ would need KC_HTTP_RELATIVE_PATH set,
+# which would also affect the local/self-signed paths — not worth the risk
+# for what a second listener on a second port solves cleanly). Port 9443
+# was picked to avoid colliding with the self-signed :8443 listener, so
+# both can coexist — a partner without a domain still gets working
+# self-signed HTTPS, and setting domain_name upgrades Keycloak to a trusted
+# cert too without disturbing the existing path.
+resource "aws_lb_listener" "frontend_keycloak_acm" {
+  count = var.domain_name != "" ? 1 : 0
+
+  load_balancer_arn = aws_lb.frontend.arn
+  port              = 9443
+  protocol          = "TLS"
+  certificate_arn   = aws_acm_certificate_validation.frontend[0].certificate_arn
+  ssl_policy        = "ELBSecurityPolicy-TLS13-1-2-2021-06"
+
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.frontend_keycloak_acm.arn
+  }
+}
+
 # Automatically registers/deregisters every node in the managed node group's
 # ASG as it scales — no per-instance Terraform resources needed.
 #
@@ -857,6 +941,12 @@ resource "aws_autoscaling_attachment" "frontend_https" {
   for_each               = module.eks.eks_managed_node_groups
   autoscaling_group_name = each.value.node_group_autoscaling_group_names[0]
   lb_target_group_arn    = aws_lb_target_group.frontend_https.arn
+}
+
+resource "aws_autoscaling_attachment" "frontend_keycloak_acm" {
+  for_each               = module.eks.eks_managed_node_groups
+  autoscaling_group_name = each.value.node_group_autoscaling_group_names[0]
+  lb_target_group_arn    = aws_lb_target_group.frontend_keycloak_acm.arn
 }
 
 # NOTE: The EKS cluster control-plane log group (/aws/eks/<name>/cluster) is

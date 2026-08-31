@@ -2,6 +2,7 @@
 
 const stompit = require("stompit");
 const pino = require("pino");
+const tracer = require("dd-trace");
 
 const logger = pino({
   level: process.env.LOG_LEVEL || "info",
@@ -22,13 +23,17 @@ const ACTIVEMQ_URL =
 const [host, portStr] = ACTIVEMQ_URL.replace("stomp://", "").split(":");
 const BROKER_PORT = parseInt(portStr || "61613", 10);
 
-// Data Streams Monitoring (DSM): for Node.js, dd-trace auto-instruments STOMP
-// once the tracer is initialised (see src/index.js) and DD_DATA_STREAMS_ENABLED=true
-// is set on the pod (deploy/kubernetes/base/services/transaction-service.yaml).
-// No manual producer checkpoint is needed — pathway context is injected into the
-// STOMP message headers automatically. Verify in Datadog > APM > Data Streams:
-// transaction-service → fraud.score.queue → fraud-detection.
-// Docs: https://docs.datadoghq.com/data_streams/nodejs/
+// ── DATADOG DATA STREAMS MONITORING (manual checkpoint) ───────────────
+// dd-trace-js has NO built-in integration for the 'stompit' library (there
+// is no automatic STOMP instrumentation in dd-trace-js at all), unlike
+// account-service's JMS producer, which dd-trace-java instruments
+// automatically. Setting DD_DATA_STREAMS_ENABLED=true alone does nothing
+// here — the pathway checkpoint must be set manually, using dd-trace's
+// low-level Data Streams API, and the resulting propagation headers
+// merged into the STOMP frame headers before sending.
+// Uncomment via 'make instrument' (Step 4 — Data Streams / Data Jobs
+// Monitoring).
+// Docs: https://docs.datadoghq.com/data_streams/
 
 /**
  * Publishes a JSON payload to the given STOMP destination on ActiveMQ.
@@ -102,9 +107,22 @@ function send(destination, payload) {
         "content-type": "application/json",
         "content-length": Buffer.byteLength(body),
         "jms-correlation-id": payload.payment_id || "",
-        // DSM context is injected here automatically by dd-trace when
-        // DD_DATA_STREAMS_ENABLED=true (Step 10).
       };
+
+      // ── DATADOG DATA STREAMS MONITORING (manual checkpoint) ─────────
+      // Uncomment via 'make instrument'. Writes pathway-propagation
+      // headers directly into `headers` (the carrier) — must run before
+      // client.send(headers) so the injected headers are actually sent.
+      // No-ops on its own if DD_DATA_STREAMS_ENABLED isn't set, so this
+      // is safe to leave uncommented once applied.
+      // Docs: https://docs.datadoghq.com/data_streams/
+      //
+      // tracer.dataStreamsCheckpointer.setProduceCheckpoint(
+      //   "jms",
+      //   destination,
+      //   headers,
+      // );
+      // ─────────────────────────────────────────────────────────────────
 
       const frame = client.send(headers);
       frame.write(body);

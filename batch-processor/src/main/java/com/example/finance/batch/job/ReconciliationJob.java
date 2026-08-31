@@ -132,20 +132,31 @@ public class ReconciliationJob {
     // ── WORKSHOP SCENARIO 2 (nightly reconciliation fails silently) ─────────────
     // RECONCILIATION_SCENARIO_ENABLED defaults to false (no behavior change).
     // Set to true via `make scenario-2` to simulate a data integrity issue that
-    // silently excludes an account range from the reconciliation read — the job
-    // still completes successfully (no exception thrown), but
-    // job.records_processed (finance.batch.records_processed span metric) drops
-    // sharply. Nothing here suppresses Datadog telemetry: the anomaly is fully
-    // visible in Data Jobs Monitoring, it's just that no monitor exists yet to
-    // alert on it (see the reconciliation_low_record_count monitor added to
+    // silently excludes a settlement currency from the reconciliation read
+    // (narrative: the query was never updated after JPY settlements went live
+    // — a currency corridor is silently dropped forever, not a one-off blip).
+    // The job still completes successfully (no exception thrown), but
+    // job.records_processed (finance.batch.records_processed span metric)
+    // drops by roughly a fifth (payments.js/generate-traffic.py pick a
+    // currency uniformly at random from 5 options, so excluding one drops
+    // ~20% of rows — a real, measurable difference, not a rounding artifact).
+    // Nothing here suppresses Datadog telemetry: the anomaly is fully visible
+    // in Data Jobs Monitoring, it's just that no monitor exists yet to alert
+    // on it (see the reconciliation_low_record_count monitor added to
     // deploy/terraform/datadog/main.tf). Reset via `make unscenario-2`.
+    //
+    // BUG FIX: this used to filter `account_id NOT LIKE 'ACC-CORP%'`, but no
+    // account ID in this app ever matches that pattern (real IDs are
+    // acc-<8 hex chars>, generated in account-service) — the scenario was a
+    // complete no-op, records_processed never actually dropped. Filtering on
+    // currency instead works because currency genuinely varies per row.
     // ─────────────────────────────────────────────────────────────────────────
     @Bean
     public JdbcCursorItemReader<Map<String, Object>> reconciliationItemReader() {
         boolean scenarioEnabled = Boolean.parseBoolean(
                 System.getenv().getOrDefault("RECONCILIATION_SCENARIO_ENABLED", "false"));
         String whereClause = "status = 'settled' AND settled_at >= CURRENT_DATE - INTERVAL '1 day'"
-                + (scenarioEnabled ? " AND account_id NOT LIKE 'ACC-CORP%'" : "");
+                + (scenarioEnabled ? " AND currency <> 'JPY'" : "");
 
         return new JdbcCursorItemReaderBuilder<Map<String, Object>>()
                 .name("reconciliationItemReader")

@@ -69,6 +69,11 @@ output "monitor_fraud_queue_depth_id" {
   value       = datadog_monitor.fraud_queue_depth.id
 }
 
+output "monitor_fraud_queue_producer_surge_id" {
+  description = "ID of the fraud queue producer rate surge monitor (catches Scenario 3 even when depth stays flat)."
+  value       = datadog_monitor.fraud_queue_producer_surge.id
+}
+
 output "monitor_stuck_pending_transactions_id" {
   description = "ID of the stuck pending transactions monitor."
   value       = datadog_monitor.stuck_pending_transactions.id
