@@ -1,7 +1,14 @@
 #!/usr/bin/env bash
 # =============================================================================
-# aws-force-destroy.sh — Destroy all finance-app AWS resources in the correct
-# dependency order. Called by 'make tf-destroy-aws'.
+# aws-force-destroy.sh — Destroy all finance-app AWS resources. Called by
+# 'make tf-destroy-aws'.
+#
+# This is intentionally thin: EKS node groups/add-ons/cluster, Secrets Manager
+# secrets (recovery_window_in_days = 0), and ECR repos (force_delete = true)
+# are all Terraform-managed and already destroy in the correct order and
+# without recovery-window/non-empty-repo errors — 'terraform destroy' alone
+# handles them. The only thing genuinely outside Terraform's state is the
+# frontend NLB's own ENI lifecycle, handled below.
 #
 # Usage:
 #   aws sso login --profile partner
@@ -76,178 +83,82 @@ echo ""
 echo "==> Using profile=$PROFILE region=$REGION cluster=$CLUSTER env=$ENV"
 echo ""
 
-# ── 0. Delete Kubernetes LoadBalancer services (releases AWS ELBs) ───────────
-# ── 0. Release AWS ELBs and lingering ENIs from the VPC ───────────────────────────────────────────
-# K8s LoadBalancer services create AWS ELBs outside Terraform's state.
-# Terraform cannot delete the VPC/subnets while those ELBs or their lingering
-# ENIs still exist (DependencyViolation). We:
-#   a) Ask K8s to delete the namespace (triggers ELB deletion by the cloud controller)
-#   b) Directly delete any ELBs tagged for this cluster via the AWS CLI
-#   c) Wait for ELB-managed ENIs to fully detach before continuing
-echo "==> [0/7] Releasing AWS ELBs and ENIs..."
+# ── 0. Release any stray, non-Terraform-managed ELBs/ENIs ───────────────────
+# The frontend load balancer is Terraform-managed (aws_lb.frontend, an NLB) and
+# must be left for 'terraform destroy' below to remove in correct dependency
+# order. We only need to clear workloads first and make sure nothing OTHER
+# than that NLB is holding an ENI in the VPC before Terraform tries to delete
+# subnets/security groups.
+echo "==> [1/2] Releasing stray ELBs/ENIs (excluding the Terraform-managed frontend NLB)..."
 
-# a) Try kubectl first (best-effort — may not be reachable if cluster already gone)
+# a) Clear finance workloads first (best-effort — may not be reachable if
+#    the cluster is already gone).
 if kubectl get namespace finance --request-timeout=5s >/dev/null 2>&1; then
-  echo "    Deleting finance namespace via kubectl (triggers ELB release)..."
+  echo "    Deleting finance namespace via kubectl..."
   kubectl delete namespace finance --ignore-not-found --wait=true --timeout=120s 2>/dev/null || true
   kubectl delete storageclass gp3 --ignore-not-found 2>/dev/null || true
   echo "    Namespace deleted."
 else
-  echo "    kubectl not reachable — will clean up ELBs directly via AWS CLI."
+  echo "    kubectl not reachable — skipping namespace cleanup."
 fi
 
-# b) Find and delete Classic ELBs in this VPC (K8s names them with a hash, not
-#    the cluster name, so we must query by VPC rather than by name).
-echo "    Checking for Classic ELBs in VPC..."
 VPC_ID=$(aws ec2 describe-vpcs \
   --filters "Name=tag:kubernetes.io/cluster/$CLUSTER,Values=owned" \
   --query 'Vpcs[0].VpcId' --output text 2>/dev/null || true)
+
 if [ -n "$VPC_ID" ] && [ "$VPC_ID" != "None" ]; then
   echo "    Found VPC: $VPC_ID"
-  CLASSIC_ELBS=$(aws elb describe-load-balancers \
-    --query "LoadBalancerDescriptions[?VPCId=='$VPC_ID'].LoadBalancerName" \
-    --output text 2>/dev/null || true)
-  if [ -n "$CLASSIC_ELBS" ]; then
-    for ELB in $CLASSIC_ELBS; do
-      echo "    Deleting Classic ELB: $ELB"
-      aws elb delete-load-balancer --load-balancer-name "$ELB" >/dev/null 2>&1 || true
-    done
-  else
-    echo "    No Classic ELBs found in VPC."
-  fi
 
-  # b2) ALBs/NLBs in this VPC
-  echo "    Checking for ALB/NLB load balancers in VPC..."
+  # Resolve the Terraform-managed frontend NLB's ARN by its deterministic name
+  # so we never delete it here — that's terraform destroy's job.
+  FRONTEND_LB_ARN=$(aws elbv2 describe-load-balancers \
+    --names "${CLUSTER}-frontend" \
+    --query 'LoadBalancers[0].LoadBalancerArn' --output text 2>/dev/null || true)
+
+  echo "    Checking for stray ALB/NLB load balancers in VPC..."
   V2_ELBS=$(aws elbv2 describe-load-balancers \
     --query "LoadBalancers[?VpcId=='$VPC_ID'].LoadBalancerArn" \
     --output text 2>/dev/null || true)
-  if [ -n "$V2_ELBS" ]; then
-    for ARN in $V2_ELBS; do
-      echo "    Deleting ALB/NLB: $ARN"
-      aws elbv2 delete-load-balancer --load-balancer-arn "$ARN" >/dev/null 2>&1 || true
-    done
-  else
-    echo "    No ALB/NLB found in VPC."
+  STRAY_FOUND=false
+  for ARN in $V2_ELBS; do
+    if [ "$ARN" = "$FRONTEND_LB_ARN" ]; then
+      continue
+    fi
+    STRAY_FOUND=true
+    echo "    Deleting stray ALB/NLB: $ARN"
+    aws elbv2 delete-load-balancer --load-balancer-arn "$ARN" >/dev/null 2>&1 || true
+  done
+  if [ "$STRAY_FOUND" = false ]; then
+    echo "    No stray ALB/NLB found in VPC."
   fi
+
+  # Wait briefly for any stray ELB's ENIs to detach, excluding the frontend
+  # NLB's own ENIs (it's still alive on purpose — terraform destroy removes
+  # it later, in step 2).
+  echo "    Waiting for stray ELB ENIs to release (max 60s)..."
+  for i in $(seq 1 12); do
+    ENI_COUNT=$(aws ec2 describe-network-interfaces \
+      --filters "Name=description,Values=ELB*" "Name=status,Values=in-use" \
+      --query "length(NetworkInterfaces[?!contains(Description, '${CLUSTER}-frontend')])" \
+      --output text 2>/dev/null || echo 0)
+    if [ "$ENI_COUNT" = "0" ] || [ "$ENI_COUNT" = "None" ]; then
+      echo "    ENIs released."
+      break
+    fi
+    echo "    $ENI_COUNT stray ELB ENI(s) still attached, waiting 5s... ($((i*5))s elapsed)"
+    sleep 5
+  done
 else
   echo "    VPC not found or already deleted — skipping ELB lookup."
 fi
-
-# c) Delete K8s-created security groups (k8s-elb-*) that block VPC deletion
-echo "    Cleaning up K8s-managed security groups..."
-if [ -n "$VPC_ID" ] && [ "$VPC_ID" != "None" ]; then
-  K8S_SGS=$(aws ec2 describe-security-groups \
-    --filters "Name=vpc-id,Values=$VPC_ID" "Name=group-name,Values=k8s-elb-*" \
-    --query 'SecurityGroups[].GroupId' --output text 2>/dev/null || true)
-  if [ -n "$K8S_SGS" ]; then
-    for SG in $K8S_SGS; do
-      echo "    Deleting security group: $SG"
-      aws ec2 delete-security-group --group-id "$SG" >/dev/null 2>&1 || true
-    done
-  else
-    echo "    No K8s security groups found."
-  fi
-fi
-
-# d) Wait for ELB-managed ENIs to fully detach (status goes from 'in-use' to gone)
-echo "    Waiting for ELB/ENIs to fully release (max 120s)..."
-for i in $(seq 1 24); do
-  ENI_COUNT=$(aws ec2 describe-network-interfaces \
-    --filters \
-      "Name=description,Values=ELB*" \
-      "Name=status,Values=in-use" \
-    --query 'length(NetworkInterfaces)' \
-    --output text 2>/dev/null || echo 0)
-  if [ "$ENI_COUNT" = "0" ] || [ "$ENI_COUNT" = "None" ]; then
-    echo "    ENIs released."
-    break
-  fi
-  echo "    $ENI_COUNT ELB ENI(s) still attached, waiting 5s... ($((i*5))s elapsed)"
-  sleep 5
-done
 echo ""
 
-# ── 1. Delete EKS node groups (must go before the cluster) ───────────────────
-echo "==> [1/7] Deleting EKS node groups..."
-NODEGROUPS=$(aws eks list-nodegroups --cluster-name "$CLUSTER" \
-  --query 'nodegroups[]' --output text 2>/dev/null || true)
-
-if [ -n "$NODEGROUPS" ]; then
-  for NG in $NODEGROUPS; do
-    echo "    Deleting node group: $NG"
-    aws eks delete-nodegroup --cluster-name "$CLUSTER" --nodegroup-name "$NG" \
-      --output text --query 'nodegroup.status' >/dev/null 2>&1 || true
-  done
-  echo "    Waiting for node groups to finish deleting (this takes ~3-5 min)..."
-  for NG in $NODEGROUPS; do
-    aws eks wait nodegroup-deleted --cluster-name "$CLUSTER" --nodegroup-name "$NG" 2>/dev/null || true
-    echo "    Node group $NG deleted."
-  done
-else
-  echo "    No node groups found."
-fi
-
-# ── 2. Delete EKS add-ons ─────────────────────────────────────────────────────
-echo ""
-echo "==> [2/7] Deleting EKS add-ons..."
-ADDONS=$(aws eks list-addons --cluster-name "$CLUSTER" \
-  --query 'addons[]' --output text 2>/dev/null || true)
-
-if [ -n "$ADDONS" ]; then
-  for ADDON in $ADDONS; do
-    echo "    Deleting add-on: $ADDON"
-    aws eks delete-addon --cluster-name "$CLUSTER" --addon-name "$ADDON" \
-      --output text --query 'addon.status' >/dev/null 2>&1 || true
-  done
-else
-  echo "    No add-ons found."
-fi
-
-# ── 3. Delete the EKS cluster ────────────────────────────────────────────────
-echo ""
-echo "==> [3/7] Deleting EKS cluster: $CLUSTER..."
-if aws eks delete-cluster --name "$CLUSTER" --output text --query 'cluster.status' >/dev/null 2>&1; then
-  echo "    Waiting for cluster deletion..."
-  aws eks wait cluster-deleted --name "$CLUSTER" 2>/dev/null && echo "    Cluster deleted." || true
-else
-  echo "    Cluster not found or already deleted."
-fi
-
-# ── 4. Force-delete Secrets Manager secrets ──────────────────────────────────
-echo ""
-echo "==> [4/7] Force-deleting Secrets Manager secrets..."
-for SECRET in \
-  "finance-app/${ENV}/dd-api-key" \
-  "finance-app/${ENV}/dd-app-key" \
-  "finance-app/${ENV}/datadog-dbm-password"; do
-  echo "    Deleting secret: $SECRET"
-  aws secretsmanager delete-secret \
-    --secret-id "$SECRET" \
-    --force-delete-without-recovery \
-    --output text --query 'Name' >/dev/null 2>&1 && echo "    Deleted." || echo "    Not found or already deleted."
-done
-
-# ── 5. Delete ECR repositories ───────────────────────────────────────────────
-echo ""
-echo "==> [5/7] Deleting ECR repositories..."
-for REPO in \
-  finance-app/gateway-api finance-app/account-service finance-app/transaction-service \
-  finance-app/fraud-detection finance-app/notification-service finance-app/batch-processor; do
-  echo "    Deleting ECR repo: $REPO"
-  aws ecr delete-repository --repository-name "$REPO" --force \
-    --output text --query 'repository.repositoryName' >/dev/null 2>&1 && \
-    echo "    Deleted." || echo "    Not found or already deleted."
-done
-
-# ── 6. CloudWatch log groups ──────────────────────────────────────────────────
-# The /aws/eks/<cluster>/cluster log group is managed by Terraform and will be
-# deleted in step 7 (terraform destroy). No manual action needed here.
-echo ""
-echo "==> [6/7] CloudWatch log group: handled by terraform destroy in step 7."
-
-# ── 7. Run terraform destroy for remaining resources (VPC, IAM, KMS, SGs) ────
-echo ""
-echo "==> [7/7] Running terraform destroy for remaining resources (VPC, IAM, KMS)..."
+# ── 2. Run terraform destroy for everything else ─────────────────────────────
+# EKS node groups/add-ons/cluster (module-managed, correct destroy order),
+# Secrets Manager secrets (recovery_window_in_days = 0), ECR repos
+# (force_delete = true), the frontend NLB, VPC, and IAM are all Terraform
+# resources — terraform destroy handles all of them.
+echo "==> [2/2] Running terraform destroy..."
 cd "$(dirname "$0")/../deploy/terraform/aws"
 terraform destroy -var-file="staging.tfvars" -auto-approve
 

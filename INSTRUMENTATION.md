@@ -1,6 +1,6 @@
 # Meridian Financial — Instrumentation Guide
 
-This guide covers **what each observability signal enables and how to turn it on**, one pipeline stage at a time. Building images, loading them into the cluster, and deploying the app (local vs EKS) are covered once in the [README runbook](../README.md#testing-everything-manually) — those deployment mechanics are not repeated here.
+This guide covers **what each observability signal enables and how to turn it on**, one pipeline stage at a time. Rebuilding images and redeploying to Kubernetes — for both local and AWS/EKS — are covered once, right below, in [Rebuilding & redeploying](#rebuilding--redeploying). Each stage section below just tells you which category applies.
 
 ---
 
@@ -20,6 +20,41 @@ make tf-apply-dd   # Dashboards, monitors, SLOs, synthetics
 Every stage has a reverse target (`make untag`, `make undbm`, `make uninstrument`, `make undem`, `make unsecurity`, `make tf-destroy-dd`) and is idempotent — running it twice in a row without reversing first is a safe no-op (tracked via a `.{stage}-applied` sentinel file).
 
 **Nothing here is automatic.** A fresh `make deploy-k8s` + `make deploy-k8s-dd` does **not** enable Single Step Instrumentation, DBM, ASM/CWS/CSPM, UST, log injection, or RUM — all six manifests and the Agent config ship with these commented out. Each section below is the single source of truth for its stage's workflow.
+
+---
+
+## Rebuilding & redeploying
+
+Every stage below falls into one of three categories. Each stage section names its category instead of repeating the commands.
+
+**Category A — source code changed → full rebuild + redeploy**
+- Local: `make build`, then re-import the image into your cluster if it doesn't pick up the new build automatically, then `make deploy-k8s`.
+
+> Re-importing locally depends on which local Kubernetes you're running — a quick reference (images are tagged `finance-sample-app-<svc>:latest`):
+>
+> - **Docker Desktop / Rancher Desktop** — no re-import needed, the daemon is shared with the cluster.
+> - **kind** — `kind load docker-image finance-sample-app-<svc>:latest`
+> - **k3d** — `k3d image import finance-sample-app-<svc>:latest`
+> - **minikube** — `minikube image load finance-sample-app-<svc>:latest`
+> - **Colima** (containerd) — `docker save finance-sample-app-<svc>:latest | colima ssh -- sudo ctr -n k8s.io image import -`
+
+- AWS/EKS: `make build-ecr && make deploy-k8s-eks`.
+
+**Category B — Kubernetes manifest changed only (env var / label / annotation toggle, no source touched) → redeploy only, no rebuild**
+- Local: `make deploy-k8s` — AWS/EKS: `make deploy-k8s-eks`.
+- `kubectl apply` updates the Deployment spec directly and triggers its own rollout — no separate `kubectl rollout restart` needed.
+
+**Category C — Datadog Agent config changed → Agent only, app untouched**
+- Local: `kubectl apply -k deploy/kubernetes/datadog/agent && kubectl rollout restart daemonset/datadog-agent -n datadog`
+- AWS/EKS: `kubectl apply -k deploy/kubernetes/overlays/eks-datadog && kubectl rollout restart daemonset/datadog-agent -n datadog`
+
+| Stage | Category |
+|---|---|
+| `make tags` | A |
+| `make dbm` | C |
+| `make instrument` | A |
+| `make dem` | special — its own ConfigMap flow, see below |
+| `make security` | C (Agent side) + B (app side) |
 
 ---
 
@@ -47,19 +82,17 @@ Two narrated steps, applied via unified diff patches under `scripts/patches/tags
 
 ```bash
 make tags               # apply UST + log injection patches
-make build               # rebuild the service images
-make deploy-k8s          # re-applies the patched manifests (a bare rollout restart
-                          # won't pick up the new env vars/labels — see EKS note below)
 ```
 
-> **EKS:** replace `make deploy-k8s` with `make deploy-k8s-eks`.
+Rebuild + redeploy — **Category A** (see [Rebuilding & redeploying](#rebuilding--redeploying)).
 
 ### Reverse it
 
 ```bash
 make untag               # re-comments all UST + log-injection patches
-make build               # then reload images (if needed) + make deploy-k8s (or make deploy-k8s-eks on EKS)
 ```
+
+Rebuild + redeploy again — Category A.
 
 ### Validate
 
@@ -86,10 +119,9 @@ DBM needs the Agent to authenticate to Postgres via a dedicated read-only role t
 
 ```bash
 make dbm
-# Redeploy the Agent to pick up the new mount:
-#   Local: kubectl apply -k deploy/kubernetes/datadog/agent && kubectl rollout restart daemonset/datadog-agent -n datadog
-#   EKS:   kubectl apply -k deploy/kubernetes/overlays/eks-datadog && kubectl rollout restart daemonset/datadog-agent -n datadog
 ```
+
+Redeploy the Agent to pick up the new mount — **Category C** (see [Rebuilding & redeploying](#rebuilding--redeploying)).
 
 ### Reverse it
 
@@ -216,11 +248,13 @@ Common causes:
 
 `scripts/patches/instrument-sso/dsm-*.patch` + `djm-batch-processor.patch` — uncomments `DD_DATA_STREAMS_ENABLED=true` on the four JMS services (`account-service`, `transaction-service`, `fraud-detection`, `notification-service`) and `DD_DATA_JOBS_ENABLED=true` on `batch-processor`. `gateway-api` has neither block — it doesn't produce or consume JMS messages.
 
-DSM gives producer→consumer latency and consumer-lag visibility across the payment → fraud → notification flow. `account-service` (Java) auto-instruments JMS producer/consumer checkpoints; the Node.js producer and Python/Go consumers may need manual checkpoints for complete end-to-end stitching (see the commented-out `set_consume_checkpoint` block in `fraud-detection/listener.py` — an optional follow-up, not applied by this patch). DJM surfaces Spring Batch job runs under APM → Data Jobs — primarily built for Spark/Databricks workloads, so for a plain Spring Batch app the step 1 APM spans + `job.*` tags already cover most needs.
+DSM gives producer→consumer latency and consumer-lag visibility across the payment → fraud → notification flow. `transaction-service` (Node.js) has an active manual producer checkpoint (`tracer.dataStreamsCheckpointer.setProduceCheckpoint`, in `producer.js`) and `fraud-detection` (Python) has an active manual consumer checkpoint (`set_consume_checkpoint`, in `listener.py`) — both already uncommented and working. DJM surfaces Spring Batch job runs under APM → Data Jobs — primarily built for Spark/Databricks workloads, so for a plain Spring Batch app the step 1 APM spans + `job.*` tags already cover most needs.
+
+> **Known limitation — `account-service`'s JMS producer checkpoint cannot be made to work, on any dd-trace-java version.** `account-service/src/main/java/.../PaymentEventProducer.java` still ships with its DSM checkpoint block commented out (Step 10), and it should **stay** commented out — do not uncomment it. dd-trace-java's JMS auto-instrumentation only calls the DSM checkpoint for **IBM MQ** (`JMSMessageProducerInstrumentation`/`JMSMessageConsumerInstrumentation` explicitly gate on `"ibmmq".equals(tech)`); ActiveMQ Artemis (and any other JMS broker) is classified `"unknown"` and silently skipped, regardless of `DD_DATA_STREAMS_ENABLED`. There is also no public, documented way to do this manually for JMS: a hand-rolled `DataStreamsContextCarrier` that calls `message.setStringProperty()` will throw `JMSRuntimeException: AMQ139012 ... not a valid java identifier` — dd-trace-java's own pathway header (`dd-pathway-ctx-base64`) contains a hyphen, which the JMS 2.0 spec forbids in property names, and the internal hyphen-escaping trick that fixes this for trace-context propagation isn't exposed for DSM checkpoints. `notification-service`'s consumer side (`alert.queue`) has no checkpoint code at all either, for the same underlying reason. **Net effect: the DSM pathway map for this app will only ever show the `transaction-service → fraud.score.queue → fraud-detection` hop — not the `account-service` or `notification-service` legs.** The only way to get full DSM coverage here would be swapping Artemis for a broker on dd-trace-java's supported list (Kafka, RabbitMQ, SQS, Kinesis, SNS, Google Pub/Sub, IBM MQ) — a deliberate, separate architecture decision, not a quick fix, and one that would trade away Artemis's JMS-realism teaching value (mirroring IBM MQ/TIBCO EMS patterns common in banking/insurance). Docs: https://docs.datadoghq.com/data_streams/java/ (supported technologies list).
 
 > **`fraud-detection` needs a rebuild, not just a redeploy.** Its DSM support is a baked pip dependency (`ddtrace[data_streams]` in `requirements.txt`, patched by `dsm-fraud-detection-requirements.patch`), unlike the other four services' plain env-var toggle. After `make instrument`, `fraud-detection` specifically needs `make build` (or `make build-ecr`) + image reload before DSM data appears — the env var alone isn't enough.
 
-**Validate:** Data Streams → pathway map shows `fraud.score.queue` and `alert.queue` (docs: https://docs.datadoghq.com/data_streams/). APM → Data Jobs after a reconciliation run (docs: https://docs.datadoghq.com/data_jobs/).
+**Validate:** Data Streams → pathway map shows the `transaction-service → fraud.score.queue → fraud-detection` hop (docs: https://docs.datadoghq.com/data_streams/) — the `account-service`/`notification-service` legs will not appear, per the limitation above. APM → Data Jobs after a reconciliation run (docs: https://docs.datadoghq.com/data_jobs/).
 
 ### Service Catalog reminder
 
@@ -230,22 +264,17 @@ DSM gives producer→consumer latency and consumer-lag visibility across the pay
 
 ```bash
 make instrument          # applies all 4 steps
-make build                # rebuild the service images
-# → reload the rebuilt images into your cluster (Colima/kind/k3d/minikube) — see the README runbook.
-#   Docker Desktop / Rancher Desktop need no reload.
-make deploy-k8s           # re-applies the patched manifests (a bare rollout restart won't
-                           # pick up the new env vars/labels/annotations — it only recreates
-                           # pods from whatever spec is already stored in the API server)
 ```
 
-> **EKS:** replace `make build` + `make deploy-k8s` with `make build-ecr && make deploy-k8s-eks`.
+Rebuild + redeploy — **Category A** (see [Rebuilding & redeploying](#rebuilding--redeploying)).
 
 ### Reverse it
 
 ```bash
 make uninstrument       # reverses in opposite order: DSM/DJM → profiler → SSI gating → APM spans
-make build               # then reload images (if needed) + make deploy-k8s (or make deploy-k8s-eks on EKS)
 ```
+
+Rebuild + redeploy again — Category A.
 
 ### Regenerating patches
 
@@ -406,13 +435,11 @@ These agent features turn on the threat-intake pipeline, eBPF runtime monitoring
 
 ```bash
 make security
-# Redeploy to activate:
-#   Agent: kubectl apply -k deploy/kubernetes/datadog/agent && kubectl rollout restart daemonset/datadog-agent -n datadog
-#   Apps:  make build && load images into k3s && make deploy-k8s
-#          (a bare rollout restart won't pick up the new DD_APPSEC_ENABLED env var)
 ```
 
-> **EKS:** replace the Apps line with `make build-ecr && make deploy-k8s-eks`.
+Redeploy to activate — two categories, both from [Rebuilding & redeploying](#rebuilding--redeploying):
+- **Agent** (`asm`/`cws`/`cspm` feature blocks) — **Category C**.
+- **Apps** (`DD_APPSEC_ENABLED` env var only, no source touched) — **Category B**: just `make deploy-k8s` / `make deploy-k8s-eks`, no rebuild needed.
 
 ### Reverse it
 

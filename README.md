@@ -312,29 +312,63 @@ cp deploy/terraform/aws/staging.tfvars.example deploy/terraform/aws/staging.tfva
 
 #### Keycloak's certificate: self-signed vs. custom domain
 
-Before running `tf-apply-aws`, decide whether you want to avoid the
-browser security warning on Keycloak's login page. This is set via
-`domain_name` in `staging.tfvars`, edited now because it can't be changed
-after the fact without a re-apply.
+This is a two-phase decision: a config choice you make **before** the first
+apply, and (for one sub-case) a DNS dance that only happens **after** it —
+don't conflate the two, the DNS records in phase 2 don't exist yet when
+you're making the phase-1 choice.
 
-| | Option A — self-signed (default) | Option B — custom domain (no warning) |
-|---|---|---|
-| `staging.tfvars` | leave `domain_name` empty | set `domain_name` (a domain you own — AWS/ACM cannot issue a public cert for its own `*.elb.<region>.amazonaws.com` hostname) |
-| Setup required | none | see DNS steps below |
-| Result | Keycloak reachable on `:8443` with a self-signed cert — accept the one-time browser warning | Keycloak reachable on `:9443` with a real, browser-trusted ACM cert |
+##### Step 0 — Decide now, before any apply
 
-**If you pick Option B and the domain's zone is in Route 53, in the same AWS
-account** — also set `route53_zone_id`. Nothing further needed: `make
-tf-apply-aws` creates the ACM certificate, the DNS validation record(s), and
-the `domain_name` → NLB alias record automatically.
+The only thing to decide up front is what goes in `staging.tfvars`. It can't
+be changed after the fact without a re-apply.
 
-**If you pick Option B and manage DNS anywhere else** (another registrar, a
-different AWS account, Cloudflare, etc.) — set `domain_name` only, leave
-`route53_zone_id` empty, then add two records to your DNS yourself:
+| | Option A — self-signed (default) | Option B — custom domain, Route 53 in this AWS account | Option C — custom domain, DNS managed elsewhere |
+|---|---|---|---|
+| `staging.tfvars` | leave `domain_name` empty | set `domain_name` (a domain you own — AWS/ACM cannot issue a public cert for its own `*.elb.<region>.amazonaws.com` hostname) and `route53_zone_id` | set `domain_name` only, leave `route53_zone_id` empty |
+| Setup required | none | none — fully automated | see Step 1 below |
+| Result | Keycloak reachable on `:8443` with a self-signed cert — accept the one-time browser warning | Keycloak reachable on `:9443` with a real, browser-trusted ACM cert | Keycloak reachable on `:9443` with a real, browser-trusted ACM cert |
 
-1. **ACM validation record(s)** — prove you own the domain. Run
-   `make tf-apply-aws` once (the certificate is created but stays
-   `PENDING_VALIDATION`), then:
+Pick one of three `staging.tfvars` outcomes:
+
+- **Option A** — leave `domain_name` and `route53_zone_id` both empty.
+- **Option B, Route 53 zone in this same AWS account** — set both
+  `domain_name` and `route53_zone_id`.
+- **Option C, DNS managed anywhere else** (another registrar, a
+  different AWS account, Cloudflare, etc.) — set `domain_name` only, leave
+  `route53_zone_id` empty.
+
+#### Step 1 - Deploy AWS EKS
+
+**Create the AWS Cluster**
+
+Configure kubectl to connect to your cluster
+```bash
+make tf-configure-kubectl && kubectl get nodes
+```
+
+Plan AWS deployment
+```bash
+make tf-plan-aws
+```
+
+Run the plan
+```bash
+make tf-apply-aws
+```
+
+> This will provisions EKS/VPC/ECR/IAM/NLB (~15–20 min)
+
+##### Step 2 — Generate the valid certificate (options B & C)
+
+**Options B:** Terraform creates the ACM certificate, the DNS validation record(s), and the `domain_name` → NLB alias record automatically — nothing further needed.
+
+**Option C:** the validation records don't exist until Terraform requests the
+certificate, so this is necessarily a multi-step loop:
+
+1. During the `make tf-apply-aws` The certificate is created (and
+   stays `PENDING_VALIDATION`) even though the overall apply may not finish.
+2. Fetch the pending validation data — this works regardless of whether the
+   certificate has finished validating:
    ```bash
    cd deploy/terraform/aws && terraform output -json acm_validation_records
    ```
@@ -343,61 +377,89 @@ different AWS account, Cloudflare, etc.) — set `domain_name` only, leave
    itself and one for `www.<domain_name>` (always requested as a SAN —
    you can ignore the `www.` one if you don't use it, but the record still
    needs to exist for the certificate to finish validating).
-2. **The record that actually routes traffic** — a **CNAME** (or an ALIAS/
+3. Add the record that actually routes traffic — a **CNAME** (or an ALIAS/
    ANAME record if your provider supports one at the zone apex and
    `domain_name` *is* the apex) pointing `domain_name` at the NLB hostname:
    ```bash
    terraform output -raw frontend_lb_dns_name
    ```
+4. Re-run `make tf-apply-aws` — Terraform waits (up to 10 minutes) for ACM
+   to see the validation CNAME and finish issuing the certificate before
+   continuing; if it times out because DNS hasn't propagated yet, just run
+   `make tf-apply-aws` again once the record is live.
 
-Then re-run `make tf-apply-aws` — Terraform waits (up to 10 minutes) for
-ACM to see the validation CNAME and finish issuing the certificate before
-continuing; if it times out because DNS hasn't propagated yet, just run
-`make tf-apply-aws` again once the record is live.
+> See `deploy/terraform/aws/variables.tf` (`domain_name` / `route53_zone_id`) for the full reference.
 
-See `deploy/terraform/aws/variables.tf` (`domain_name` / `route53_zone_id`)
-for the full reference.
+#### Configure Keycloak with generated certificates
 
-#### Deploy
+Keycloak's own Service is ClusterIP-only, so the app always needs to be told
+Keycloak's externally-reachable URL, and the Keycloak client's allowed
+origins always need to include it too — regardless of which option you
+picked above. The NLB (and, for Option B/C, the ACM cert) is already up at
+this point, so export both now, **before** `deploy-k8s-eks` runs, so the app
+comes up correct on the very first deploy — no post-deploy patch or restart
+needed. Run whichever of these two matches your Step 0 choice:
 
+**Option A (self-signed):**
 ```bash
-make tf-plan-aws && make tf-apply-aws            # provisions EKS/VPC/ECR/IAM/NLB (~15–20 min)
+export FE_URL=$(cd deploy/terraform/aws && terraform output -raw frontend_keycloak_https_url)
+export DASH_URL=$(cd deploy/terraform/aws && terraform output -raw frontend_url)
+```
+
+**Option B or C (custom domain):**
+```bash
+export FE_URL=$(cd deploy/terraform/aws && terraform output -raw frontend_keycloak_acm_url)
+export DASH_URL=$(cd deploy/terraform/aws && terraform output -raw frontend_url)
+```
+
+**For All options**
+Set current kubectl context.
+```bash
 make tf-configure-kubectl && kubectl get nodes
+```
+
+Build and deploy the `finance` app stack.
+```bash
 eval "$(cd deploy/terraform/aws && terraform output -raw ecr_login_command)"
 make build-ecr && make deploy-k8s-eks
 ```
 
-#### Point Keycloak at its public URL (always required)
+> With `FE_URL`/`DASH_URL` exported, `deploy-k8s-eks` patches `KEYCLOAK_PUBLIC_URL` into `app-config` before Keycloak's Deployment is applied, and templates the
+> Keycloak client's `redirectUris`/`webOrigins` into the realm-import ConfigMap before Keycloak's first boot — so login works immediately. The only remaining manual step is accepting the one-time browser certificate warning if you're on Option A (self-signed).
 
-Keycloak's own Service is ClusterIP-only, so regardless of which option you
-picked above, the app must be told Keycloak's externally-reachable URL —
-this step is not automated (Terraform doesn't own the frontend ConfigMap).
-**Never use `frontend_url`** here — nginx only proxies Keycloak on its own
-dedicated listener(s), not the dashboard's (see
-`deploy/kubernetes/base/services/frontend.yaml`'s routing table). The only
-thing that changes between Option A and B is the `FE_URL=` line:
+#### (Troubleshooting) If you forgot to export FE_URL/DASH_URL first
 
+If you already ran `make deploy-k8s-eks` without exporting them, the app is
+up with `localhost`-only values and dashboard login will fail with
+`NetworkError when attempting to fetch resource`. Fix the live cluster with
+whichever of these two matches your Step 0 choice (**never use
+`frontend_url`** for `FE_URL` — nginx only proxies Keycloak on its own
+dedicated listener(s), not the dashboard's; see
+`deploy/kubernetes/base/services/frontend.yaml`'s routing table):
+
+**Option A (self-signed):**
 ```bash
-FE_URL=$(cd deploy/terraform/aws && terraform output -raw frontend_keycloak_https_url)  # Option A: self-signed
-# FE_URL=$(cd deploy/terraform/aws && terraform output -raw frontend_keycloak_acm_url)  # Option B: custom domain — use this line instead
+FE_URL=$(cd deploy/terraform/aws && terraform output -raw frontend_keycloak_https_url)
 kubectl patch configmap app-config -n finance --type=merge -p "{\"data\":{\"KEYCLOAK_PUBLIC_URL\":\"$FE_URL\"}}"
 sed "s|https://localhost:30443|$FE_URL|g" frontend-stub/index.html > /tmp/finance-index.html
 kubectl create configmap frontend-dashboard --from-file=index.html=/tmp/finance-index.html -n finance --dry-run=client -o yaml | kubectl apply -f -
 kubectl rollout restart deployment/keycloak deployment/frontend -n finance
 ```
 
-#### Update the Keycloak client's allowed origins (also always required)
-
-This step is mandatory for both Option A and Option B, every time — it's
-CORS/redirect-URI allow-listing on the Keycloak client
-(`webOrigins`/`redirectUris`), unrelated to which certificate you're using.
-`identity-provider/realm-export/finance-realm.json` is imported verbatim and
-hardcodes `localhost` origins (the NLB hostname isn't known until after
-`tf-apply-aws`, so it can't be templated into the static import file).
-Skipping this step makes dashboard login fail with `NetworkError when
-attempting to fetch resource` (Keycloak rejects the OIDC redirect/CORS from
-an origin that isn't allow-listed), regardless of Option A or B:
+**Option B or C (custom domain):**
 ```bash
+FE_URL=$(cd deploy/terraform/aws && terraform output -raw frontend_keycloak_acm_url)
+kubectl patch configmap app-config -n finance --type=merge -p "{\"data\":{\"KEYCLOAK_PUBLIC_URL\":\"$FE_URL\"}}"
+sed "s|https://localhost:30443|$FE_URL|g" frontend-stub/index.html > /tmp/finance-index.html
+kubectl create configmap frontend-dashboard --from-file=index.html=/tmp/finance-index.html -n finance --dry-run=client -o yaml | kubectl apply -f -
+kubectl rollout restart deployment/keycloak deployment/frontend -n finance
+```
+
+Then patch the Keycloak client's allowed origins the same way (CORS
+allow-listing, unrelated to the certificate — required regardless of
+option):
+```bash
+kubectl rollout status deployment/keycloak -n finance --timeout=120s
 DASH_URL=$(cd deploy/terraform/aws && terraform output -raw frontend_url)
 KC_POD=$(kubectl get pod -n finance -l app=keycloak -o jsonpath='{.items[0].metadata.name}')
 kubectl exec -n finance "$KC_POD" -- /opt/keycloak/bin/kcadm.sh config credentials --server http://localhost:8080 --realm master --user admin --password 'Finance@Admin2025!'
@@ -406,9 +468,9 @@ kubectl exec -n finance "$KC_POD" -- /opt/keycloak/bin/kcadm.sh update "clients/
   -s "redirectUris=[\"http://localhost:30080/*\",\"https://localhost:30443/*\",\"http://gateway-api:8080/*\",\"$DASH_URL/*\",\"$FE_URL/*\"]" \
   -s "webOrigins=[\"http://localhost:30080\",\"https://localhost:30443\",\"http://gateway-api:8080\",\"$DASH_URL\",\"$FE_URL\"]"
 ```
-> This patches the running realm only, in memory — Keycloak runs in `start-dev` mode with an in-process H2 database (see `deploy/kubernetes/base/infrastructure/keycloak.yaml`), so **any** Keycloak pod restart wipes it back to the static import file's `localhost`-only origins. That includes `kubectl rollout restart deployment/keycloak` itself, `make tags`/`instrument`/`security`/`dbm` redeploys (they restart the Agent/app but can also cycle Keycloak depending on what you touch), node replacement, or the pod simply crashing. If login suddenly starts failing with `Failed to fetch` again after working before, re-run this patch — nothing else has usually gone wrong.
+> This patches the running realm only, in memory — Keycloak runs in `start-dev` mode with an in-process H2 database (see `deploy/kubernetes/base/infrastructure/keycloak.yaml`), so **any** Keycloak pod restart wipes it back to the static import file's `localhost`-only origins. That includes `kubectl rollout restart deployment/keycloak` itself, `make tags`/`instrument`/`security`/`dbm` redeploys (they restart the Agent/app but can also cycle Keycloak depending on what you touch), node replacement, or the pod simply crashing. If login suddenly starts failing with `Failed to fetch` again after working before, re-run this patch — nothing else has usually gone wrong. (This is exactly why exporting `FE_URL`/`DASH_URL` *before* `deploy-k8s-eks` is worth doing: it avoids this ephemeral live-patch entirely.)
 
-#### Add Datadog
+#### Step 5 - Add Datadog
 
 Then add Datadog and apply resources — same targets as local, EKS auto-fetches keys from Secrets Manager:
 ```bash

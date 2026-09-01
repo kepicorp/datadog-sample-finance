@@ -339,6 +339,7 @@ resource "aws_ecr_repository" "services" {
 
   name                 = "finance-app/${each.key}"
   image_tag_mutability = "MUTABLE" # use IMMUTABLE in production for deploy traceability
+  force_delete         = true      # let terraform destroy remove the repo even with images still in it
 
   image_scanning_configuration {
     scan_on_push = true
