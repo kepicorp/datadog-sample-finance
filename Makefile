@@ -149,7 +149,7 @@ endef
 
 all: build
 
-## help: Show this help message (all available make targets with descriptions).
+## help: [Misc] Show this help message (all available make targets with descriptions).
 help:
 	@echo "Meridian Financial - Datadog Observability Sample App"
 	@echo ""
@@ -161,15 +161,31 @@ help:
 			target=a[1]; \
 			sub(/^[^:]*: */, ""); \
 			desc=$$0; \
-			printf "  \033[36m%-30s\033[0m %s\n", target, desc \
+			cat="Misc"; \
+			if (match(desc, /^\[[A-Za-z0-9 &\/]+\]/)) { \
+				cat=substr(desc, RSTART+1, RLENGTH-2); \
+				desc=substr(desc, RSTART+RLENGTH); \
+				sub(/^ +/, "", desc); \
+			} \
+			lines[cat]=lines[cat] sprintf("  \033[36m%-24s\033[0m %s\n", target, desc); \
+		} \
+		END { \
+			n=split("Misc,Build & Test,Local Kubernetes,AWS / Terraform,Datadog Instrumentation,Workshop Scenarios", order, ","); \
+			for (i=1; i<=n; i++) { \
+				c=order[i]; \
+				if (lines[c] != "") { \
+					printf "\033[1m%s\033[0m\n", c; \
+					printf "%s", lines[c]; \
+					printf "\n"; \
+				} \
+			} \
 		}' $(MAKEFILE_LIST)
-	@echo ""
 
-## version: Print the DD_VERSION that will be embedded in image labels and env vars.
+## version: [Misc] Print the DD_VERSION that will be embedded in image labels and env vars.
 version:
 	@echo "DD_VERSION=$(DD_VERSION)"
 
-## instrument: Uncomment In-depth instrumentation — four narrated steps under one
+## instrument: [Datadog Instrumentation] Uncomment In-depth instrumentation — four narrated steps under one
 ##             sentinel: (1) the APM custom-span patches (transaction-service,
 ##             notification-service — unchanged), (2) Single Step Instrumentation
 ##             gating (admission.datadoghq.com/enabled label + <lang>-lib.version
@@ -248,7 +264,7 @@ instrument:
 		$(print_redeploy_hint); \
 	fi
 
-## uninstrument: Reverse all four make instrument steps (Data Streams/Data Jobs
+## uninstrument: [Datadog Instrumentation] Reverse all four make instrument steps (Data Streams/Data Jobs
 ##               Monitoring, then Continuous Profiler, then Single Step
 ##               Instrumentation gating, then APM custom-span patches — opposite
 ##               order from make instrument). Restores every file to its original
@@ -293,7 +309,7 @@ uninstrument:
 		$(print_redeploy_hint); \
 	fi
 
-## tags: Enable Unified Service Tagging (env/service/version) + log injection.
+## tags: [Datadog Instrumentation] Enable Unified Service Tagging (env/service/version) + log injection.
 ##       Two-step, narrated: (a) UST pod labels + DD_ENV/DD_SERVICE/DD_VERSION
 ##       env vars in the Kubernetes manifests, (b) trace_id/span_id log
 ##       injection (Python patch_logging(), Node dd-trace logInjection, Java
@@ -340,7 +356,7 @@ tags:
 		$(print_redeploy_hint); \
 	fi
 
-## untag: Re-comment all UST + log-injection blocks (reverse of make tags).
+## untag: [Datadog Instrumentation] Re-comment all UST + log-injection blocks (reverse of make tags).
 ##        Restores every file to its original commented-out state.
 ##
 ##        After patching, redeploy (rollout restart alone won't pick up the
@@ -369,7 +385,7 @@ untag:
 		$(print_redeploy_hint); \
 	fi
 
-## dem: Enable Digital Experience Monitoring (Browser RUM + Session Replay) for the
+## dem: [Datadog Instrumentation] Enable Digital Experience Monitoring (Browser RUM + Session Replay) for the
 ##      finance-frontend dashboard. Creates the RUM application via a DIRECT Datadog
 ##      API call (NOT Terraform — 'make tf-apply-dd' no longer owns RUM), then injects
 ##      the resulting applicationId/clientToken into frontend-stub/index.html.
@@ -447,7 +463,7 @@ dem:
 		echo "    kubectl rollout restart deployment/frontend -n finance"; \
 	fi
 
-## undem: Delete the RUM application via the Datadog API and restore the frontend
+## undem: [Datadog Instrumentation] Delete the RUM application via the Datadog API and restore the frontend
 ##        RUM placeholders (reverse of make dem). Removes .dem-applied and
 ##        .dem-state.json. Fails gracefully (no cryptic curl error) if
 ##        DD_API_KEY/DD_APP_KEY can't be resolved.
@@ -502,7 +518,7 @@ undem:
 		echo "    kubectl rollout restart deployment/frontend -n finance"; \
 	fi
 
-## build: Build all service images for the local platform.
+## build: [Build & Test] Build all service images for the local platform.
 ##        Images are tagged finance-sample-app-<service>:latest and :<DD_VERSION> (git short SHA).
 ##        Docker Desktop / Rancher Desktop: images are available in the cluster immediately.
 ##        Other tools — load after building:
@@ -528,7 +544,7 @@ build:
 	@echo "  # minikube: minikube image load finance-sample-app-<svc>:latest"
 	@echo "  kubectl rollout restart deployment -n finance"
 
-## build-ecr: Build all service images for linux/amd64 and push directly to ECR.
+## build-ecr: [Build & Test] Build all service images for linux/amd64 and push directly to ECR.
 ##            Use this when deploying to EKS from an Apple Silicon (ARM) Mac.
 ##            Requires: ECR login (eval "$(cd deploy/terraform/aws && terraform output -raw ecr_login_command)")
 ##            Uses Docker Buildx cross-compilation — no QEMU emulation, safe on ARM.
@@ -554,7 +570,7 @@ build-ecr:
 			./$$SVC; \
 	done
 
-## test: Run the e2e test suite against the running stack.
+## test: [Build & Test] Run the e2e test suite against the running stack.
 ##       Prerequisites: make deploy-k8s (uses Python stdlib only — no pip install required).
 ##       Note: requires kubectl port-forward or NodePort access to the services.
 ##       For a no-setup check, watch the in-cluster traffic generator instead:
@@ -562,7 +578,7 @@ build-ecr:
 test:
 	python3 scripts/test-e2e.py
 
-## test-traffic: Run the traffic generator locally for a fixed duration.
+## test-traffic: [Build & Test] Run the traffic generator locally for a fixed duration.
 ##               The in-cluster traffic-generator Deployment already runs continuously.
 ##               Use this to temporarily boost traffic or test from your laptop.
 ##               Note: requires services reachable on localhost (kubectl port-forward).
@@ -571,7 +587,7 @@ test-traffic:
 
 
 
-## deploy-k8s: Deploy the Finance app to Kubernetes without Datadog.
+## deploy-k8s: [Local Kubernetes] Deploy the Finance app to Kubernetes without Datadog.
 ##             Creates the 'finance' namespace and all infrastructure + application services.
 ##             Prerequisites:
 ##               1. make build        — build all service images
@@ -621,7 +637,7 @@ deploy-k8s:
 	@echo "   network/fetch error. This only affects browser access — the in-cluster"
 	@echo "   traffic-generator talks to Keycloak over plain HTTP and is unaffected."
 
-## deploy-k8s-eks: Deploy to EKS using Kustomize overlay.
+## deploy-k8s-eks: [AWS / Terraform] Deploy to EKS using Kustomize overlay.
 ##                 Patches base manifests with ECR image URLs, gp3 StorageClass,
 ##                 and imagePullPolicy:Always. Safe to re-run (idempotent).
 ##                 Prerequisites: make tf-apply-aws, make tf-configure-kubectl, make build-ecr.
@@ -686,7 +702,7 @@ deploy-k8s-eks:
 	@echo "       -s 'redirectUris=[\"http://localhost:30080/*\",\"https://localhost:30443/*\",\"http://gateway-api:8080/*\",\"'\"\$$DASH_URL\"'/*\",\"'\"\$$FE_URL\"'/*\"]' \\"
 	@echo "       -s 'webOrigins=[\"http://localhost:30080\",\"https://localhost:30443\",\"http://gateway-api:8080\",\"'\"\$$DASH_URL\"'\",\"'\"\$$FE_URL\"'\"]'"
 
-## deploy-k8s-dd: Deploy the Datadog Agent. Auto-detects local vs EKS.
+## deploy-k8s-dd: [Local Kubernetes] Deploy the Datadog Agent. Auto-detects local vs EKS.
 ##               Run AFTER 'make deploy-k8s' (local) or 'make deploy-k8s-eks' (EKS).
 ##               'create-dd-secret' runs first as a prerequisite — no separate secret
 ##               step needed. Keeping it a prerequisite (rather than a $(MAKE) call
@@ -734,7 +750,7 @@ deploy-k8s-dd: create-dd-secret
 	@echo "     kubectl get daemonset datadog -n datadog"
 	@echo "     kubectl get deployment datadog-cluster-agent -n datadog"
 
-## undeploy-k8s: Remove all Finance app resources from Kubernetes (namespaces only).
+## undeploy-k8s: [Local Kubernetes] Remove all Finance app resources from Kubernetes (namespaces only).
 ##               Does NOT delete persistent data — use 'make teardown' for a full reset.
 undeploy-k8s:
 	kubectl delete namespace finance --ignore-not-found
@@ -742,7 +758,7 @@ undeploy-k8s:
 	# gp3 is cluster-scoped (not namespaced) — must be deleted separately
 	kubectl delete storageclass gp3 --ignore-not-found
 
-## teardown: Full reset — removes all K8s resources AND cleans up persistent data.
+## teardown: [Local Kubernetes] Full reset — removes all K8s resources AND cleans up persistent data.
 ##           Deletes:
 ##             - finance namespace (all app pods, services, configmaps)
 ##             - datadog namespace (Agent, Operator, Cluster Agent)
@@ -783,24 +799,24 @@ deploy/terraform/aws/staging.tfvars:
 	@echo "==> Created $@ from staging.tfvars.example"
 	@echo "    Edit it with your aws_profile / aws_region / cluster_name, then re-run."
 
-## tf-plan-aws: Initialise and plan the Terraform AWS (EKS) target.
+## tf-plan-aws: [AWS / Terraform] Initialise and plan the Terraform AWS (EKS) target.
 ##              Uses the AWS_PROFILE env var. Override vars: TF_AWS_VARS="-var-file=staging.tfvars -var aws_profile=<name>"
 TF_AWS_VARS ?= -var-file=staging.tfvars
 tf-plan-aws: deploy/terraform/aws/staging.tfvars
 	cd deploy/terraform/aws && terraform init && terraform plan $(TF_AWS_VARS)
 
-## tf-apply-aws: Apply the Terraform AWS plan (creates EKS, ECR, VPC, IAM).
+## tf-apply-aws: [AWS / Terraform] Apply the Terraform AWS plan (creates EKS, ECR, VPC, IAM).
 ##               WARNING: this provisions real AWS resources and incurs cost.
 tf-apply-aws: deploy/terraform/aws/staging.tfvars
 	bash scripts/aws-pre-apply.sh
 	cd deploy/terraform/aws && terraform init && terraform apply $(TF_AWS_VARS)
 
-## tf-configure-kubectl: Update kubeconfig to point kubectl at the EKS cluster.
+## tf-configure-kubectl: [AWS / Terraform] Update kubeconfig to point kubectl at the EKS cluster.
 ##                       Run after tf-apply-aws before deploy-k8s.
 tf-configure-kubectl:
 	eval "$$(cd deploy/terraform/aws && terraform output -raw kubeconfig_command)"
 
-## frontend-url: Print the public URL of the Finance app frontend on EKS.
+## frontend-url: [AWS / Terraform] Print the public URL of the Finance app frontend on EKS.
 ##               Available as soon as make tf-apply-aws completes (Terraform-managed
 ##               NLB, not a Kubernetes LoadBalancer Service) — no need to deploy the
 ##               app first.
@@ -808,7 +824,7 @@ frontend-url:
 	@cd deploy/terraform/aws && terraform output -raw frontend_url 2>/dev/null && echo "" \
 		|| echo "No NLB yet — run 'make tf-apply-aws' first."
 
-## tf-destroy-aws: Safely destroy all AWS resources created by Terraform.
+## tf-destroy-aws: [AWS / Terraform] Safely destroy all AWS resources created by Terraform.
 ##                 Automatically handles the dependency ordering that plain
 ##                 'terraform destroy' gets wrong:
 ##                   1. Deletes K8s LoadBalancer services (releases the AWS ELB
@@ -823,7 +839,7 @@ tf-destroy-aws:
 
 
 
-## create-dd-secret: Create (or update) the datadog-secret K8s Secret in the datadog namespace.
+## create-dd-secret: [Local Kubernetes] Create (or update) the datadog-secret K8s Secret in the datadog namespace.
 ##                   AUTO-DETECTS the environment:
 ##                     Local (Docker Desktop / kind / k3d / minikube): reads DD_API_KEY and DD_APP_KEY from .env
 ##                     EKS:               fetches both keys from AWS Secrets Manager
@@ -890,7 +906,7 @@ create-dd-secret:
 	echo "   Keys stored: api-key, app-key$$([ -n "$$DBM_PASSWORD" ] && echo ', dbm-password' || echo ' (dbm-password not set)')"; \
 	echo "   Verify: kubectl get secret datadog-secret -n datadog -o jsonpath='{.data}' | python3 -m json.tool"
 
-## dbm: Enable Database Monitoring (DBM) for postgres-ledger. Two-step, narrated:
+## dbm: [Datadog Instrumentation] Enable Database Monitoring (DBM) for postgres-ledger. Two-step, narrated:
 ##      (a) uncomments the Agent-side postgres.d check config + the
 ##      DD_DBM_POSTGRES_PASSWORD wiring in datadog-agent.yaml (applies
 ##      scripts/patches/dbm/dbm-agent.patch — a ConfigMap/env var alone does
@@ -944,7 +960,7 @@ dbm:
 		echo "    EKS:   kubectl apply -k deploy/kubernetes/overlays/eks-datadog && kubectl rollout restart daemonset/datadog-agent -n datadog"; \
 	fi
 
-## undbm: Disable Database Monitoring (DBM) — reverse of make dbm. Re-comments
+## undbm: [Datadog Instrumentation] Disable Database Monitoring (DBM) — reverse of make dbm. Re-comments
 ##        the Agent-side postgres.d config (reverses dbm-agent.patch) and runs
 ##        scripts/dbm-teardown.sql to revoke the 'datadog' PostgreSQL role's
 ##        grants and drop the role (pg_stat_statements extension is left
@@ -974,7 +990,7 @@ undbm:
 		echo "    EKS:   kubectl apply -k deploy/kubernetes/overlays/eks-datadog && kubectl rollout restart daemonset/datadog-agent -n datadog"; \
 	fi
 
-## security: Enable Application/Cloud Security (ASM Threats+SCA, CWS, CSPM).
+## security: [Datadog Instrumentation] Enable Application/Cloud Security (ASM Threats+SCA, CWS, CSPM).
 ##           Two narrated steps, one sentinel: (1) Agent-side —
 ##           scripts/patches/security/agent-security.patch uncomments the
 ##           asm/cws/cspm feature blocks in datadog-agent.yaml, (2) App-side —
@@ -1013,7 +1029,7 @@ security:
 		echo "    Apps:  make build && load images into k3s && make deploy-k8s"; \
 	fi
 
-## unsecurity: Disable Application/Cloud Security (reverse of make security).
+## unsecurity: [Datadog Instrumentation] Disable Application/Cloud Security (reverse of make security).
 ##             Restores every file to its original commented-out state.
 unsecurity:
 	@if [ ! -f .security-applied ]; then \
@@ -1034,7 +1050,7 @@ unsecurity:
 		echo "    Apps:  make build && load images into k3s && make deploy-k8s"; \
 	fi
 
-## scenario-1: [Workshop] Inject Scenario 1 (payments slow / missing index). Drops
+## scenario-1: [Workshop Scenarios] Inject Scenario 1 (payments slow / missing index). Drops
 ##             idx_transactions_account_id on the live postgres-ledger pod
 ##             (scripts/scenarios/scenario1-drop-index.sql), turning
 ##             transaction-service's ledger.velocity_check query into a full
@@ -1059,7 +1075,7 @@ scenario-1:
 		fi; \
 	fi
 
-## unscenario-1: [Workshop] Reset Scenario 1 — restores idx_transactions_account_id
+## unscenario-1: [Workshop Scenarios] Reset Scenario 1 — restores idx_transactions_account_id
 ##               (scripts/scenarios/scenario1-restore-index.sql).
 unscenario-1:
 	@if [ ! -f .scenario-1-applied ]; then \
@@ -1075,7 +1091,7 @@ unscenario-1:
 		fi; \
 	fi
 
-## scenario-2: [Workshop] Inject Scenario 2 (nightly reconciliation fails silently).
+## scenario-2: [Workshop Scenarios] Inject Scenario 2 (nightly reconciliation fails silently).
 ##             Sets RECONCILIATION_SCENARIO_ENABLED=true on batch-processor and
 ##             rolls it out, which makes ReconciliationJob's reader silently
 ##             exclude an account range — the job still completes successfully,
@@ -1097,7 +1113,7 @@ scenario-2:
 		echo "  job.records_processed drop in Data Jobs Monitoring — job still shows COMPLETED."; \
 	fi
 
-## unscenario-2: [Workshop] Reset Scenario 2 — unsets RECONCILIATION_SCENARIO_ENABLED
+## unscenario-2: [Workshop Scenarios] Reset Scenario 2 — unsets RECONCILIATION_SCENARIO_ENABLED
 ##               on batch-processor and rolls it out.
 unscenario-2:
 	@if [ ! -f .scenario-2-applied ]; then \
@@ -1109,7 +1125,7 @@ unscenario-2:
 		echo "✓ Scenario 2 reset."; \
 	fi
 
-## scenario-3: [Workshop] Inject Scenario 3 (fraud queue backing up / producer surge).
+## scenario-3: [Workshop Scenarios] Inject Scenario 3 (fraud queue backing up / producer surge).
 ##             Sets FRAUD_QUEUE_DUPLICATE_FACTOR=3 on transaction-service and rolls
 ##             it out, tripling every payment's publish to fraud.score.queue while
 ##             fraud-detection (the consumer) keeps processing normally — DSM should
@@ -1129,7 +1145,7 @@ scenario-3:
 		echo "  producer throughput climb in DSM while the consumer stays flat."; \
 	fi
 
-## unscenario-3: [Workshop] Reset Scenario 3 — sets FRAUD_QUEUE_DUPLICATE_FACTOR back
+## unscenario-3: [Workshop Scenarios] Reset Scenario 3 — sets FRAUD_QUEUE_DUPLICATE_FACTOR back
 ##               to 1 on transaction-service and rolls it out.
 unscenario-3:
 	@if [ ! -f .scenario-3-applied ]; then \
@@ -1141,7 +1157,7 @@ unscenario-3:
 		echo "✓ Scenario 3 reset."; \
 	fi
 
-## dd-secrets: Print eval-ready 'export TF_VAR_datadog_api_key=...' commands for use with
+## dd-secrets: [Datadog Instrumentation] Print eval-ready 'export TF_VAR_datadog_api_key=...' commands for use with
 ##             tf-apply-dd / tf-plan-dd. Resolves the keys in priority order:
 ##               1. AWS Secrets Manager  — if an SSO session for aws_profile is active
 ##                                          AND the finance-app/staging secrets exist
@@ -1162,7 +1178,7 @@ dd-secrets:
 	echo "export TF_VAR_datadog_api_key=\"$$API_KEY\""; \
 	echo "export TF_VAR_datadog_app_key=\"$$APP_KEY\""
 
-## tf-plan-dd: Plan the Datadog observability resources (index, pipeline, monitors, dashboard).
+## tf-plan-dd: [Datadog Instrumentation] Plan the Datadog observability resources (index, pipeline, monitors, dashboard).
 ##             Requires TF_VAR_datadog_api_key and TF_VAR_datadog_app_key env vars.
 ##             Easiest way to set them: eval "$(make dd-secrets)"
 TF_DD_VARS ?= -var-file=staging.tfvars
@@ -1178,12 +1194,12 @@ deploy/terraform/datadog/staging.tfvars:
 tf-plan-dd: deploy/terraform/datadog/staging.tfvars
 	cd deploy/terraform/datadog && terraform init && terraform plan $(TF_DD_VARS)
 
-## tf-apply-dd: Apply the Datadog resources (index, pipeline, monitors, dashboard).
+## tf-apply-dd: [Datadog Instrumentation] Apply the Datadog resources (index, pipeline, monitors, dashboard).
 ##              WARNING: creates/updates live Datadog configuration.
 tf-apply-dd: deploy/terraform/datadog/staging.tfvars
 	cd deploy/terraform/datadog && terraform init && terraform apply -auto-approve $(TF_DD_VARS)
 
-## tf-destroy-dd: Destroy all Datadog resources created by this Terraform module.
+## tf-destroy-dd: [Datadog Instrumentation] Destroy all Datadog resources created by this Terraform module.
 ##                WARNING: deletes the log index (and all indexed logs), monitors, dashboard, SLOs.
 tf-destroy-dd: deploy/terraform/datadog/staging.tfvars
 	cd deploy/terraform/datadog && terraform init && terraform destroy -auto-approve $(TF_DD_VARS)
