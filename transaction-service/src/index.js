@@ -2,7 +2,7 @@
 //
 const tracer = require("dd-trace").init({
   service: process.env.DD_SERVICE || "transaction-service",
-  env: process.env.DD_ENV || "development",
+  env: process.env.DD_ENV || "staging",
   version: process.env.DD_VERSION || "0.0.0",
   hostname: process.env.DD_AGENT_HOST || "datadog-agent",
   // ── Datadog Log Injection (enable via 'make tags') ──────────────────

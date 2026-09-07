@@ -293,6 +293,15 @@ Every instrumentation stage above patches source files or manifests; **none of i
 
 Image loading into non-Docker-Desktop local clusters: `kind load docker-image`, `k3d image import`, `minikube image load`, or for Colima (containerd) `docker save ... | colima ssh -- sudo ctr -n k8s.io image import -`.
 
+> For Datadog employees using colima
+> ```bash
+> make build
+> for svc in gateway-api account-service transaction-service fraud-detection notification-service batch-processor; do
+>   docker save finance-sample-app-$svc\:latest | colima ssh -- sudo ctr -n=k8s.io images import -
+> done
+> make deploy-k8s
+> ```
+
 Exact commands per stage are in each target's `make help` entry and in [INSTRUMENTATION.md](./INSTRUMENTATION.md).
 
 ### Directory layout

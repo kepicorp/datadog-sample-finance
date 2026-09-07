@@ -78,7 +78,7 @@ func main() {
 	//
 	// if err := profiler.Start(
 	// 	profiler.WithService(getEnv("DD_SERVICE", "notification-service")),
-	// 	profiler.WithEnv(getEnv("DD_ENV", "local")),
+	// 	profiler.WithEnv(getEnv("DD_ENV", "staging")),
 	// 	profiler.WithVersion(getEnv("DD_VERSION", "dev")),
 	// 	profiler.WithProfileTypes(
 	// 		profiler.CPUProfile,
@@ -220,7 +220,7 @@ func sendNotification(alert AlertMessage) {
 	// per-message IDs — fine on spans, do not use as metric tags.
 	// See: https://docs.datadoghq.com/tagging/assigning_tags/
 	//
-// 	span, _ := tracer.StartSpanFromContext(
+	// 	span, _ := tracer.StartSpanFromContext(
 	// 	context.Background(), "alert.send",
 	// 	tracer.ResourceName(alert.EventType),
 	// 	tracer.Tag("notification.channel", alert.Channel),
