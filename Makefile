@@ -31,7 +31,7 @@
 #                                        # exported above, Keycloak works on first boot, no restart needed
 #   make deploy-k8s-dd                  # deploy Datadog Agent (auto-detects EKS)
 
-.PHONY: all build build-ecr version test test-traffic deploy-k8s deploy-k8s-eks deploy-k8s-dd undeploy-k8s teardown instrument uninstrument tags untag dbm undbm security unsecurity dem undem create-dd-secret tf-plan-aws tf-apply-aws tf-configure-kubectl check-eks-kubeconfig frontend-url tf-destroy-aws dd-secrets sync-synthetics-config tf-plan-dd tf-apply-dd tf-destroy-dd scenario-1 unscenario-1 scenario-2 unscenario-2 scenario-3 unscenario-3 help
+.PHONY: all build build-ecr version test test-traffic deploy-k8s deploy-k8s-eks deploy-k8s-dd undeploy-k8s teardown instrument uninstrument tags untag dbm undbm security unsecurity dem undem create-dd-secret tf-plan-aws tf-apply-aws tf-configure-kubectl check-eks-kubeconfig frontend-url tf-destroy-aws sync-synthetics-config tf-plan-dd tf-apply-dd tf-destroy-dd scenario-1 unscenario-1 scenario-2 unscenario-2 scenario-3 unscenario-3 help
 
 # Resolve DD_VERSION once so all targets share the same value.
 # Falls back to 'dev' when git is not available (e.g. in a bare CI image).
@@ -145,12 +145,12 @@ endef
 # Single source of truth: .env. Sets all three to "" if .env is missing, or either
 # key is unset/empty/still the literal placeholder "REPLACE_ME" — callers are
 # responsible for checking and failing with their own error message (kept out of
-# this macro so 'dd-secrets', 'dem', and 'undem' can each word their own error
-# text). Deliberately a canned recipe (not a recipe-embedded '$(MAKE) dd-secrets'
-# call) so 'make -n dem'/'make -n undem' stay true dry-runs: a recipe line
-# containing the literal text '$(MAKE)' is always executed by GNU Make even
-# under -n, which would otherwise silently resolve and print real credentials
-# during a dry run.
+# this macro so 'create-dd-secret', 'tf-plan-dd'/'tf-apply-dd'/'tf-destroy-dd', 'dem',
+# and 'undem' can each word their own error text). Deliberately a canned recipe (not
+# a recipe-embedded '$(MAKE) <target>' call) so 'make -n dem'/'make -n undem'/etc.
+# stay true dry-runs: a recipe line containing the literal text '$(MAKE)' is always
+# executed by GNU Make even under -n, which would otherwise silently resolve and
+# print real credentials during a dry run.
 define resolve_dd_keys
 	API_KEY=""; APP_KEY=""; DD_KEY_SRC=""; \
 	if [ -f .env ]; then \
@@ -410,9 +410,8 @@ untag:
 ##      (tracked via .dem-applied + .dem-state.json, which caches the id/client_token
 ##      so re-runs and 'make undem' don't need to re-query the API). Reversible with
 ##      make undem. Credentials resolved from .env via the same logic as
-##      'make dd-secrets' / create-dd-secret / tf-apply-dd (shared
-##      'resolve_dd_keys' canned recipe — no $(MAKE) recipe call, so 'make -n dem'
-##      stays a true dry-run).
+##      create-dd-secret / tf-apply-dd (shared 'resolve_dd_keys' canned recipe —
+##      no $(MAKE) recipe call, so 'make -n dem' stays a true dry-run).
 ##
 ##      After creating, redeploy the frontend ConfigMap (HTML is served from a
 ##      ConfigMap, not the container image — a plain rollout restart isn't enough):
@@ -1184,25 +1183,10 @@ unscenario-3:
 		echo "✓ Scenario 3 reset."; \
 	fi
 
-## dd-secrets: [Datadog Instrumentation] Print eval-ready 'export TF_VAR_datadog_api_key=...' commands for use with
-##             tf-apply-dd / tf-plan-dd. Resolves DD_API_KEY / DD_APP_KEY from .env —
-##             the single source of truth on both local and EKS (no AWS Secrets
-##             Manager dependency).
-##             Usage: eval "$(make dd-secrets)"
-dd-secrets:
-	@$(resolve_dd_keys); \
-	if [ -z "$$API_KEY" ] || [ -z "$$APP_KEY" ]; then \
-		echo "# ERROR: could not resolve Datadog keys from .env." >&2; \
-		echo "#   cp .env.example .env && set DD_API_KEY / DD_APP_KEY to real values (not REPLACE_ME)." >&2; \
-		exit 1; \
-	fi; \
-	echo "# dd-secrets: sourced Datadog keys from $$DD_KEY_SRC" >&2; \
-	echo "export TF_VAR_datadog_api_key=\"$$API_KEY\""; \
-	echo "export TF_VAR_datadog_app_key=\"$$APP_KEY\""
-
 ## tf-plan-dd: [Datadog Instrumentation] Plan the Datadog observability resources (index, pipeline, monitors, dashboard).
-##             Requires TF_VAR_datadog_api_key and TF_VAR_datadog_app_key env vars.
-##             Easiest way to set them: eval "$(make dd-secrets)"
+##             DD_API_KEY / DD_APP_KEY are resolved from .env automatically (same
+##             resolve_dd_keys logic as 'create-dd-secret' / 'dem') and exported as
+##             TF_VAR_datadog_api_key / TF_VAR_datadog_app_key -- no manual export needed.
 ##             synthetic_target_base_url and TF_VAR_keycloak_client_secret (needed by the
 ##             3 auth-dependent Synthetic tests) are resolved automatically -- see
 ##             sync-synthetics-config below.
@@ -1261,16 +1245,42 @@ define resolve_keycloak_secret
 endef
 
 tf-plan-dd: sync-synthetics-config
-	@$(resolve_keycloak_secret); \
+	@$(resolve_dd_keys); \
+	if [ -z "$$API_KEY" ] || [ -z "$$APP_KEY" ]; then \
+		echo "ERROR: could not resolve DD_API_KEY/DD_APP_KEY from .env for 'make tf-plan-dd'."; \
+		echo "       cp .env.example .env && set DD_API_KEY / DD_APP_KEY to real values (not REPLACE_ME)."; \
+		exit 1; \
+	fi; \
+	export TF_VAR_datadog_api_key="$$API_KEY"; \
+	export TF_VAR_datadog_app_key="$$APP_KEY"; \
+	$(resolve_keycloak_secret); \
 	cd deploy/terraform/datadog && terraform init && terraform plan $(TF_DD_VARS)
 
 ## tf-apply-dd: [Datadog Instrumentation] Apply the Datadog resources (index, pipeline, monitors, dashboard).
 ##              WARNING: creates/updates live Datadog configuration.
+##              DD_API_KEY / DD_APP_KEY are resolved from .env automatically -- see tf-plan-dd above.
 tf-apply-dd: sync-synthetics-config
-	@$(resolve_keycloak_secret); \
+	@$(resolve_dd_keys); \
+	if [ -z "$$API_KEY" ] || [ -z "$$APP_KEY" ]; then \
+		echo "ERROR: could not resolve DD_API_KEY/DD_APP_KEY from .env for 'make tf-apply-dd'."; \
+		echo "       cp .env.example .env && set DD_API_KEY / DD_APP_KEY to real values (not REPLACE_ME)."; \
+		exit 1; \
+	fi; \
+	export TF_VAR_datadog_api_key="$$API_KEY"; \
+	export TF_VAR_datadog_app_key="$$APP_KEY"; \
+	$(resolve_keycloak_secret); \
 	cd deploy/terraform/datadog && terraform init && terraform apply -auto-approve $(TF_DD_VARS)
 
 ## tf-destroy-dd: [Datadog Instrumentation] Destroy all Datadog resources created by this Terraform module.
 ##                WARNING: deletes the log index (and all indexed logs), monitors, dashboard, SLOs.
+##                DD_API_KEY / DD_APP_KEY are resolved from .env automatically -- see tf-plan-dd above.
 tf-destroy-dd: deploy/terraform/datadog/staging.tfvars
+	@$(resolve_dd_keys); \
+	if [ -z "$$API_KEY" ] || [ -z "$$APP_KEY" ]; then \
+		echo "ERROR: could not resolve DD_API_KEY/DD_APP_KEY from .env for 'make tf-destroy-dd'."; \
+		echo "       cp .env.example .env && set DD_API_KEY / DD_APP_KEY to real values (not REPLACE_ME)."; \
+		exit 1; \
+	fi; \
+	export TF_VAR_datadog_api_key="$$API_KEY"; \
+	export TF_VAR_datadog_app_key="$$APP_KEY"; \
 	cd deploy/terraform/datadog && terraform init && terraform destroy -auto-approve $(TF_DD_VARS)
