@@ -85,11 +85,11 @@ kubectl exec -n finance "$KC_POD" -- /opt/keycloak/bin/kcadm.sh update "clients/
 
 ## Section 4 — Add Datadog
 
-Same targets as local — EKS auto-fetches keys from AWS Secrets Manager instead of `.env`:
+Same target as local — DD_API_KEY/DD_APP_KEY are read from `.env` automatically:
 
 ```bash
 make deploy-k8s-dd
-eval "$(make dd-secrets)" && make tf-apply-dd
+make tf-apply-dd
 ```
 
 Optionally: a real, browser-trusted HTTPS certificate via ACM if you own a domain and want to set

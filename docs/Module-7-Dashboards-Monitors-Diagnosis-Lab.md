@@ -24,9 +24,7 @@ below.
 ## Section 1 — Applying the Terraform Resources
 
 ```bash
-eval "$(make dd-secrets)"   # exports TF_VAR_datadog_api_key / TF_VAR_datadog_app_key
-                            # priority: AWS Secrets Manager (active SSO session + secrets exist), else .env
-make tf-apply-dd
+make tf-apply-dd   # DD_API_KEY / DD_APP_KEY are read from .env automatically
 ```
 
 | Resource | What it is |

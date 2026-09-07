@@ -548,8 +548,8 @@ finance-specific threat rule (e.g. brute force on \texttt{/v1/payments}). Revers
 \textbf{Duration:} 1.5--2 hours \quad \textbf{Prerequisites:} Modules 2--4.
 
 \begin{lstlisting}
-eval "$(make dd-secrets)"
-make tf-apply-dd     # dashboard, 7+ monitors, 3 SLOs, 7 synthetic tests, log pipeline
+make tf-apply-dd     # DD_API_KEY / DD_APP_KEY read from .env automatically; dashboard,
+                     # 7+ monitors, 3 SLOs, 7 synthetic tests, log pipeline
 make tf-destroy-dd    # reverse -- WARNING: deletes the log index and indexed logs too
 \end{lstlisting}
 
@@ -634,7 +634,7 @@ fails with \texttt{Failed to fetch} again after working before, re-apply the COR
 
 \begin{lstlisting}
 make deploy-k8s-dd
-eval "$(make dd-secrets)" && make tf-apply-dd
+make tf-apply-dd
 # Teardown, in this order:
 make tf-destroy-dd
 make tf-destroy-aws

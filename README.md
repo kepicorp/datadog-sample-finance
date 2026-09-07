@@ -232,6 +232,11 @@ kubectl exec -n datadog daemonset/datadog-agent -c trace-agent -- agent status |
 ```
 Then check **APM > Services** in Datadog — all 6 services should appear within ~2 minutes, with a connected flame graph across services.
 
+To also provision the Datadog-side resources (log index, pipeline, monitors, dashboard, synthetics):
+```bash
+make tf-apply-dd   # DD_API_KEY / DD_APP_KEY are read from .env automatically
+```
+
 ---
 
 ## Traffic Generator
@@ -472,10 +477,10 @@ kubectl exec -n finance "$KC_POD" -- /opt/keycloak/bin/kcadm.sh update "clients/
 
 #### Step 5 - Add Datadog
 
-Then add Datadog and apply resources — same targets as local, EKS auto-fetches keys from Secrets Manager:
+Then add Datadog and apply resources — same target as local, DD_API_KEY/DD_APP_KEY are read from `.env` automatically:
 ```bash
 make deploy-k8s-dd
-eval "$(make dd-secrets)" && make tf-apply-dd
+make tf-apply-dd
 ```
 
 ### Stop / teardown

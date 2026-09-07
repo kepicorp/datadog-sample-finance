@@ -19,38 +19,29 @@ Manages all Datadog observability resources for the Finance sample app as code.
 This module talks only to the Datadog API — it does **not** require a running cluster.
 You can apply it independently of where (or whether) the app is deployed.
 
-**Local:** a Datadog account plus `DD_API_KEY` / `DD_APP_KEY` set in the repo-root `.env`
-(see the top-level README). That's all `make dd-secrets` needs to export the `TF_VAR_*` keys.
+A Datadog account plus `DD_API_KEY` / `DD_APP_KEY` set in the repo-root `.env` (see the
+top-level README) — the single source of truth on every environment, local or AWS EKS alike.
+`make tf-plan-dd` / `make tf-apply-dd` / `make tf-destroy-dd` read these directly from `.env`
+and export the `TF_VAR_*` keys themselves; no separate export step is needed.
 
-**AWS EKS:** the keys live in AWS Secrets Manager instead of `.env`. Populate them once
-(`make tf-apply-aws` creates the secret containers):
-```bash
-aws secretsmanager put-secret-value \
-  --secret-id finance-app/staging/dd-api-key \
-  --secret-string "your-dd-api-key" --profile partner
-aws secretsmanager put-secret-value \
-  --secret-id finance-app/staging/dd-app-key \
-  --secret-string "your-dd-app-key" --profile partner
-```
+> `make tf-apply-aws` also creates empty `finance-app/<environment>/dd-api-key` / `dd-app-key`
+> secrets in AWS Secrets Manager. This Terraform module does not read them — they're reserved
+> for other AWS-side integrations (see `deploy/terraform/aws/variables.tf`), not for
+> `tf-apply-dd`/`tf-plan-dd`/`tf-destroy-dd`. Populate `.env` instead.
 
 ## Usage
 
 The API/App keys must be provided as `TF_VAR_datadog_api_key` / `TF_VAR_datadog_app_key`
-environment variables (never in `staging.tfvars`). `make dd-secrets` prints the right
-`export` lines for both environments — just `eval` its output.
-
-### Local (Docker Desktop / colima / kind / k3d / minikube)
+environment variables (never in `staging.tfvars`). `make tf-plan-dd` / `make tf-apply-dd` /
+`make tf-destroy-dd` resolve and export these from the repo-root `.env` automatically —
+identically on local and AWS EKS.
 
 ```bash
 # 1. Copy and review variables (first time only). Set datadog_site to match your org.
 cp staging.tfvars.example staging.tfvars
 
-# 2. Export the keys. dd-secrets reads DD_API_KEY / DD_APP_KEY from your .env at
-#    the repo root. It falls back to .env even when you're logged into AWS but the
-#    finance-app/staging secrets aren't in Secrets Manager (the usual local case).
-eval "$(make dd-secrets)"
-
-# 3. Plan and apply
+# 2. Plan and apply. DD_API_KEY / DD_APP_KEY are read from the repo-root .env
+#    automatically by these targets — no export step needed.
 make tf-plan-dd
 make tf-apply-dd
 ```
@@ -61,27 +52,6 @@ make tf-apply-dd
 > **RUM is not created by this module** — it's created independently by `make dem`
 > (a direct Datadog API call, not Terraform). `make dem` and `make tf-apply-dd` have no
 > dependency on each other for RUM specifically.
-
-### AWS EKS
-
-```bash
-# 1. Export keys from Secrets Manager (never put in files). 'make dd-secrets' does this
-#    for you when an AWS SSO session is active; the explicit form is:
-export TF_VAR_datadog_api_key="$(aws secretsmanager get-secret-value \
-  --secret-id finance-app/staging/dd-api-key \
-  --query SecretString --output text --profile partner)"
-
-export TF_VAR_datadog_app_key="$(aws secretsmanager get-secret-value \
-  --secret-id finance-app/staging/dd-app-key \
-  --query SecretString --output text --profile partner)"
-
-# 2. Copy and review variables
-cp staging.tfvars.example staging.tfvars
-
-# 3. Plan and apply
-make tf-plan-dd
-make tf-apply-dd
-```
 
 Makefile targets:
 ```bash
