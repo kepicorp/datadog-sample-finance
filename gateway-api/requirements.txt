@@ -8,21 +8,16 @@ python-json-logger==2.0.7
 pydantic==2.7.1
 
 # ── DATADOG INSTRUMENTATION ──────────────────────────────────────────
-# Step 3  — APM + log correlation (ddtrace)
-# Step 6  — Custom metrics are generated from spans (span-based metrics in
-#           deploy/terraform/datadog) — no DogStatsD client / package needed
-# Step 7  — Continuous Profiler (bundled in ddtrace — no extra package)
-# Uncomment when enabling any Datadog observability layer.
-# Docs: https://docs.datadoghq.com/tracing/trace_collection/dd_libraries/python/
-#
-# NOTE: this baked-in ddtrace is what actually runs (it shadows the
-# single-step Admission Controller injection, since `import ddtrace`
-# resolves to site-packages first). Keep it on the latest 2.x patch:
-# 2.9.0 was a March-2024 build whose native AppSec (libddwaf) extension
-# could SIGSEGV under sustained load on the gateway. 2.21.x carries the
-# accumulated native/AppSec crash fixes while staying API-compatible with
-# the 2.x custom-span code in main.py.
-ddtrace==2.21.12
+# ddtrace is intentionally NOT a pip dependency of this service. Step 3
+# (APM), Step 6 (span-based custom metrics — no DogStatsD package needed),
+# and Step 7 (Continuous Profiler, bundled in ddtrace) are all provided by
+# Single Step Instrumentation: the Datadog Admission Controller injects
+# the ddtrace library into the pod at startup via 'make instrument' +
+# 'make deploy-k8s-dd', with no image rebuild and no pip install here.
+# Baking ddtrace into this file as well would shadow that injected copy
+# (`import ddtrace` resolves to site-packages before the SSI-mounted
+# volume), defeating the point of using SSI for this service.
+# Docs: https://docs.datadoghq.com/tracing/trace_collection/automatic_instrumentation/single-step-apm/
 # ─────────────────────────────────────────────────────────────────────
 
 python-jose[cryptography]==3.3.0  # JWT validation against Keycloak JWKS (RS256)

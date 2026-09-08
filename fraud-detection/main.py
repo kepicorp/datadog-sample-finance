@@ -7,25 +7,45 @@ import logging
 import os
 import time
 
+# ── DATADOG INSTRUMENTATION ────────────────────────────────────────
+# Uncomment to enable APM tracing for this service. Requires Single Step
+# Instrumentation (Admission Controller library injection, enable via
+# 'make instrument') plus the Datadog Operator installed in-cluster
+# ('make deploy-k8s-dd') — this service intentionally has NO ddtrace pip
+# dependency baked into the image; SSI injects it at pod startup, no
+# rebuild required.
+# Docs: https://docs.datadoghq.com/tracing/trace_collection/dd_libraries/python/
 #
-from ddtrace import patch_all
-# ── Datadog Log Injection (enable via 'make tags') ────────────────────
+# from ddtrace import patch_all
+# ──────────────────────────────────────────────────────
+# ── Datadog Log Injection (enable via 'make tags') ───────────────
 # Uncomment to inject dd.trace_id / dd.span_id into every log record via
 # ddtrace's logging integration — stitches JSON logs to APM traces so
 # "View in APM" works from Log Management.
 # Docs: https://docs.datadoghq.com/tracing/other_telemetry/connect_logs_and_traces/?tab=python
 #
 # from ddtrace.contrib.logging import patch as patch_logging
-# ─────────────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────
 from pythonjsonlogger import jsonlogger
 
-patch_all()
-# ── Datadog Log Injection (enable via 'make tags') ────────────────────
-# patch_logging()
-# ─────────────────────────────────────────────────────────────────────
-
+# ── DATADOG INSTRUMENTATION ────────────────────────────────────────
+# Uncomment to activate ddtrace patching for all instrumented libraries.
+# Must run once ddtrace is actually importable — see the SSI note above.
+# Docs: https://docs.datadoghq.com/tracing/trace_collection/dd_libraries/python/
 #
-import ddtrace.profiling.auto  # noqa: F401  — side-effect import, keep at top
+# patch_all()
+# ────────────────────────────────────────────────────
+# ── Datadog Log Injection (enable via 'make tags') ───────────────
+# patch_logging()
+# ────────────────────────────────────────────────────
+
+# ── DATADOG INSTRUMENTATION ────────────────────────────────────────
+# Uncomment to enable Continuous Profiling for this service (see the SSI
+# note above — same mechanism, no separate pip dependency).
+# Docs: https://docs.datadoghq.com/profiler/enabling/python/
+#
+# import ddtrace.profiling.auto  # noqa: F401  — side-effect import, keep at top
+# ────────────────────────────────────────────────────
 import stomp
 from listener import FraudScoreListener
 

@@ -29,12 +29,12 @@ directly from the spans below, not from a separate metrics client.
 
 | Target | Mechanism | What it enables |
 |---|---|---|
-| `transaction-service` | `transaction-service.patch` | Uncomments the `payment.authorize` custom span in `payments.js` |
+| `gateway-api` | `gateway-api.patch` | Uncomments `import ddtrace.profiling.auto`, `from ddtrace import patch_all, tracer`, and `patch_all()` in `main.py`, plus the `payment.authorize` / `account.balance_check` custom spans — all in the same patch. No pip dependency is added here; see the SSI note in Step 2 below |
+| `fraud-detection` | `fraud-detection.patch` | Uncomments `from ddtrace import patch_all`, `patch_all()`, `import ddtrace.profiling.auto` in `main.py`, plus `from ddtrace import tracer` and the `fraud.score` custom span in `listener.py` — same no-pip-dependency note as `gateway-api` |
+| `transaction-service` | `transaction-service.patch` | Uncomments the dd-trace APM init in `index.js`, adds `dd-trace` back to `package.json`, and the `payment.authorize` custom span in `payments.js` |
 | `notification-service` | `notification-service.patch` | Uncomments `tracer.Start()` (APM), `profiler.Start()` (Continuous Profiler), and the `alert.send` custom span in `main.go` — all three in the same source banner |
 
-**Already active in source — no patch, always on:** `gateway-api` (`payment.authorize` /
-`account.balance_check`), `fraud-detection` (`fraud.score` span + `fraud.score_bucket` /
-numeric `fraud.score` tags), `batch-processor` (`job.name` / `job.status` /
+**Already active in source — no patch, always on:** `batch-processor` (`job.name` / `job.status` /
 `job.records_processed` span tags). `account-service` has no custom instrumentation — Java agent
 auto-instrumentation only.
 
@@ -65,10 +65,13 @@ annotations:
 | `batch-processor` | `dd-java-agent` (Java) | same |
 | `notification-service` | `dd-trace-go` (Go) | **not single-step injected** — Go tracing comes entirely from Step 1's in-code `tracer.Start()` |
 
-> **Nuance worth teaching explicitly:** the two Python services also pin `ddtrace` in their own
-> `requirements.txt`, and that baked-in copy takes precedence over the injected library — changing
-> the `python-lib.version` annotation alone has no effect for them. To move their tracer version
-> you have to edit `requirements.txt` and rebuild.
+> **Nuance worth teaching explicitly:** the two Python services deliberately have **no** `ddtrace`
+> pin in their own `requirements.txt` at all — SSI's injected library (via `PYTHONPATH`) is the
+> *only* source of `ddtrace` for them, with nothing baked into the image to shadow it. This also
+> means Step 1's uncommented `ddtrace` imports and custom spans in `main.py`/`listener.py` only
+> actually work once the Datadog Operator/Admission Controller is installed (`make deploy-k8s-dd`)
+> and the pod has been redeployed — Step 1 alone (without SSI actually running) leaves those
+> imports unresolvable.
 
 **Verify injection:**
 ```bash

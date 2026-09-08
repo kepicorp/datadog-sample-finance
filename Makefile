@@ -232,7 +232,8 @@ instrument:
 	@if [ -f .instrumentation-applied ]; then \
 		echo "Instrumentation already enabled. Run 'make uninstrument' first to reapply."; \
 	else \
-		echo "Step 1: Applying APM custom-span patches (transaction-service, notification-service)..."; \
+		echo "Step 1: Applying ddtrace/APM code patches (gateway-api, fraud-detection,"; \
+		echo "  transaction-service, notification-service)..."; \
 		for p in scripts/patches/*.patch; do \
 			svc=$$(basename $$p .patch); \
 			echo "  $$svc"; \
@@ -427,14 +428,17 @@ untag:
 
 ## dem: [Datadog Instrumentation] Enable Digital Experience Monitoring (Browser RUM + Session Replay) for the
 ##      finance-frontend dashboard. Creates the RUM application via a DIRECT Datadog
-##      API call (NOT Terraform — 'make tf-apply-dd' no longer owns RUM), then injects
-##      the resulting applicationId/clientToken into frontend-stub/index.html.
-##      Idempotent: checks for an existing 'finance-frontend' RUM application first
-##      (tracked via .dem-applied + .dem-state.json, which caches the id/client_token
-##      so re-runs and 'make undem' don't need to re-query the API). Reversible with
-##      make undem. Credentials resolved from .env via the same logic as
-##      create-dd-secret / tf-apply-dd (shared 'resolve_dd_keys' canned recipe —
-##      no $(MAKE) recipe call, so 'make -n dem' stays a true dry-run).
+##      API call (NOT Terraform — 'make tf-apply-dd' no longer owns RUM), uncomments
+##      the RUM <script> block in frontend-stub/index.html (scripts/patches/dem/
+##      dem-frontend.patch — it ships fully commented out, like every other
+##      Datadog block in this repo), then injects the resulting applicationId/
+##      clientToken into it. Idempotent: checks for an existing 'finance-frontend'
+##      RUM application first (tracked via .dem-applied + .dem-state.json, which
+##      caches the id/client_token so re-runs and 'make undem' don't need to
+##      re-query the API). Reversible with make undem. Credentials resolved from
+##      .env via the same logic as create-dd-secret / tf-apply-dd (shared
+##      'resolve_dd_keys' canned recipe — no $(MAKE) recipe call, so
+##      'make -n dem' stays a true dry-run).
 ##
 ##      After creating, redeploy the frontend ConfigMap (HTML is served from a
 ##      ConfigMap, not the container image — a plain rollout restart isn't enough):
@@ -487,6 +491,10 @@ dem:
 		echo "  ✓ RUM application ready (id: $$RUM_APP_ID)"; \
 		printf '{\n  "id": "%s",\n  "client_token": "%s",\n  "name": "finance-frontend"\n}\n' "$$RUM_APP_ID" "$$RUM_TOKEN" > .dem-state.json; \
 		touch .dem-applied; \
+		echo ""; \
+		echo "==> Uncommenting the RUM <script> block in frontend-stub/index.html..."; \
+		patch -p1 --forward -s < scripts/patches/dem/dem-frontend.patch || true; \
+		echo "  ✓ RUM script block active"; \
 		echo ""; \
 		echo "==> Injecting RUM credentials into frontend-stub/index.html..."; \
 		sed -i '' "s|'REPLACE_WITH_APPLICATION_ID'|'$$RUM_APP_ID'|g" frontend-stub/index.html; \
@@ -545,8 +553,12 @@ undem:
 		sed -i '' \
 			"s|clientToken:             '[a-z0-9]*'|clientToken:             'REPLACE_WITH_CLIENT_TOKEN'|g" \
 			frontend-stub/index.html; \
-		rm -f .dem-applied .dem-state.json; \
 		echo "  ✓ RUM placeholders restored"; \
+		echo ""; \
+		echo "==> Re-commenting the RUM <script> block in frontend-stub/index.html..."; \
+		patch -p1 --reverse -s < scripts/patches/dem/dem-frontend.patch || true; \
+		rm -f .dem-applied .dem-state.json; \
+		echo "  ✓ RUM script block commented out"; \
 		echo ""; \
 		echo "✓ DEM disabled. Redeploy to deactivate:"; \
 		echo "    kubectl create configmap frontend-dashboard \\"; \

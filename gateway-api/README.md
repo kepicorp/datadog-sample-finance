@@ -95,14 +95,18 @@ Work through these steps in order. Each step builds on the previous one.
    Docs: https://docs.datadoghq.com/getting_started/tagging/unified_service_tagging/
 
 3. **Uncomment APM initialisation — verify traces in APM > Services**
-   In `main.py`: uncomment the `ddtrace` block at the top of the file
-   (`patch_all()` + `patch_logging()`). Also uncomment `ddtrace` in
-   `requirements.txt` and reinstall.
-   Alternatively, prepend `ddtrace-run` to the CMD in `Dockerfile` for
-   zero-code-change auto-instrumentation.
+   Run `make instrument` from the repo root — it applies `scripts/patches/gateway-api.patch`,
+   which uncomments the `ddtrace` block at the top of `main.py` (`patch_all()` +
+   `patch_logging()`) and the `payment.authorize`/`account.balance_check` custom spans.
+   **This service has no `ddtrace` pip dependency, ever** — `make instrument`'s Step 2
+   (Single Step Instrumentation) is what actually makes `ddtrace` importable, by injecting
+   it into the pod via the Datadog Admission Controller. You also need the Datadog Operator
+   installed in-cluster (`make deploy-k8s-dd`) and the pod redeployed for the webhook to
+   mutate it — uncommenting the code alone is not enough.
    Send a test request: `curl -X POST http://localhost:8080/v1/payments ...`
    Navigate to APM > Services > gateway-api — you should see your first trace.
    Docs: https://docs.datadoghq.com/tracing/trace_collection/dd_libraries/python/
+   Docs: https://docs.datadoghq.com/tracing/trace_collection/automatic_instrumentation/single-step-apm/
 
 4. **Uncomment log correlation — verify trace_id in Log Management**
    Set `DD_LOGS_INJECTION=true` in `.env`.
@@ -132,8 +136,9 @@ Work through these steps in order. Each step builds on the previous one.
    Docs: https://docs.datadoghq.com/developers/dogstatsd/
 
 7. **Enable Continuous Profiler — validate flamegraphs**
-   In `main.py`: uncomment `import ddtrace.profiling.auto` at the very top
-   (it must be the first import). Set `DD_PROFILING_ENABLED=true` in `.env`.
+   `import ddtrace.profiling.auto` is uncommented by the same `make instrument` patch as
+   Step 3 (it must be the first import — already ordered correctly in `main.py`). Set
+   `DD_PROFILING_ENABLED=true` in `.env`.
    In Continuous Profiler, filter by `service:gateway-api` and select the
    CPU timeline. Generate load (`ab -n 500 -c 10 ...`) then look for hot
    functions inside `initiate_payment` — correlate with slow payment traces.

@@ -36,11 +36,18 @@ const paymentsRouter = require("./routes/payments");
 // ─────────────────────────────────────────────────────────────────────
 const logger = pino({
   level: process.env.LOG_LEVEL || "info",
-  base: {
-    service: process.env.DD_SERVICE || "transaction-service",
-    env: process.env.DD_ENV || "development",
-    version: process.env.DD_VERSION || "0.0.0",
-  },
+  // ── Datadog Unified Service Tagging (enable via 'make tags') ────────
+  // Uncomment to stamp every JSON log line with service/env/version —
+  // mirrors the DD_ENV/DD_SERVICE/DD_VERSION pod env vars uncommented in
+  // the Kubernetes manifest by the same target.
+  // Docs: https://docs.datadoghq.com/getting_started/tagging/unified_service_tagging/
+  //
+  // base: {
+  //   service: process.env.DD_SERVICE || "transaction-service",
+  //   env: process.env.DD_ENV || "development",
+  //   version: process.env.DD_VERSION || "0.0.0",
+  // },
+  // ─────────────────────────────────────────────────────────────────────
 });
 
 // ── Safety net for the fire-and-forget STOMP producer ──────────────────

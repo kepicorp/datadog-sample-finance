@@ -10,17 +10,16 @@ import os
 
 import stomp
 
-# ── APM — CUSTOM SPANS (fraud.score) ─────────────────────────────────
-# Manual span around each fraud.score operation (always on).
-# This gives you a dedicated span in the APM Trace view that you can
-# tag with Finance-domain attributes for slice-and-dice analysis.
-# Requires: ddtrace installed + patch_all() called in main.py first.
+# ── DATADOG INSTRUMENTATION ────────────────────────────────────────
+# Manual span around each fraud.score operation. Requires Single Step
+# Instrumentation to have injected ddtrace (enable via 'make instrument'
+# + 'make deploy-k8s-dd') — this service intentionally has no baked
+# ddtrace pip dependency; 'tracer' is undefined without SSI having run.
 # Docs: https://docs.datadoghq.com/tracing/trace_collection/custom_instrumentation/python/
 #
-from ddtrace import tracer
-from scorer import score
-
+# from ddtrace import tracer
 # ─────────────────────────────────────────────────────────────────────
+from scorer import score
 
 # ── DATA STREAMS MONITORING (DSM) ────────────────────────────────────
 # Optional follow-up: instrument this consumer for DSM pipeline visibility.
@@ -119,34 +118,37 @@ class FraudScoreListener(stomp.ConnectionListener):
         amount = float(body.get("amount", 0.0))
         currency = body.get("currency", "UNKNOWN")
 
-        # ── APM CUSTOM SPAN (fraud.score) ─────────────────────────────
-        # Wrap the scoring call in a manual span named "fraud.score".
-        # Tag with Finance-domain attributes so you can filter traces
-        # in APM > Services > fraud-detection by score_bucket or
-        # transaction_type without touching log search.
+        result = score({"transaction_id": transaction_id, "amount": amount})
+
+        # ── DATADOG INSTRUMENTATION ────────────────────────────────────────
+        # Wrap the scoring result in a manual span named "fraud.score" so it
+        # shows up in the APM Trace view, taggable with Finance-domain
+        # attributes for slice-and-dice analysis. Requires Single Step
+        # Instrumentation to have injected ddtrace (see the import banner
+        # near the top of this file) — 'tracer' is undefined otherwise.
         #
         # HIGH-CARDINALITY WARNING: do NOT add transaction_id or
         # message_id as span tags — those are unbounded.
         # Use correlation_id only if your broker reuses a bounded set.
         # Docs: https://docs.datadoghq.com/tracing/trace_collection/custom_instrumentation/python/
         #
-        with tracer.trace(
-            "fraud.score", service="fraud-detection", resource=transaction_type
-        ) as span:
-            result = score({"transaction_id": transaction_id, "amount": amount})
-            span.set_tag("transaction.type", transaction_type)
-            span.set_tag("payment.currency", currency)
-            span.set_tag("fraud.score_bucket", result["bucket"])
-            # Numeric score → feeds the finance.fraud.score distribution span metric.
-            # Safe as a span metric value (aggregated), NOT used as a grouping tag.
-            span.set_tag("fraud.score", float(result["score"]))
-            span.set_tag("messaging.destination", "fraud.score.queue")
-            # HIGH-CARDINALITY WARNING: messaging.message_id is per-message —
-            # tag only when debugging a specific incident, not in production.
-            # span.set_tag("messaging.message_id", message_id)
-            if result["bucket"] == "high":
-                span.error = 1
-                span.set_tag("error.message", "High-risk transaction flagged")
+        # with tracer.trace(
+        #     "fraud.score", service="fraud-detection", resource=transaction_type
+        # ) as span:
+        #     span.set_tag("transaction.type", transaction_type)
+        #     span.set_tag("payment.currency", currency)
+        #     span.set_tag("fraud.score_bucket", result["bucket"])
+        #     # Numeric score → feeds the finance.fraud.score distribution span metric.
+        #     # Safe as a span metric value (aggregated), NOT used as a grouping tag.
+        #     span.set_tag("fraud.score", float(result["score"]))
+        #     span.set_tag("messaging.destination", "fraud.score.queue")
+        #     # HIGH-CARDINALITY WARNING: messaging.message_id is per-message —
+        #     # tag only when debugging a specific incident, not in production.
+        #     # span.set_tag("messaging.message_id", message_id)
+        #     if result["bucket"] == "high":
+        #         span.error = 1
+        #         span.set_tag("error.message", "High-risk transaction flagged")
+        # ─────────────────────────────────────────────────────────────────────
 
         logger.info(
             "Fraud score computed",

@@ -16,28 +16,51 @@ import os
 import time
 import uuid
 
+# ── DATADOG INSTRUMENTATION ────────────────────────────────────────
+# Uncomment to enable Continuous Profiling for this service. Requires
+# Single Step Instrumentation (Admission Controller library injection,
+# enable via 'make instrument') plus the Datadog Operator installed
+# in-cluster ('make deploy-k8s-dd') — this service intentionally has NO
+# ddtrace pip dependency baked into the image; SSI injects it at pod
+# startup, no rebuild required.
+# Docs: https://docs.datadoghq.com/profiler/enabling/python/
 #
-import ddtrace.profiling.auto  # noqa: F401  — side-effect import, starts profiler
+# import ddtrace.profiling.auto  # noqa: F401  — side-effect import, starts profiler
+# ─────────────────────────────────────────────────────────
 import httpx
 
+# ── DATADOG INSTRUMENTATION ────────────────────────────────────────
+# Uncomment to enable APM tracing for this service. Requires Single Step
+# Instrumentation (enable via 'make instrument') plus the Datadog
+# Operator installed in-cluster ('make deploy-k8s-dd') — this service
+# intentionally has NO ddtrace pip dependency baked into the image; SSI
+# injects it at pod startup, no rebuild required.
+# Docs: https://docs.datadoghq.com/tracing/trace_collection/dd_libraries/python/
 #
-from ddtrace import patch_all, tracer
-# ── Datadog Log Injection (enable via 'make tags') ────────────────────
+# from ddtrace import patch_all, tracer
+# ─────────────────────────────────────────────────────────
+# ── Datadog Log Injection (enable via 'make tags') ───────────────
 # Uncomment to inject dd.trace_id / dd.span_id into every log record via
 # ddtrace's logging integration — stitches JSON logs to APM traces so
 # "View in APM" works from Log Management.
 # Docs: https://docs.datadoghq.com/tracing/other_telemetry/connect_logs_and_traces/?tab=python
 #
 # from ddtrace.contrib.logging import patch as patch_logging
-# ─────────────────────────────────────────────────────────────────────
+# ──────────────────────────────────────────────────────
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from jose import JWTError, jwt
 from pydantic import BaseModel, Field
 from pythonjsonlogger import jsonlogger
 
-patch_all()  # must be called before importing instrumented libraries
-# ── Datadog Log Injection (enable via 'make tags') ────────────────────
+# ── DATADOG INSTRUMENTATION ────────────────────────────────────────
+# Uncomment to activate ddtrace patching for all instrumented libraries.
+# Must run once ddtrace is actually importable — see the SSI note above.
+# Docs: https://docs.datadoghq.com/tracing/trace_collection/dd_libraries/python/
+#
+# patch_all()  # must be called before importing instrumented libraries
+# ──────────────────────────────────────────────────────
+# ── Datadog Log Injection (enable via 'make tags') ───────────────
 # patch_logging()  # injects dd.trace_id / dd.span_id into every log record
 # ─────────────────────────────────────────────────────────────────────
 
@@ -652,17 +675,25 @@ async def initiate_payment(
         },
     )
 
+    # ── DATADOG INSTRUMENTATION ──────────────────────────────────────
+    # Step 5 — custom span for payment.authorize. Requires Single Step
+    # Instrumentation to have injected ddtrace (see the import banners near
+    # the top of this file) — 'tracer' is undefined otherwise.
+    #
     # resource MUST be a bounded, normalised value. Using the raw account_id
     # here would create one APM resource per account (unbounded cardinality).
     # The account id is still captured as a span tag below for trace search.
-    with tracer.trace(
-        "payment.authorize", service="gateway-api", resource="POST /v1/payments"
-    ) as span:
-        span.set_tag("transaction.type", "payment")
-        span.set_tag("payment.currency", payload.currency)
-        span.set_tag("account.id", payload.account_id)  # bounded — safe as tag
-        span.set_tag("user.id", user_sub)  # UUID from Keycloak — safe, not PII
-        span.set_tag("user.roles", ",".join(user_roles))  # e.g. "finance-trader"
+    # Docs: https://docs.datadoghq.com/tracing/trace_collection/custom_instrumentation/python/
+    #
+    # with tracer.trace(
+    #     "payment.authorize", service="gateway-api", resource="POST /v1/payments"
+    # ) as span:
+    #     span.set_tag("transaction.type", "payment")
+    #     span.set_tag("payment.currency", payload.currency)
+    #     span.set_tag("account.id", payload.account_id)  # bounded — safe as tag
+    #     span.set_tag("user.id", user_sub)  # UUID from Keycloak — safe, not PII
+    #     span.set_tag("user.roles", ",".join(user_roles))  # e.g. "finance-trader"
+    # ──────────────────────────────────────────────────────────────────────
 
     # --- Stub: call transaction-service ---
     # In a real deployment this POST reaches the Node.js transaction-service.
@@ -757,16 +788,24 @@ async def get_account_balance(
         extra={"account_id": account_id, "user.id": user_sub, "user.roles": user_roles},
     )
 
+    # ── DATADOG INSTRUMENTATION ──────────────────────────────────────
+    # Step 5 — custom span for account.balance_check. Requires Single Step
+    # Instrumentation to have injected ddtrace (see the import banners near
+    # the top of this file) — 'tracer' is undefined otherwise.
+    #
     # resource MUST be a bounded, normalised route — never the raw account_id
     # (that would create one APM resource per account). The account id remains
     # a span tag for trace search.
-    with tracer.trace(
-        "account.balance_check",
-        service="gateway-api",
-        resource="GET /v1/accounts/{account_id}/balance",
-    ) as span:
-        span.set_tag("account.id", account_id)
-        span.set_tag("http.route", "/v1/accounts/{account_id}/balance")
+    # Docs: https://docs.datadoghq.com/tracing/trace_collection/custom_instrumentation/python/
+    #
+    # with tracer.trace(
+    #     "account.balance_check",
+    #     service="gateway-api",
+    #     resource="GET /v1/accounts/{account_id}/balance",
+    # ) as span:
+    #     span.set_tag("account.id", account_id)
+    #     span.set_tag("http.route", "/v1/accounts/{account_id}/balance")
+    # ──────────────────────────────────────────────────────────────────────
 
     # --- Stub: call account-service ---
     try:

@@ -66,14 +66,14 @@ Three narrated steps, applied via unified diff patches under `scripts/patches/ta
 
 | Step | Target | Mechanism | What it enables |
 |---|---|---|---|
-| (a) UST | all 6 manifests | `scripts/patches/tags/ust-<service>.patch` | Uncomments `tags.datadoghq.com/env\|service\|version` pod labels + `DD_ENV`/`DD_SERVICE`/`DD_VERSION` env vars (`DD_AGENT_HOST` is untouched — always active, not a UST concern) |
+| (a) UST | all 6 manifests | `scripts/patches/tags/ust-<service>.patch` | Uncomments `tags.datadoghq.com/env\|service\|version` pod labels + `DD_ENV`/`DD_SERVICE`/`DD_VERSION` env vars (`DD_AGENT_HOST` is untouched — always active, not a UST concern). `transaction-service`'s patch also has a second hunk for `src/index.js`, uncommenting the `base: { service, env, version }` object passed to the `pino` logger — the same UST fields, stamped onto every JSON log line directly by the app instead of relying on the Agent to infer them |
 | (b) Log injection — Python | `gateway-api`, `fraud-detection` | `scripts/patches/tags/loginject-<service>.patch` | Uncomments the `ddtrace.contrib.logging.patch` import + `patch_logging()` call |
 | (b) Log injection — Node | `transaction-service` | `scripts/patches/tags/loginject-transaction-service.patch` | Uncomments `logInjection: true` in the `dd-trace` init block |
 | (b) Log injection — Java | `account-service`, `batch-processor` | `scripts/patches/tags/loginject-<service>.patch` | Uncomments the `DD_LOGS_INJECTION=true` env var (dd-trace-java's Logback/Log4j2 MDC hook needs only this flag) |
 | (b) Log injection — Go | `notification-service` | `scripts/patches/tags/loginject-notification-service.patch` | Uncomments manual `dd.trace_id`/`dd.span_id` field injection into the `alert.send`/`alert.send.complete` `slog` calls — Go has no automatic MDC-style hook |
 | (c) Log collection annotation | all 6 manifests | `scripts/patches/tags/logs-<service>.patch` | Uncomments the `ad.datadoghq.com/<service>.logs` pod annotation the Agent uses for log source/service autodiscovery |
 
-> **Go and Node log injection require `make instrument` first.** `notification-service`'s uncommented fields read `span.Context().TraceID()`/`SpanID()` off the `alert.send` span, which only exists once `make instrument` has uncommented it — applying `make tags` alone leaves it referencing an undefined `span` variable and it will fail to build. `transaction-service`'s `logInjection: true` line lives inside the `require('dd-trace').init({...})` block, which is itself gated behind `make instrument` (see [`make instrument`](#make-instrument) → APM custom spans) — applying `make tags` before `make instrument` leaves this specific hunk a silent no-op (it can't find its context) rather than a build failure; re-run `patch -p1 --forward -s < scripts/patches/tags/loginject-transaction-service.patch` after `make instrument` if you want it applied out of order.
+> **Go, Node, and Python log injection all require `make instrument` first.** `notification-service`'s uncommented fields read `span.Context().TraceID()`/`SpanID()` off the `alert.send` span, which only exists once `make instrument` has uncommented it — applying `make tags` alone leaves it referencing an undefined `span` variable and it will fail to build. `transaction-service`'s `logInjection: true` line lives inside the `require('dd-trace').init({...})` block, and `gateway-api`/`fraud-detection`'s `from ddtrace.contrib.logging import patch as patch_logging` + `patch_logging()` lines live right after their own `from ddtrace import ...` imports — all three are gated behind `make instrument` (see [`make instrument`](#make-instrument) → APM custom spans). Applying `make tags` before `make instrument` leaves these specific hunks a silent no-op (they can't find their context) rather than a build failure; re-run `patch -p1 --forward -s < scripts/patches/tags/loginject-<service>.patch` after `make instrument` if you want them applied out of order.
 >
 > **Step (c)'s patches assume `make tags` runs before `make instrument`** (the order the Quick Start already documents). `scripts/patches/instrument-sso/sso-*.patch` (see [`make instrument`](#make-instrument) → Single Step Instrumentation gating) rewrites the same `annotations:` block and expects step (c) to have already run — reversing the two makes both a no-op instead of an error, so always apply/reverse in the documented order.
 
@@ -157,10 +157,14 @@ Applies reversible unified-diff patches in four narrated steps under one sentine
 
 | Target | Mechanism | What it enables |
 |---|---|---|
+| `gateway-api` | `scripts/patches/gateway-api.patch` | Uncomments `import ddtrace.profiling.auto`, `from ddtrace import patch_all, tracer`, and `patch_all()` in `main.py`, plus the `payment.authorize` / `account.balance_check` custom spans — all in the same patch. No pip dependency is added: see [Single Step Instrumentation](#2-single-step-instrumentation-gating) below, which is what actually makes `ddtrace` importable for this service |
+| `fraud-detection` | `scripts/patches/fraud-detection.patch` | Uncomments `from ddtrace import patch_all`, `patch_all()`, and `import ddtrace.profiling.auto` in `main.py`, plus `from ddtrace import tracer` and the `fraud.score` custom span in `listener.py` — same no-pip-dependency note as `gateway-api` |
 | `transaction-service` | `scripts/patches/transaction-service.patch` | Uncomments the dd-trace APM init (`require('dd-trace').init({...})`, including the nested log-injection block — see [`make tags`](#make-tags)) in `index.js`, adds `dd-trace` back to `package.json`, and uncomments the `payment.authorize` custom span in `payments.js` — all three live in the same patch |
 | `notification-service` | `scripts/patches/notification-service.patch` | Uncomments `tracer.Start()` (APM), `profiler.Start()` (Continuous Profiler), and the `alert.send` custom span in `main.go` — all three live in the same patch/source banner |
 
-> **Already active in source — no patch, always on:** `gateway-api` (`payment.authorize` / `account.balance_check`), `fraud-detection` (`fraud.score` span + `fraud.score_bucket` and numeric `fraud.score` tags), `batch-processor` (`job.name` / `job.status` / `job.records_processed` span tags). `account-service` has no custom instrumentation (Java agent auto-instrumentation only).
+> **Already active in source — no patch, always on:** `batch-processor` (`job.name` / `job.status` / `job.records_processed` span tags). `account-service` has no custom instrumentation (Java agent auto-instrumentation only).
+>
+> **`gateway-api`/`fraud-detection` intentionally have no `ddtrace` pip dependency, ever.** Unlike every other service here, `requirements.txt` never gains a real `ddtrace==` line — not even via this patch. These two services rely entirely on Single Step Instrumentation (step 2 below) to make `ddtrace` importable at pod startup. This means Step 1's uncommented code will raise `ModuleNotFoundError`/`NameError` unless step 2 has *also* run **and** the Datadog Operator/Admission Controller is actually installed in the cluster (`make deploy-k8s-dd`) **and** the pod has been redeployed so the webhook mutates it. `fraud-detection`'s separately-gated `ddtrace[data_streams]` extra (step 4, DSM) is the one exception that *is* pip-installed, since SSI's injected library doesn't include DSM's checkpoint API.
 >
 > **No DogStatsD anywhere.** Every `finance.*` custom metric is span-based (`datadog_spans_metric` in `deploy/terraform/datadog`, applied via `make tf-apply-dd`).
 
@@ -203,7 +207,7 @@ Library versions are pinned to floating major tags (`v2`/`v1`/`v5`) rather than 
 The injected agent also sets `DD_TRACE_AGENT_URL`, `DD_INSTRUMENTATION_INSTALL_TYPE=k8s_lib_injection`, and `DD_APPSEC_ENABLED=true` (from the ASM feature flag, see `make security`) automatically.
 
 > **What actually provides the tracer (important nuance):**
-> - **Python** (`gateway-api`, `fraud-detection`) also pin `ddtrace` in their own `requirements.txt`, and that baked-in copy takes precedence over the injected library. So `import ddtrace` reports the **baked-in** version (currently `2.21.12`), not the injected one — changing the `python-lib.version` annotation alone has no effect for these two services. To move the Python tracer version, edit `requirements.txt` and rebuild the image.
+> - **Python** (`gateway-api`, `fraud-detection`) deliberately have **no** `ddtrace` pin in their own `requirements.txt` — unlike every other service here, this pip dependency is permanently absent, not just commented-out-until-`make instrument`. That means the SSI-injected library (via `PYTHONPATH`) is the *only* source of `ddtrace` for these two services, with nothing baked into the image to shadow it. `import ddtrace` reports whatever version the `python-lib.version` annotation resolves to; there is no rebuild-and-repin path for these two, by design — the whole point is to exercise SSI as the actual delivery mechanism instead of working around it.
 > - **Go** (`notification-service`) is **not** single-step injected — the Admission Controller creates no init container for Go, so `go-lib.version` is a no-op. Go tracing comes entirely from the in-code `tracer.Start()` enabled in step 1 above.
 
 #### Verify injection
@@ -305,9 +309,10 @@ done
 2. Checks for an existing RUM application named `finance-frontend` (`GET /api/v2/rum/applications`, filtered client-side by name — the list endpoint has no server-side name filter) to avoid creating a duplicate on repeated runs.
 3. Creates one if none exists (`POST /api/v2/rum/applications`), or reuses the existing one's `id`/`client_token` (`GET /api/v2/rum/applications/{id}` — the list endpoint doesn't return `client_token`, only the single-resource GET does).
 4. Caches `id`/`client_token` in the gitignored `.dem-state.json` so re-runs and `make undem` don't need to re-query the API.
-5. Injects the credentials into `frontend-stub/index.html`'s `DD_RUM.init()` block via `sed`.
+5. Uncomments the RUM `<script>` block in `frontend-stub/index.html` (`scripts/patches/dem/dem-frontend.patch`) — it ships fully commented out inside an HTML comment, like every other Datadog block in this repo, so the page has zero Datadog code at rest.
+6. Injects the credentials into the now-active `DD_RUM.init()` block via `sed`.
 
-Idempotent: tracked via `.dem-applied`. A second run without `make undem` first is a no-op.
+Idempotent: tracked via `.dem-applied`. A second run without `make undem` first is a no-op. `make undem` reverses in the opposite order: restores the `REPLACE_WITH_*` placeholders first, then re-comments the `<script>` block.
 
 ### Why it matters
 
