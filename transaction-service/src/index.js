@@ -1,18 +1,23 @@
 //
+// ── DATADOG INSTRUMENTATION ────────────────────────────────────────
+// Uncomment to enable APM tracing for this service.
+// Requires: DD_ENV, DD_SERVICE, DD_VERSION, DD_AGENT_HOST env vars.
+// Docs: https://docs.datadoghq.com/tracing/trace_collection/dd_libraries/nodejs/
 //
-const tracer = require("dd-trace").init({
-  service: process.env.DD_SERVICE || "transaction-service",
-  env: process.env.DD_ENV || "staging",
-  version: process.env.DD_VERSION || "0.0.0",
-  hostname: process.env.DD_AGENT_HOST || "datadog-agent",
-  // ── Datadog Log Injection (enable via 'make tags') ──────────────────
-  // Uncomment to stitch pino JSON logs to APM traces via dd.trace_id /
-  // dd.span_id — enables "View in APM" from Log Management.
-  // Docs: https://docs.datadoghq.com/tracing/other_telemetry/connect_logs_and_traces/?tab=nodejs
-  //
-  // logInjection: true,
-  // ─────────────────────────────────────────────────────────────────────
-});
+// const tracer = require("dd-trace").init({
+//   service: process.env.DD_SERVICE || "transaction-service",
+//   env: process.env.DD_ENV || "staging",
+//   version: process.env.DD_VERSION || "0.0.0",
+//   hostname: process.env.DD_AGENT_HOST || "datadog-agent",
+//   // ── Datadog Log Injection (enable via 'make tags') ───────────────
+//   // Uncomment to stitch pino JSON logs to APM traces via dd.trace_id /
+//   // dd.span_id — enables "View in APM" from Log Management.
+//   // Docs: https://docs.datadoghq.com/tracing/other_telemetry/connect_logs_and_traces/?tab=nodejs
+//   //
+//   // logInjection: true,
+//   // ────────────────────────────────────────────────────────────
+// });
+// ─────────────────────────────────────────────────────────────────
 
 ("use strict");
 

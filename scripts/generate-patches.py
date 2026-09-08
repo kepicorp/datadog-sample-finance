@@ -160,7 +160,14 @@ def dry_run(patch_name):
 # ── Uncomment engine ──────────────────────────────────────────────────────────
 
 BANNER_PY = re.compile(r"# ── DATADOG .*?# ─{5,}\n", re.DOTALL)
-BANNER_JS = re.compile(r"// ── DATADOG .*?// ─{5,}\n", re.DOTALL)
+# Closing marker is anchored to the start of a line (after optional leading
+# whitespace) so that a nested, hand-patched sub-banner living INSIDE an
+# outer DATADOG block (e.g. transaction-service/src/index.js's "Datadog Log
+# Injection" banner, deliberately lowercase so this engine skips it) can't be
+# mistaken for the outer banner's own closer. Without the anchor, a nested
+# line like "//   // ─────" also matches "// ─{5,}" as a substring, causing the
+# non-greedy match to stop early and leave the real closing "});" commented.
+BANNER_JS = re.compile(r"// ── DATADOG .*?^[ \t]*// ─{5,}\n", re.DOTALL | re.MULTILINE)
 BANNER_GO = re.compile(r"\t// ── DATADOG .*?\t// ─{5,}\n", re.DOTALL)
 BANNER_GO_NOTAB = re.compile(r"// ── DATADOG .*?// ─{5,}\n", re.DOTALL)
 BANNER_JAVA = re.compile(r"[ \t]*// ── DATADOG .*?[ \t]*// ─{5,}\n", re.DOTALL)

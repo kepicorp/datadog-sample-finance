@@ -62,7 +62,7 @@ Every stage below falls into one of three categories. Each stage section names i
 
 ### What it does
 
-Two narrated steps, applied via unified diff patches under `scripts/patches/tags/` (a separate directory from the top-level `scripts/patches/*.patch` used by `make instrument`, so the two lifecycles' globs never collide):
+Three narrated steps, applied via unified diff patches under `scripts/patches/tags/` (a separate directory from the top-level `scripts/patches/*.patch` used by `make instrument`, so the two lifecycles' globs never collide):
 
 | Step | Target | Mechanism | What it enables |
 |---|---|---|---|
@@ -71,17 +71,20 @@ Two narrated steps, applied via unified diff patches under `scripts/patches/tags
 | (b) Log injection — Node | `transaction-service` | `scripts/patches/tags/loginject-transaction-service.patch` | Uncomments `logInjection: true` in the `dd-trace` init block |
 | (b) Log injection — Java | `account-service`, `batch-processor` | `scripts/patches/tags/loginject-<service>.patch` | Uncomments the `DD_LOGS_INJECTION=true` env var (dd-trace-java's Logback/Log4j2 MDC hook needs only this flag) |
 | (b) Log injection — Go | `notification-service` | `scripts/patches/tags/loginject-notification-service.patch` | Uncomments manual `dd.trace_id`/`dd.span_id` field injection into the `alert.send`/`alert.send.complete` `slog` calls — Go has no automatic MDC-style hook |
+| (c) Log collection annotation | all 6 manifests | `scripts/patches/tags/logs-<service>.patch` | Uncomments the `ad.datadoghq.com/<service>.logs` pod annotation the Agent uses for log source/service autodiscovery |
 
-> **Go log injection requires `make instrument` first.** The uncommented fields read `span.Context().TraceID()`/`SpanID()` off the `alert.send` span, which only exists once `make instrument` has uncommented it. Applying `make tags` alone leaves `notification-service` referencing an undefined `span` variable and it will fail to build.
+> **Go and Node log injection require `make instrument` first.** `notification-service`'s uncommented fields read `span.Context().TraceID()`/`SpanID()` off the `alert.send` span, which only exists once `make instrument` has uncommented it — applying `make tags` alone leaves it referencing an undefined `span` variable and it will fail to build. `transaction-service`'s `logInjection: true` line lives inside the `require('dd-trace').init({...})` block, which is itself gated behind `make instrument` (see [`make instrument`](#make-instrument) → APM custom spans) — applying `make tags` before `make instrument` leaves this specific hunk a silent no-op (it can't find its context) rather than a build failure; re-run `patch -p1 --forward -s < scripts/patches/tags/loginject-transaction-service.patch` after `make instrument` if you want it applied out of order.
+>
+> **Step (c)'s patches assume `make tags` runs before `make instrument`** (the order the Quick Start already documents). `scripts/patches/instrument-sso/sso-*.patch` (see [`make instrument`](#make-instrument) → Single Step Instrumentation gating) rewrites the same `annotations:` block and expects step (c) to have already run — reversing the two makes both a no-op instead of an error, so always apply/reverse in the documented order.
 
 ### Why it matters
 
-`DD_ENV`/`DD_SERVICE`/`DD_VERSION` (+ `tags.datadoghq.com/*` pod labels) are what let Datadog group traces/logs/metrics by service and correlate deploys via Deployment Tracking. Log injection stitches JSON logs to APM traces so "View in APM" works from Log Management — without it, logs and traces exist independently.
+`DD_ENV`/`DD_SERVICE`/`DD_VERSION` (+ `tags.datadoghq.com/*` pod labels) are what let Datadog group traces/logs/metrics by service and correlate deploys via Deployment Tracking. Log injection stitches JSON logs to APM traces so "View in APM" works from Log Management — without it, logs and traces exist independently. The log collection annotation tells the Agent which `source`/`service` to tag a pod's collected logs with, for correct pipeline parsing and faceting.
 
 ### Workflow
 
 ```bash
-make tags               # apply UST + log injection patches
+make tags               # apply UST + log injection + log collection annotation patches
 ```
 
 Rebuild + redeploy — **Category A** (see [Rebuilding & redeploying](#rebuilding--redeploying)).
@@ -89,14 +92,14 @@ Rebuild + redeploy — **Category A** (see [Rebuilding & redeploying](#rebuildin
 ### Reverse it
 
 ```bash
-make untag               # re-comments all UST + log-injection patches
+make untag               # re-comments all UST + log-injection + log collection annotation patches
 ```
 
 Rebuild + redeploy again — Category A.
 
 ### Validate
 
-Any trace or log should carry `env:staging service:<name> version:latest`. Log Explorer → click any log from a finance service → **View Trace** button appears once `dd.trace_id` is present.
+Any trace or log should carry `env:staging service:<name> version:latest`. Log Explorer → click any log from a finance service → **View Trace** button appears once `dd.trace_id` is present. Log Explorer → `kube_namespace:finance` should show correctly source-tagged logs (e.g. `source:nodejs` for `transaction-service`) once the annotation is uncommented and the pod redeployed.
 
 ---
 
@@ -154,7 +157,7 @@ Applies reversible unified-diff patches in four narrated steps under one sentine
 
 | Target | Mechanism | What it enables |
 |---|---|---|
-| `transaction-service` | `scripts/patches/transaction-service.patch` | Uncomments the `payment.authorize` custom span in `payments.js` |
+| `transaction-service` | `scripts/patches/transaction-service.patch` | Uncomments the dd-trace APM init (`require('dd-trace').init({...})`, including the nested log-injection block — see [`make tags`](#make-tags)) in `index.js`, adds `dd-trace` back to `package.json`, and uncomments the `payment.authorize` custom span in `payments.js` — all three live in the same patch |
 | `notification-service` | `scripts/patches/notification-service.patch` | Uncomments `tracer.Start()` (APM), `profiler.Start()` (Continuous Profiler), and the `alert.send` custom span in `main.go` — all three live in the same patch/source banner |
 
 > **Already active in source — no patch, always on:** `gateway-api` (`payment.authorize` / `account.balance_check`), `fraud-detection` (`fraud.score` span + `fraud.score_bucket` and numeric `fraud.score` tags), `batch-processor` (`job.name` / `job.status` / `job.records_processed` span tags). `account-service` has no custom instrumentation (Java agent auto-instrumentation only).
@@ -549,14 +552,14 @@ A few signals are neither commented-out-by-default nor controlled by any `make` 
 
 ### Structured JSON logs
 
-All six services emit structured JSON to stdout, collected by the Agent DaemonSet's `/var/log/pods/` volume mount. Each pod template carries an autodiscovery annotation:
+All six services always emit structured JSON to stdout, collected by the Agent DaemonSet's `/var/log/pods/` volume mount — that part is unconditional, not gated by any `make` target. The Agent-side **collection annotation** that tells it which `source`/`service` to tag those logs with, however, is *not* always-on: it ships commented out and is gated behind `make tags` (step (c) — see [`make tags`](#make-tags) above), e.g.:
 
 ```yaml
 annotations:
-  ad.datadoghq.com/gateway-api.logs: '[{"source":"python","service":"gateway-api"}]'
+  # ad.datadoghq.com/gateway-api.logs: '[{"source":"python","service":"gateway-api"}]'
 ```
 
-**Validate:** Log Explorer → `kube_namespace:finance`.
+**Validate:** Log Explorer → `kube_namespace:finance` (logs arrive either way); confirm `source`/`service` faceting only appears correctly once `make tags` has uncommented the annotation and the pod has redeployed.
 
 ### ActiveMQ JMX metrics
 
@@ -569,6 +572,8 @@ kubectl apply -f deploy/kubernetes/datadog/checks/activemq-check.yaml
 **Validate:** Infrastructure → Metrics → search `activemq.queue.size`.
 
 > Data Streams Monitoring and Data Jobs Monitoring used to be always-on here too — they're now gated behind `make instrument` (step 4). See [`make instrument`](#make-instrument) above.
+
+> The `ad.datadoghq.com/<service>.logs` annotation used to be always-on here too — it's now gated behind `make tags` (step c). See [`make tags`](#make-tags) above.
 
 ---
 

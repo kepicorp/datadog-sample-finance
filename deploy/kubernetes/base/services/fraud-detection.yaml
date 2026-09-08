@@ -42,7 +42,14 @@ spec:
         #
         # admission.datadoghq.com/python-lib.version: "v2"
         # ─────────────────────────────────────────────────────────────────
-        ad.datadoghq.com/fraud-detection.logs: '[{"source":"python","service":"fraud-detection"}]'
+        # ── DATADOG LOG COLLECTION (autodiscovery annotation) ────────────
+        # Uncomment via 'make tags' to tell the Agent which log source and
+        # service to tag this pod's stdout/stderr logs with — required for
+        # correct parsing/faceting in Log Management.
+        # Docs: https://docs.datadoghq.com/containers/kubernetes/log/
+        #
+        # ad.datadoghq.com/fraud-detection.logs: '[{"source":"python","service":"fraud-detection"}]'
+        # ─────────────────────────────────────────────────────────────────
       labels:
         app: fraud-detection
         component: service

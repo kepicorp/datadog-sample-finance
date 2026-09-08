@@ -326,23 +326,29 @@ uninstrument:
 		$(print_redeploy_hint); \
 	fi
 
-## tags: [Datadog Instrumentation] Enable Unified Service Tagging (env/service/version) + log injection.
-##       Two-step, narrated: (a) UST pod labels + DD_ENV/DD_SERVICE/DD_VERSION
-##       env vars in the Kubernetes manifests, (b) trace_id/span_id log
-##       injection (Python patch_logging(), Node dd-trace logInjection, Java
-##       DD_LOGS_INJECTION, Go manual field injection). Applies unified diff
-##       patches from scripts/patches/tags/ — a separate directory from
-##       scripts/patches/*.patch, so this never interacts with
+## tags: [Datadog Instrumentation] Enable Unified Service Tagging (env/service/version) + log injection
+##       + log collection autodiscovery. Three-step, narrated: (a) UST pod
+##       labels + DD_ENV/DD_SERVICE/DD_VERSION env vars in the Kubernetes
+##       manifests, (b) trace_id/span_id log injection (Python
+##       patch_logging(), Node dd-trace logInjection, Java DD_LOGS_INJECTION,
+##       Go manual field injection), (c) the ad.datadoghq.com/<service>.logs
+##       pod annotation the Agent uses for log source/service tagging.
+##       Applies unified diff patches from scripts/patches/tags/ — a separate
+##       directory from scripts/patches/*.patch, so this never interacts with
 ##       make instrument/uninstrument. Fully reversible with make untag.
 ##       Idempotent: a second run is a clean no-op (tracked via .tags-applied).
 ##
 ##       NOTE: the Go log-injection block references the 'alert.send' span
 ##       created by 'make instrument' — run 'make instrument' first if you
 ##       want notification-service log correlation to actually compile/work.
+##       transaction-service has the same ordering requirement: its
+##       'logInjection: true' line lives inside the dd-trace tracer-init
+##       block, which is itself gated behind 'make instrument' — run that
+##       first if you want transaction-service log correlation to apply.
 ##
 ##       After patching, redeploy (rollout restart alone won't pick up the new
-##       DD_ENV/DD_SERVICE/DD_VERSION env vars/labels — the manifests must be
-##       re-applied):
+##       DD_ENV/DD_SERVICE/DD_VERSION env vars/labels/annotations — the
+##       manifests must be re-applied):
 ##         Local:  make build && load images into k3s && make deploy-k8s
 ##         EKS:    make build-ecr && make deploy-k8s-eks
 tags:
@@ -367,6 +373,17 @@ tags:
 			echo "    $$svc"; \
 			patch -p1 --forward -s < $$p || true; \
 		done; \
+		echo ""; \
+		echo "Step (c): Enabling log collection autodiscovery annotation..."; \
+		echo "  Why: ad.datadoghq.com/<service>.logs tells the Agent which log source"; \
+		echo "  and service name to tag this pod's stdout/stderr logs with — required"; \
+		echo "  for correct parsing/faceting in Log Management. Uncommenting now on"; \
+		echo "  all 6 service manifests:"; \
+		for p in scripts/patches/tags/logs-*.patch; do \
+			svc=$$(basename $$p .patch | sed 's/^logs-//'); \
+			echo "    $$svc"; \
+			patch -p1 --forward -s < $$p || true; \
+		done; \
 		touch .tags-applied; \
 		echo ""; \
 		echo "✓ Tags + log injection enabled. Redeploy to activate:"; \
@@ -384,6 +401,12 @@ untag:
 	@if [ ! -f .tags-applied ]; then \
 		echo "Tags + log injection are not currently enabled (nothing to reverse)."; \
 	else \
+		echo "Reversing log collection autodiscovery annotation patches..."; \
+		for p in scripts/patches/tags/logs-*.patch; do \
+			svc=$$(basename $$p .patch | sed 's/^logs-//'); \
+			echo "  $$svc"; \
+			patch -p1 --reverse -s < $$p || true; \
+		done; \
 		echo "Reversing log injection patches..."; \
 		for p in scripts/patches/tags/loginject-*.patch; do \
 			svc=$$(basename $$p .patch | sed 's/^loginject-//'); \

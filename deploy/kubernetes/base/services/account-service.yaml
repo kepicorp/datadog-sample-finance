@@ -59,7 +59,14 @@ spec:
         #
         # admission.datadoghq.com/java-lib.version: "v1"
         # ─────────────────────────────────────────────────────────────────
-        ad.datadoghq.com/account-service.logs: '[{"source":"java","service":"account-service"}]'
+        # ── DATADOG LOG COLLECTION (autodiscovery annotation) ────────────
+        # Uncomment via 'make tags' to tell the Agent which log source and
+        # service to tag this pod's stdout/stderr logs with — required for
+        # correct parsing/faceting in Log Management.
+        # Docs: https://docs.datadoghq.com/containers/kubernetes/log/
+        #
+        # ad.datadoghq.com/account-service.logs: '[{"source":"java","service":"account-service"}]'
+        # ─────────────────────────────────────────────────────────────────
       labels:
         app: account-service
         component: service
