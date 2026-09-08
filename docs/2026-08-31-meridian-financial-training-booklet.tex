@@ -310,6 +310,18 @@ Go & notification-service & Manual \texttt{dd.trace\_id}/\texttt{dd.span\_id} in
 \end{tabularx}
 \end{center}
 
+\tipbox{\textbf{Log-collection annotation is a separate sub-step.} \texttt{make tags} also
+uncomments the \texttt{ad.datadoghq.com/<service>.logs} Agent annotation on all six manifests --
+this is what tells the Agent which \texttt{source}/\texttt{service} to tag a pod's collected logs
+with, for correct pipeline parsing and faceting. It's independent of the UST env vars and
+log-injection blocks above: without it, logs still arrive in Log Explorer, just without correct
+\texttt{source} faceting.}
+
+\tipbox{\textbf{transaction-service stamps UST fields into its own logs too.} Its
+\texttt{make tags} patch has a second hunk for \texttt{index.js}, uncommenting the pino logger's
+\texttt{base: \{ service, env, version \}} object -- the same UST fields, written directly onto
+every JSON log line by the app itself instead of relying on the Agent to infer them.}
+
 \tipbox{\textbf{Ordering matters for Go.} \texttt{notification-service}'s log injection reads
 the \texttt{alert.send} span's trace/span ID -- a span that only exists once Module 4's
 \texttt{make instrument} has uncommented it. Running \texttt{make tags} alone first leaves an
@@ -418,6 +430,22 @@ notification-service & dd-trace-go & Not single-step injected -- in-code \texttt
 \end{tabularx}
 \end{center}
 
+\tipbox{\textbf{gateway-api and fraud-detection never get a pip-installed \texttt{ddtrace}.}
+Unlike every other service here, their \texttt{requirements.txt} permanently omits it -- not just
+commented out until \texttt{make instrument}, but never pinned at all. Single Step
+Instrumentation plus the Datadog Operator installed in-cluster (\texttt{make deploy-k8s-dd}) are
+the \emph{only} source of \texttt{ddtrace} for these two services; without SSI actually injecting
+it and the pod redeployed, Step 1's uncommented imports and custom spans raise
+\texttt{ModuleNotFoundError}. This also closes a previously-documented bug: a baked-in pip copy
+could no longer silently shadow the SSI-injected one and make the \texttt{python-lib.version}
+annotation a no-op, because there is no baked-in copy to shadow it with.}
+
+\tipbox{\textbf{transaction-service's dd-trace APM init is patch-gated too.}
+\texttt{require('dd-trace').init()} in \texttt{index.js}, plus the \texttt{dd-trace} npm
+dependency in \texttt{package.json}, are commented out by default and only added by
+\texttt{make instrument} -- matching how \texttt{notification-service}'s Go tracer already
+worked.}
+
 \tipbox{\textbf{fraud-detection needs a rebuild, not just a redeploy.} Its DSM support is a
 baked pip dependency, unlike the other services' plain env-var toggle. After
 \texttt{make instrument}, run \texttt{make build} (or \texttt{build-ecr}) and reload the image
@@ -457,9 +485,12 @@ reconciliation run and confirm it appears under APM $\rightarrow$ Data Jobs.}
 \textbf{Duration:} 30--45 minutes \quad \textbf{Prerequisites:} App running (Module 1). Independent
 of Modules 2--4 and 7 -- no Terraform dependency.
 
-\texttt{make dem} creates the RUM application via a direct \texttt{POST
-/api/v2/rum/applications} call and injects the resulting \texttt{client\_token} into
-\texttt{frontend-stub/index.html} with \texttt{sed}. Idempotent via \texttt{.dem-applied}.
+The RUM \texttt{<script>} block in \texttt{frontend-stub/index.html} ships commented out inside
+an HTML comment, like every other Datadog block in this repo -- the page has zero Datadog code at
+rest. \texttt{make dem} creates the RUM application via a direct \texttt{POST
+/api/v2/rum/applications} call, uncomments that \texttt{<script>} block, and injects the
+resulting \texttt{client\_token} with \texttt{sed} -- previously it only did the credential
+injection, since the script was already active. Idempotent via \texttt{.dem-applied}.
 
 \tipbox{\textbf{PII masking matters specifically here} -- this is a financial dashboard.
 \texttt{defaultPrivacyLevel: 'mask-user-input'} ensures form values (account numbers, payment
